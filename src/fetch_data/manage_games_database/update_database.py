@@ -1,3 +1,10 @@
+"""
+NBA Over/Under Predictor - Database Update Script
+
+This script manages the update of the NBA games database by fetching new game data
+from the NBA API and merging it with existing data.
+"""
+
 import os
 import sys
 
@@ -13,6 +20,7 @@ def load_existing_data(filepath: str, dtype: dict):
     except FileNotFoundError:
         print(f"No existing data found: {filepath}. Starting from scratch...")
         return None
+
 
 def update_database(database_folder: str):
     # from .update_database_utils import fetch_nba_data, get_nba_season_to_update  # Try to sort the 300 games block issue
@@ -59,11 +67,18 @@ def update_database(database_folder: str):
     print(f"Updating season: {season_nullable}")
 
     # Load existing team and player data if available
-    input_df = load_existing_data(database_folder + teams_filename, dtype={"GAME_ID": str})
-    input_player_df = load_existing_data(database_folder + players_filename, dtype={"GAME_ID": str})
+    input_df = load_existing_data(
+        database_folder + teams_filename, dtype={"GAME_ID": str}
+    )
+    input_player_df = load_existing_data(
+        database_folder + players_filename, dtype={"GAME_ID": str}
+    )
 
     team_df, players_df, limit_reached = fetch_nba_data(
-        season_nullable, input_df=input_df, input_player_stats=input_player_df, n_tries=3
+        season_nullable,
+        input_df=input_df,
+        input_player_stats=input_player_df,
+        n_tries=3,
     )
     os.makedirs(database_folder, exist_ok=True)
     # # Save updated data
@@ -81,5 +96,7 @@ def update_database(database_folder: str):
 
 if __name__ == "__main__":
     # Define Data Folder
-    DATA_FOLDER = "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/season_games_data/"
+    DATA_FOLDER = (
+        "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/season_games_data/"
+    )
     update_database(DATA_FOLDER)

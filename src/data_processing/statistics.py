@@ -1,3 +1,10 @@
+"""
+NBA Over/Under Predictor - Statistical Analysis Module
+
+This module contains functions for computing rolling statistics, cumulative averages,
+trend analysis, and other statistical computations on NBA game and player data.
+"""
+
 import numpy as np
 import pandas as pd
 from tqdm import tqdm

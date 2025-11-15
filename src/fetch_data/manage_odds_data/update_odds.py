@@ -1,6 +1,13 @@
+"""
+NBA Over/Under Predictor - Odds Update Script
+
+This script manages the update of NBA betting odds data by fetching new odds
+from external APIs.
+"""
+
 import sys
 
-from manage_odds_data.update_odds_utils import update_odds_df
+from .update_odds_utils import update_odds_df
 
 
 def update_odds(date_to_predict, odds_folder: str, ODDS_API_KEY, BASE_URL):

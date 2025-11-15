@@ -1,3 +1,10 @@
+"""
+NBA Over/Under Predictor - Game Database Utilities
+
+This module contains utility functions for fetching and updating NBA game data
+from the NBA API, including game statistics and box scores.
+"""
+
 import random
 import re
 import time
@@ -6,18 +13,14 @@ from datetime import datetime
 import pandas as pd
 import requests
 from nba_api.library.http import NBAHTTP
-from nba_api.stats.endpoints import BoxScoreAdvancedV2, BoxScoreTraditionalV2, LeagueGameFinder
+from nba_api.stats.endpoints import (
+    BoxScoreAdvancedV2,
+    BoxScoreTraditionalV2,
+    LeagueGameFinder,
+)
 from tqdm import tqdm
 
-# Season Type Mapping
-SEASON_TYPE_MAPPING = {
-    "001": "Preseason",
-    "002": "Regular Season",
-    "003": "All Star",
-    "004": "Playoffs",
-    "005": "Play-In Tournament",
-    "006": "In-Season Final Game",
-}
+from ...config.constants import SEASON_TYPE_MAP as SEASON_TYPE_MAPPING
 
 
 def get_nba_season_to_update():
@@ -86,13 +89,17 @@ def fetch_box_score_data(game_id: str, n_tries: int = 3):
 
             except Exception as e:
                 attempts += 1
-                print(f"Attempt {attempts} failed for {game_id} ({api_call.__name__}). Error: {e}")
+                print(
+                    f"Attempt {attempts} failed for {game_id} ({api_call.__name__}). Error: {e}"
+                )
                 reset_nba_http_session()
                 if attempts < n_tries:
                     print(f"Retrying in {20 * attempts} seconds...")
                     time.sleep(20 * attempts)
                 else:
-                    print(f"Failed to fetch data for {game_id} ({api_call.__name__}). Max attempts reached.")
+                    print(
+                        f"Failed to fetch data for {game_id} ({api_call.__name__}). Max attempts reached."
+                    )
                     limit_reached = True
 
     if not box_score_traditional or not box_score_advanced:
@@ -106,14 +113,21 @@ def fetch_box_score_data(game_id: str, n_tries: int = 3):
 def merge_stats(player_trad, player_adv, team_trad, team_adv, game_id):
     """Merges traditional and advanced stats for both players and teams."""
     try:
-        player_stats = pd.merge(player_trad, player_adv, on=["PLAYER_ID", "GAME_ID", "TEAM_ID"], suffixes=("", "_drop"))
+        player_stats = pd.merge(
+            player_trad,
+            player_adv,
+            on=["PLAYER_ID", "GAME_ID", "TEAM_ID"],
+            suffixes=("", "_drop"),
+        )
         player_stats = player_stats.loc[:, ~player_stats.columns.str.endswith("_drop")]
     except Exception as e:
         print(f"Failed to merge player stats for game_id {game_id}: {e}")
         player_stats = pd.DataFrame()
 
     try:
-        team_stats = pd.merge(team_trad, team_adv, on=["TEAM_ID", "GAME_ID"], suffixes=("", "_drop"))
+        team_stats = pd.merge(
+            team_trad, team_adv, on=["TEAM_ID", "GAME_ID"], suffixes=("", "_drop")
+        )
         team_stats = team_stats.loc[:, ~team_stats.columns.str.endswith("_drop")]
     except Exception as e:
         print(f"Failed to merge team stats for game_id {game_id}: {e}")
@@ -123,7 +137,10 @@ def merge_stats(player_trad, player_adv, team_trad, team_adv, game_id):
 
 
 def fetch_nba_data(
-    season_nullable: str, input_df: pd.DataFrame = None, input_player_stats: pd.DataFrame = None, n_tries: int = 3
+    season_nullable: str,
+    input_df: pd.DataFrame = None,
+    input_player_stats: pd.DataFrame = None,
+    n_tries: int = 3,
 ) -> tuple[pd.DataFrame, pd.DataFrame, bool]:
     """
     Fetches and processes NBA game data for a specified season.
@@ -162,7 +179,9 @@ def fetch_nba_data(
     if not re.match(r"^\d{4}-\d{2}$", season_nullable):
         raise ValueError("Invalid season format. Expected format: 'YYYY-YY'")
 
-    game_finder = LeagueGameFinder(season_nullable=season_nullable, league_id_nullable="00")
+    game_finder = LeagueGameFinder(
+        season_nullable=season_nullable, league_id_nullable="00"
+    )
     games = game_finder.get_data_frames()[0]
     games["SEASON_TYPE"] = games["GAME_ID"].apply(classify_season_type)
     games["HOME"] = games["MATCHUP"].str.contains("vs.")
@@ -171,7 +190,9 @@ def fetch_nba_data(
     game_ids = set(games["GAME_ID"]) - existing_game_ids
 
     if not game_ids:
-        print(f"No new games found for season {season_nullable}. Skipping data fetch...")
+        print(
+            f"No new games found for season {season_nullable}. Skipping data fetch..."
+        )
         return None, None, limit_reached
 
     all_player_stats, all_team_stats = [], []
@@ -180,7 +201,9 @@ def fetch_nba_data(
     for game_id in tqdm(game_ids, desc="Fetching NBA Game Data"):
         time.sleep(random.uniform(0.5, 1.0))  # Avoid rate limiting
 
-        box_score_traditional, box_score_advanced, limit_reached = fetch_box_score_data(game_id, n_tries)
+        box_score_traditional, box_score_advanced, limit_reached = fetch_box_score_data(
+            game_id, n_tries
+        )
 
         if not box_score_traditional or not box_score_advanced:
             continue
@@ -190,7 +213,9 @@ def fetch_nba_data(
         player_adv = box_score_advanced.get_data_frames()[0].fillna("")
         team_adv = box_score_advanced.get_data_frames()[1].fillna("")
 
-        player_stats, team_stats = merge_stats(player_trad, player_adv, team_trad, team_adv, game_id)
+        player_stats, team_stats = merge_stats(
+            player_trad, player_adv, team_trad, team_adv, game_id
+        )
         all_player_stats.append(player_stats)
         all_team_stats.append(team_stats)
 
@@ -200,21 +225,41 @@ def fetch_nba_data(
             time.sleep(30)
             reset_nba_http_session()
             limit_reached = True
-        
+
         if limit_reached:
             break
 
-    player_stats_df = pd.concat(all_player_stats, ignore_index=True) if all_player_stats else pd.DataFrame()
-    team_stats_df = pd.concat(all_team_stats, ignore_index=True) if all_team_stats else pd.DataFrame()
+    player_stats_df = (
+        pd.concat(all_player_stats, ignore_index=True)
+        if all_player_stats
+        else pd.DataFrame()
+    )
+    team_stats_df = (
+        pd.concat(all_team_stats, ignore_index=True)
+        if all_team_stats
+        else pd.DataFrame()
+    )
     team_stats_df.rename(columns={"TO": "TOV"}, inplace=True)
 
-    merged_games = pd.merge(games, team_stats_df, on=["GAME_ID", "TEAM_ID"], suffixes=("", "_drop"))
+    merged_games = pd.merge(
+        games, team_stats_df, on=["GAME_ID", "TEAM_ID"], suffixes=("", "_drop")
+    )
     merged_games = merged_games.loc[:, ~merged_games.columns.str.endswith("_drop")]
 
     if input_df is not None:
-        merged_games = pd.concat([input_df, merged_games], ignore_index=True).drop_duplicates()
+        merged_games = pd.concat(
+            [input_df, merged_games], ignore_index=True
+        ).drop_duplicates()
 
     if input_player_stats is not None:
-        player_stats_df = pd.concat([input_player_stats, player_stats_df], ignore_index=True).drop_duplicates()
+        player_stats_df = pd.concat(
+            [input_player_stats, player_stats_df], ignore_index=True
+        ).drop_duplicates()
+
+    return merged_games, player_stats_df, limit_reached
+    if input_player_stats is not None:
+        player_stats_df = pd.concat(
+            [input_player_stats, player_stats_df], ignore_index=True
+        ).drop_duplicates()
 
     return merged_games, player_stats_df, limit_reached

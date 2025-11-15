@@ -1,3 +1,10 @@
+"""
+NBA Over/Under Predictor - Main Data Processing Module
+
+This module contains the main data processing pipeline for NBA game predictions,
+including injury data integration, statistical computations, and feature engineering.
+"""
+
 import os
 import warnings
 from datetime import datetime
@@ -9,13 +16,15 @@ from nba_api.stats.endpoints import ScoreboardV2
 from scipy.stats import linregress
 from tqdm import tqdm
 
-from .injury_report_procesing import (process_injury_data,
-                                      retrieve_injury_report_as_df)
-from .utils_analysis import (attach_top3_stats, classify_season_type,
-                             compute_rolling_stats,
-                             compute_rolling_weighted_stats,
-                             compute_season_std)
-from .update_odds_utils import merge_teams_df_with_odds
+from ..fetch_data.manage_odds_data.update_odds_utils import merge_teams_df_with_odds
+from .injury_processing import process_injury_data, retrieve_injury_report_as_df
+from .statistics import (
+    attach_top3_stats,
+    classify_season_type,
+    compute_rolling_stats,
+    compute_rolling_weighted_stats,
+    compute_season_std,
+)
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
@@ -60,8 +69,7 @@ def get_last_two_nba_seasons(date):
     return [season, previous_season]
 
 
-
-def load_all_nba_data(data_path, seasons = None):
+def load_all_nba_data(data_path, seasons=None):
     """
     Loads NBA game and player data for the specified seasons.
 
@@ -87,7 +95,7 @@ def load_all_nba_data(data_path, seasons = None):
         seasons = []
         for f in file_list:
             if f.startswith("nba_games_") and f.endswith(".csv"):
-                tag = f[len("nba_games_"):-len(".csv")]
+                tag = f[len("nba_games_") : -len(".csv")]
                 season = tag.replace("_", "-")
                 seasons.append(season)
         seasons = sorted(set(seasons))  # Remove duplicates, sort
@@ -100,16 +108,15 @@ def load_all_nba_data(data_path, seasons = None):
         # Load games
         if game_filename in file_list:
             try:
-                team_path =  os.path.join(data_path, game_filename)
+                team_path = os.path.join(data_path, game_filename)
                 df_temp = pd.read_csv(team_path, nrows=0)
-                dtype_dict_teams = {col: str for col in df_temp.columns if "ID" in col.upper()}
-                df_game = pd.read_csv(
-                    team_path,
-                    dtype=dtype_dict_teams
-                )
+                dtype_dict_teams = {
+                    col: str for col in df_temp.columns if "ID" in col.upper()
+                }
+                df_game = pd.read_csv(team_path, dtype=dtype_dict_teams)
                 game_dfs.append(df_game)
                 print(f"Loaded game data: {game_filename} ({df_game.shape[0]} rows)")
-            
+
             except Exception as e:
                 print(f"Error loading game data {game_filename}: {e}")
         else:
@@ -121,12 +128,16 @@ def load_all_nba_data(data_path, seasons = None):
             try:
                 # Dynamically detect columns with "ID" and load as str
                 df_temp = pd.read_csv(player_path, nrows=0)
-                dtype_dict_players = {col: str for col in df_temp.columns if "ID" in col.upper()}
+                dtype_dict_players = {
+                    col: str for col in df_temp.columns if "ID" in col.upper()
+                }
 
                 df_player = pd.read_csv(player_path, dtype=dtype_dict_players)
                 player_dfs.append(df_player)
-                print(f"Loaded player data: {player_filename} ({df_player.shape[0]} rows)")
-            
+                print(
+                    f"Loaded player data: {player_filename} ({df_player.shape[0]} rows)"
+                )
+
             except Exception as e:
                 print(f"Error loading player data {player_filename}: {e}")
         else:
@@ -136,7 +147,6 @@ def load_all_nba_data(data_path, seasons = None):
     df_players = pd.concat(player_dfs, ignore_index=True) if player_dfs else None
 
     return df_games, df_players
-
 
 
 def standardize_and_merge_nba_data(df, games):
@@ -171,13 +181,17 @@ def standardize_and_merge_nba_data(df, games):
     games_renamed["SEASON_YEAR"] = games_renamed["SEASON_YEAR"].astype(str)
     # Recreate SEASON_ID using the first digit before the first '00' in GAME_ID and SEASON_YEAR
     games_renamed["SEASON_PREFIX"] = games_renamed["GAME_ID"].astype(str).str[2]
-    games_renamed["SEASON_ID"] = games_renamed["SEASON_PREFIX"] + games_renamed["SEASON_YEAR"]
+    games_renamed["SEASON_ID"] = (
+        games_renamed["SEASON_PREFIX"] + games_renamed["SEASON_YEAR"]
+    )
     games_renamed["SEASON_ID"] = games_renamed["SEASON_ID"].astype(str)
     # Create separate DataFrames for home and away teams
     home_games = games_renamed[["GAME_ID", "TEAM_ID", "GAME_DATE", "SEASON_ID"]].copy()
     home_games["HOME"] = True  # Mark as home team
 
-    away_games = games_renamed[["GAME_ID", "TEAM_ID_AWAY", "GAME_DATE", "SEASON_ID"]].copy()
+    away_games = games_renamed[
+        ["GAME_ID", "TEAM_ID_AWAY", "GAME_DATE", "SEASON_ID"]
+    ].copy()
     away_games.rename(columns={"TEAM_ID_AWAY": "TEAM_ID"}, inplace=True)
     away_games["HOME"] = False  # Mark as away team
 
@@ -197,7 +211,9 @@ def standardize_and_merge_nba_data(df, games):
     df = pd.concat([df, games_expanded], ignore_index=True, join="outer")[df.columns]
 
     # remove duplicated rows based on TEAM_ID and GAME_DATE, keeping the last one
-    df = df.drop_duplicates(subset=["TEAM_ID", "GAME_DATE"], keep="last").reset_index(drop=True)
+    df = df.drop_duplicates(subset=["TEAM_ID", "GAME_DATE"], keep="last").reset_index(
+        drop=True
+    )
 
     return df
 
@@ -264,9 +280,16 @@ def add_last_season_playoff_games(df):
         pd.DataFrame: The modified DataFrame with the added column.
     """
     last_season = df["SEASON_YEAR"].max() - 1
-    df_playoffs_last_season = df[(df["SEASON_YEAR"] == last_season) & (df["SEASON_ID"].astype(str).str.startswith("4"))]
-    playoff_counts = df_playoffs_last_season.groupby("TEAM_ID")["GAME_ID"].nunique().reset_index()
-    playoff_counts.rename(columns={"GAME_ID": "PLAYOFF_GAMES_LAST_SEASON"}, inplace=True)
+    df_playoffs_last_season = df[
+        (df["SEASON_YEAR"] == last_season)
+        & (df["SEASON_ID"].astype(str).str.startswith("4"))
+    ]
+    playoff_counts = (
+        df_playoffs_last_season.groupby("TEAM_ID")["GAME_ID"].nunique().reset_index()
+    )
+    playoff_counts.rename(
+        columns={"GAME_ID": "PLAYOFF_GAMES_LAST_SEASON"}, inplace=True
+    )
     df = df.merge(playoff_counts, on="TEAM_ID", how="left").fillna(0)
     return df
 
@@ -285,23 +308,27 @@ def compute_home_points_conceded_avg(df):
     """
 
     # Sort DataFrame so previous games come first
-    df = df.sort_values(["TEAM_ID_TEAM_HOME", "SEASON_YEAR", "GAME_DATE"], ascending=True)
+    df = df.sort_values(
+        ["TEAM_ID_TEAM_HOME", "SEASON_YEAR", "GAME_DATE"], ascending=True
+    )
 
     # Define the new column name
     col_name = "AVG_POINTS_CONCEDED_AT_HOME_BEFORE_GAME"
 
     # Compute rolling average of points conceded at home (excluding current game)
-    df[col_name] = df.groupby(["TEAM_ID_TEAM_HOME", "SEASON_YEAR"])["PTS_TEAM_AWAY"].transform(
-        lambda s: s.shift(1).expanding(min_periods=1).mean()
-    )
+    df[col_name] = df.groupby(["TEAM_ID_TEAM_HOME", "SEASON_YEAR"])[
+        "PTS_TEAM_AWAY"
+    ].transform(lambda s: s.shift(1).expanding(min_periods=1).mean())
 
     # Sort again for away calculations
-    df = df.sort_values(["SEASON_YEAR", "TEAM_ID_TEAM_AWAY", "GAME_DATE"], ascending=True)
+    df = df.sort_values(
+        ["SEASON_YEAR", "TEAM_ID_TEAM_AWAY", "GAME_DATE"], ascending=True
+    )
 
     # Compute rolling average of points conceded away by the away team
-    df["AVG_POINTS_CONCEDED_AWAY_BEFORE_GAME"] = df.groupby(["TEAM_ID_TEAM_AWAY", "SEASON_YEAR"])[
-        "PTS_TEAM_HOME"
-    ].transform(lambda s: s.shift(1).expanding(min_periods=1).mean())
+    df["AVG_POINTS_CONCEDED_AWAY_BEFORE_GAME"] = df.groupby(
+        ["TEAM_ID_TEAM_AWAY", "SEASON_YEAR"]
+    )["PTS_TEAM_HOME"].transform(lambda s: s.shift(1).expanding(min_periods=1).mean())
     df = df.sort_values("GAME_DATE", ascending=False)
     return df
 
@@ -381,7 +408,11 @@ def compute_trend_slope(df, parameter="PTS", window=10):
         # Apply the function per team, shifting by 1 to exclude the current game
         trend_series = (
             df.groupby(f"TEAM_ID_{field}")[param]
-            .apply(lambda s: s.shift(1).rolling(window, min_periods=2).apply(calculate_slope, raw=True))
+            .apply(
+                lambda s: s.shift(1)
+                .rolling(window, min_periods=2)
+                .apply(calculate_slope, raw=True)
+            )
             .reset_index(level=0, drop=True)
         )  # Reset index to align with df
 
@@ -394,66 +425,67 @@ def compute_trend_slope(df, parameter="PTS", window=10):
     return df
 
 
-
-
 def create_df_players_new_game(games_original, df_players_original):
     games = games_original.copy()
     df_players = df_players_original.copy()
-    games = games.rename(columns={'SEASON': 'SEASON_YEAR'})
+    games = games.rename(columns={"SEASON": "SEASON_YEAR"})
 
-    games['SEASON_ID'] = games.apply(lambda x: f"{x['GAME_ID'][3]}{x['SEASON_YEAR']}", axis=1)
-    games = games.rename(columns = {'GAME_DATE_EST': 'GAME_DATE'})
-    games['GAME_DATE'] = pd.to_datetime(games['GAME_DATE'])
-
-
-    cols_to_keep = ['SEASON_ID', 'SEASON_YEAR', 'GAME_DATE', 'GAME_ID']
-
-    games_home = (
-        games[cols_to_keep + ['HOME_TEAM_ID']]
-        .rename(columns={'HOME_TEAM_ID': 'TEAM_ID'})
+    games["SEASON_ID"] = games.apply(
+        lambda x: f"{x['GAME_ID'][3]}{x['SEASON_YEAR']}", axis=1
     )
-    games_away = (
-        games[cols_to_keep + ['VISITOR_TEAM_ID']]
-        .rename(columns={'VISITOR_TEAM_ID': 'TEAM_ID'})
+    games = games.rename(columns={"GAME_DATE_EST": "GAME_DATE"})
+    games["GAME_DATE"] = pd.to_datetime(games["GAME_DATE"])
+
+    cols_to_keep = ["SEASON_ID", "SEASON_YEAR", "GAME_DATE", "GAME_ID"]
+
+    games_home = games[cols_to_keep + ["HOME_TEAM_ID"]].rename(
+        columns={"HOME_TEAM_ID": "TEAM_ID"}
+    )
+    games_away = games[cols_to_keep + ["VISITOR_TEAM_ID"]].rename(
+        columns={"VISITOR_TEAM_ID": "TEAM_ID"}
     )
 
     # Combine them into a single DataFrame for "all participating teams in each game"
     games_teams = pd.concat([games_home, games_away], ignore_index=True)
-    games_teams['TEAM_ID'] = games_teams['TEAM_ID'].astype(str)
+    games_teams["TEAM_ID"] = games_teams["TEAM_ID"].astype(str)
 
-    df_players['GAME_DATE'] = pd.to_datetime(df_players["GAME_DATE"], format="%Y-%m-%d")
-    df_players = df_players.sort_values(by=['PLAYER_ID', 'GAME_DATE'])
+    df_players["GAME_DATE"] = pd.to_datetime(df_players["GAME_DATE"], format="%Y-%m-%d")
+    df_players = df_players.sort_values(by=["PLAYER_ID", "GAME_DATE"])
 
     # 3) Group by PLAYER_ID and grab the last row in each group
-    df_last_game = df_players.groupby('PLAYER_ID', as_index=False).tail(1)
-    df_last_game['TEAM_ID'] = df_last_game['TEAM_ID'].astype(str)
+    df_last_game = df_players.groupby("PLAYER_ID", as_index=False).tail(1)
+    df_last_game["TEAM_ID"] = df_last_game["TEAM_ID"].astype(str)
 
-    cols_to_keep= []
+    cols_to_keep = []
     for col in df_last_game.columns:
-        if col =='START_POSITION':
+        if col == "START_POSITION":
             break
         cols_to_keep.append(col)
 
     df_next_game = pd.DataFrame(columns=df_last_game.columns)
     for row in games_teams.itertuples():
-        df_temp = df_last_game[df_last_game['TEAM_ID'] == row.TEAM_ID].copy()
-        #set all to null except cols to keep
+        df_temp = df_last_game[df_last_game["TEAM_ID"] == row.TEAM_ID].copy()
+        # set all to null except cols to keep
         for col in df_temp.columns:
             if col not in cols_to_keep:
                 df_temp[col] = None
 
-        df_temp['GAME_ID'] = row.GAME_ID
-        df_temp['SEASON_ID'] = row.SEASON_ID
-        df_temp['SEASON_YEAR'] = row.SEASON_YEAR
-        df_temp['GAME_DATE'] = row.GAME_DATE
+        df_temp["GAME_ID"] = row.GAME_ID
+        df_temp["SEASON_ID"] = row.SEASON_ID
+        df_temp["SEASON_YEAR"] = row.SEASON_YEAR
+        df_temp["GAME_DATE"] = row.GAME_DATE
         df_next_game = pd.concat([df_next_game, df_temp], ignore_index=True)
-    
+
     return df_next_game
 
 
-
 def create_df_to_predict(
-    data_path: str, date_to_predict: Union[str, datetime],  nba_injury_reports_url: str, reports_path: str = None, df_odds = None, filter_for_date_to_predict: bool = True
+    data_path: str,
+    date_to_predict: Union[str, datetime],
+    nba_injury_reports_url: str,
+    reports_path: str = None,
+    df_odds=None,
+    filter_for_date_to_predict: bool = True,
 ):
     """
     Process all NBA data for the last two seasons and return a DataFrame with the processed data.
@@ -468,14 +500,13 @@ def create_df_to_predict(
 
     seasons = get_last_two_nba_seasons(date_to_predict)
 
-    df,df_players = load_all_nba_data(data_path, seasons=seasons)
+    df, df_players = load_all_nba_data(data_path, seasons=seasons)
 
     df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], format="%Y-%m-%d")
 
     df.sort_values(by="GAME_DATE", ascending=False, inplace=True)
     # df.dropna(inplace=True)
     df.dropna(subset=["PTS"], inplace=True)
-
 
     # convert to string TEAM_ID
     df["TEAM_ID"] = df["TEAM_ID"].astype(str)
@@ -488,7 +519,8 @@ def create_df_to_predict(
     cols_to_adjust = [
         col
         for col in numeric_cols
-        if col not in ["MIN", "PACE_PER40", "SEASON_ID", "TEAM_ID", "GAME_ID", "IS_OVERTIME"]
+        if col
+        not in ["MIN", "PACE_PER40", "SEASON_ID", "TEAM_ID", "GAME_ID", "IS_OVERTIME"]
     ]
     int_cols = df[cols_to_adjust].select_dtypes(include=["int64"]).columns.tolist()
 
@@ -509,33 +541,31 @@ def create_df_to_predict(
     # Remove duplicates and clean dataset
     df.drop_duplicates(subset=["GAME_ID", "TEAM_ID"], keep="first", inplace=True)
     df.dropna(subset=["PTS"], inplace=True)
-    df = df[df['MIN'] != 0]
-    df = df[df['PTS'] > 10]
+    df = df[df["MIN"] != 0]
+    df = df[df["PTS"] > 10]
 
     df.sort_values(by="GAME_DATE", ascending=False, inplace=True)
 
     df = standardize_and_merge_nba_data(df, games)
-    
-    
+
     df.sort_values(by="GAME_DATE", ascending=False, inplace=True)
 
-    
     if df_odds is not None:
         df = merge_teams_df_with_odds(df_odds=df_odds, df_team=df)
-        df['TOTAL_POINTS'] = df.groupby('GAME_ID')['PTS'].transform('sum')
-        df['DIFF_FROM_LINE'] = df['TOTAL_POINTS'] - df['TOTAL_OVER_UNDER_LINE']
+        df["TOTAL_POINTS"] = df.groupby("GAME_ID")["PTS"].transform("sum")
+        df["DIFF_FROM_LINE"] = df["TOTAL_POINTS"] - df["TOTAL_OVER_UNDER_LINE"]
         df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], format="%Y-%m-%d")
-    
-    
+
     valid_games = df["GAME_ID"].value_counts()
-    valid_games = valid_games[valid_games == 2].index  # Keep only games with exactly 2 rows
+    valid_games = valid_games[
+        valid_games == 2
+    ].index  # Keep only games with exactly 2 rows
 
     # Filter dataset to keep only valid GAME_IDs
     df = df[df["GAME_ID"].isin(valid_games)]
 
     df.loc[:, "SEASON_TYPE"] = df["GAME_ID"].apply(classify_season_type)
     df.loc[:, "SEASON_YEAR"] = df["SEASON_ID"].astype(str).str[-4:].astype(int)
-
 
     df = add_last_season_playoff_games(df)
 
@@ -549,14 +579,23 @@ def create_df_to_predict(
     df["GAME_NUMBER"] = df.groupby(group_cols).cumcount() + 1
 
     def compute_wins_losses(df, team_id, season_id, date):
-        filtered_df = df[(df["TEAM_ID"] == team_id) & (df["GAME_DATE"] < date) & (df["SEASON_ID"] == season_id)]
+        filtered_df = df[
+            (df["TEAM_ID"] == team_id)
+            & (df["GAME_DATE"] < date)
+            & (df["SEASON_ID"] == season_id)
+        ]
         wins = (filtered_df["WL"] == "W").sum()
         losses = (filtered_df["WL"] == "L").sum()
         return wins, losses
 
     tqdm.pandas()
     df["WINS_BEFORE_THIS_GAME"], df["LOSSES_BEFORE_THIS_GAME"] = zip(
-        *df.progress_apply(lambda x: compute_wins_losses(df, x["TEAM_ID"], x["SEASON_ID"], x["GAME_DATE"]), axis=1)
+        *df.progress_apply(
+            lambda x: compute_wins_losses(
+                df, x["TEAM_ID"], x["SEASON_ID"], x["GAME_DATE"]
+            ),
+            axis=1,
+        )
     )
 
     df["TEAM_RECORD_BEFORE_GAME"] = df["WINS_BEFORE_THIS_GAME"] / (
@@ -566,7 +605,9 @@ def create_df_to_predict(
 
     # Compute rest days between matches
     df = df.sort_values(["TEAM_ID", "GAME_DATE"])
-    df["REST_DAYS_BEFORE_MATCH"] = df.groupby("TEAM_ID")["GAME_DATE"].diff().dt.days.fillna(0).astype(int)
+    df["REST_DAYS_BEFORE_MATCH"] = (
+        df.groupby("TEAM_ID")["GAME_DATE"].diff().dt.days.fillna(0).astype(int)
+    )
     df.sort_values(by="GAME_DATE", ascending=False, inplace=True)
 
     # Compute rolling statistics
@@ -592,36 +633,39 @@ def create_df_to_predict(
     ]
 
     cols_to_average_odds = [
-    "TOTAL_OVER_UNDER_LINE",
-    "DIFF_FROM_LINE",
-    "TOTAL_POINTS",
-    "MONEYLINE",
-    "SPREAD"
-    ] 
+        "TOTAL_OVER_UNDER_LINE",
+        "DIFF_FROM_LINE",
+        "TOTAL_POINTS",
+        "MONEYLINE",
+        "SPREAD",
+    ]
 
-    for col in tqdm(cols_to_average+ cols_to_average_odds, desc="Computing rolling stats"):
+    for col in tqdm(
+        cols_to_average + cols_to_average_odds, desc="Computing rolling stats"
+    ):
         df = compute_rolling_stats(df, col, window=5, season_avg=True)
-        if col == 'PTS' or col == 'TOTAL_POINTS' or col == 'TOTAL_OVER_UNDER_LINE':
+        if col == "PTS" or col == "TOTAL_POINTS" or col == "TOTAL_OVER_UNDER_LINE":
             df = compute_rolling_weighted_stats(df, col)
 
-    df = compute_season_std(df, param='PTS')
-    df = compute_season_std(df, param='TOTAL_POINTS')
-    df = compute_season_std(df, param='TOTAL_OVER_UNDER_LINE')
-    df = compute_season_std(df, param='DIFF_FROM_LINE')
+    df = compute_season_std(df, param="PTS")
+    df = compute_season_std(df, param="TOTAL_POINTS")
+    df = compute_season_std(df, param="TOTAL_OVER_UNDER_LINE")
+    df = compute_season_std(df, param="DIFF_FROM_LINE")
 
-    
     df_players = df_players.merge(
-        df[['GAME_ID', 'GAME_DATE', 'SEASON_ID', 'SEASON_YEAR']], 
-        on='GAME_ID', 
-        how='left'
+        df[["GAME_ID", "GAME_DATE", "SEASON_ID", "SEASON_YEAR"]],
+        on="GAME_ID",
+        how="left",
     )
-    df_players = df_players.dropna(subset = 'GAME_DATE')
+    df_players = df_players.dropna(subset="GAME_DATE")
 
     df_players["GAME_DATE"] = pd.to_datetime(df_players["GAME_DATE"], format="%Y-%m-%d")
     df_players["MIN"] = df_players["MIN"].astype(str)
 
     # Extract minutes (XX) and seconds (YY) separately
-    df_players[["MINUTES", "SECONDS"]] = df_players["MIN"].str.extract(r"^(\d+\.?\d*):?(\d*)$")
+    df_players[["MINUTES", "SECONDS"]] = df_players["MIN"].str.extract(
+        r"^(\d+\.?\d*):?(\d*)$"
+    )
 
     # Convert to float (handle empty second values as 0)
     df_players["MINUTES"] = df_players["MINUTES"].astype(float)
@@ -636,66 +680,98 @@ def create_df_to_predict(
 
     df_players = df_players.drop_duplicates()
     df = df.drop_duplicates()
-    
-    
+
     ##### here add PLAYER INJURIES and STATS
 
     rows_new_game = create_df_players_new_game(games, df_players)
-    
+
     df_players = pd.concat([df_players, rows_new_game], ignore_index=True)
-    
+
     df_players.sort_values(by="GAME_DATE", ascending=False, inplace=True)
-    
-    injury_report_df = retrieve_injury_report_as_df(nba_injury_reports_url, reports_path=reports_path)
-    
+
+    injury_report_df = retrieve_injury_report_as_df(
+        nba_injury_reports_url, reports_path=reports_path
+    )
+
     injury_dict, games_not_updated = process_injury_data(games, injury_report_df)
-    
-    stats = ['PTS','PACE_PER40', 'DEF_RATING', 'OFF_RATING', 'TS_PCT']
+
+    stats = ["PTS", "PACE_PER40", "DEF_RATING", "OFF_RATING", "TS_PCT"]
     # Add a row of the new game for players
-    
-    df = attach_top3_stats(df, df_players, injury_dict, stats, game_date_limit=date_to_predict)
+
+    df = attach_top3_stats(
+        df, df_players, injury_dict, stats, game_date_limit=date_to_predict
+    )
 
     # Sum injured players' points into a new column
-    df['TOTAL_INJURED_PLAYER_PTS_BEFORE'] = df[
-        ['TOP1_INJURED_PLAYER_PTS', 'TOP2_INJURED_PLAYER_PTS', 'TOP3_INJURED_PLAYER_PTS']
-    ].sum(axis=1, skipna=True).fillna(0)
+    df["TOTAL_INJURED_PLAYER_PTS_BEFORE"] = (
+        df[
+            [
+                "TOP1_INJURED_PLAYER_PTS",
+                "TOP2_INJURED_PLAYER_PTS",
+                "TOP3_INJURED_PLAYER_PTS",
+            ]
+        ]
+        .sum(axis=1, skipna=True)
+        .fillna(0)
+    )
 
     # Rename columns that start with 'TOP' by adding '_BEFORE' at the end
-    df.rename(columns=lambda x: f"{x}_BEFORE" if x.startswith("TOP") else x, inplace=True)
+    df.rename(
+        columns=lambda x: f"{x}_BEFORE" if x.startswith("TOP") else x, inplace=True
+    )
 
     # Add '_BEFORE' suffix to specified AVG_INJURED_* columns
     avg_injured_cols = [
-        'AVG_INJURED_PTS',
-        'AVG_INJURED_PACE_PER40',
-        'AVG_INJURED_DEF_RATING',
-        'AVG_INJURED_OFF_RATING',
-        'AVG_INJURED_TS_PCT'
+        "AVG_INJURED_PTS",
+        "AVG_INJURED_PACE_PER40",
+        "AVG_INJURED_DEF_RATING",
+        "AVG_INJURED_OFF_RATING",
+        "AVG_INJURED_TS_PCT",
     ]
 
     df.rename(columns={col: f"{col}_BEFORE" for col in avg_injured_cols}, inplace=True)
-    df['STAR_OFFENSIVE_RATIO_IMPROVEMENT_BEFORE'] = df['TOP1_PLAYER_OFF_RATING_BEFORE'] /df['OFF_RATING_SEASON_BEFORE_AVG'] 
-    df['STAR_PTS_PERCENTAGE_BEFORE'] = df['TOP1_PLAYER_PTS_BEFORE'] /df['PTS_SEASON_BEFORE_AVG'] 
-
+    df["STAR_OFFENSIVE_RATIO_IMPROVEMENT_BEFORE"] = (
+        df["TOP1_PLAYER_OFF_RATING_BEFORE"] / df["OFF_RATING_SEASON_BEFORE_AVG"]
+    )
+    df["STAR_PTS_PERCENTAGE_BEFORE"] = (
+        df["TOP1_PLAYER_PTS_BEFORE"] / df["PTS_SEASON_BEFORE_AVG"]
+    )
 
     # Fill NaNs in injured player columns with zeros
-    injured_player_cols = [col for col in df.columns if 'INJURED_PLAYER' in col]
+    injured_player_cols = [col for col in df.columns if "INJURED_PLAYER" in col]
     df[injured_player_cols] = df[injured_player_cols].fillna(0)
 
     # Append '_BEFORE' to renamed columns if starting with 'TOP' (already done)
     # (Your original columns already include "_BEFORE", if required to add more explicitly, adjust as below)
-    df.rename(columns={
-        col: f"{col}_BEFORE" for col in df.columns if col.startswith('TOP') and not col.endswith('_BEFORE')
-    }, inplace=True)
-        
-    
-    
+    df.rename(
+        columns={
+            col: f"{col}_BEFORE"
+            for col in df.columns
+            if col.startswith("TOP") and not col.endswith("_BEFORE")
+        },
+        inplace=True,
+    )
+
     # Merge home and away stats
-    static_columns = ["SEASON_ID", "GAME_ID", "GAME_DATE", "SEASON_TYPE", "SEASON_YEAR", "IS_OVERTIME"]
+    static_columns = [
+        "SEASON_ID",
+        "GAME_ID",
+        "GAME_DATE",
+        "SEASON_TYPE",
+        "SEASON_YEAR",
+        "IS_OVERTIME",
+    ]
 
     df_home = df[df["HOME"]].copy().drop(columns="HOME")
     df_away = df[~df["HOME"]].copy().drop(columns="HOME")
 
-    df_merged = pd.merge(df_home, df_away, on=static_columns, how="inner", suffixes=("_TEAM_HOME", "_TEAM_AWAY"))
+    df_merged = pd.merge(
+        df_home,
+        df_away,
+        on=static_columns,
+        how="inner",
+        suffixes=("_TEAM_HOME", "_TEAM_AWAY"),
+    )
     df_merged["TOTAL_POINTS"] = df_merged.PTS_TEAM_HOME + df_merged.PTS_TEAM_AWAY
 
     df_merged = df_merged[
@@ -704,29 +780,34 @@ def create_df_to_predict(
         & (df_merged["SEASON_TYPE"] != "In-Season Tournament")
     ]
 
-    df_merged["IS_PLAYOFF_GAME"] = df_merged["SEASON_ID"].astype(str).str.startswith("4").astype(int)
-    df_merged['TOTAL_OVER_UNDER_LINE'] = df_merged['TOTAL_OVER_UNDER_LINE_TEAM_HOME']
-    df_merged['SPREAD'] = df_merged['SPREAD_TEAM_HOME']
-        
-        
+    df_merged["IS_PLAYOFF_GAME"] = (
+        df_merged["SEASON_ID"].astype(str).str.startswith("4").astype(int)
+    )
+    df_merged["TOTAL_OVER_UNDER_LINE"] = df_merged["TOTAL_OVER_UNDER_LINE_TEAM_HOME"]
+    df_merged["SPREAD"] = df_merged["SPREAD_TEAM_HOME"]
+
     # Apply function
     df_merged = compute_home_points_conceded_avg(df_merged)
     df_merged["DIFERENCE_POINTS_CONCEDED_VS_EXPECTED_BEFORE_HOME_GAME"] = (
-        df_merged["PTS_SEASON_BEFORE_AVG_TEAM_AWAY"] - df_merged["AVG_POINTS_CONCEDED_AT_HOME_BEFORE_GAME"]
+        df_merged["PTS_SEASON_BEFORE_AVG_TEAM_AWAY"]
+        - df_merged["AVG_POINTS_CONCEDED_AT_HOME_BEFORE_GAME"]
     )
     df_merged["DIFERENCE_POINTS_CONCEDED_VS_EXPECTED_BEFORE_AWAY_GAME"] = (
-        df_merged["PTS_SEASON_BEFORE_AVG_TEAM_HOME"] - df_merged["AVG_POINTS_CONCEDED_AWAY_BEFORE_GAME"]
+        df_merged["PTS_SEASON_BEFORE_AVG_TEAM_HOME"]
+        - df_merged["AVG_POINTS_CONCEDED_AWAY_BEFORE_GAME"]
     )
 
     df_merged = compute_differences_in_points_conceeded_anotated(df_merged)
-    df_merged['TEAMS_DIFFERENCE_OVER_UNDER_LINE_BEFORE'] = (
-        df_merged['TOTAL_OVER_UNDER_LINE_SEASON_BEFORE_AVG_TEAM_HOME'] - df_merged['TOTAL_OVER_UNDER_LINE_SEASON_BEFORE_AVG_TEAM_AWAY']
+    df_merged["TEAMS_DIFFERENCE_OVER_UNDER_LINE_BEFORE"] = (
+        df_merged["TOTAL_OVER_UNDER_LINE_SEASON_BEFORE_AVG_TEAM_HOME"]
+        - df_merged["TOTAL_OVER_UNDER_LINE_SEASON_BEFORE_AVG_TEAM_AWAY"]
     )
-
 
     tqdm.pandas()
     # Apply row-by-row, returning a Series of dictionaries
-    results_series = df_merged.progress_apply(lambda row: get_last_5_matchup_excluding_current(row, df_merged), axis=1)
+    results_series = df_merged.progress_apply(
+        lambda row: get_last_5_matchup_excluding_current(row, df_merged), axis=1
+    )
 
     # Convert that Series of dicts into a DataFrame
     results_df = pd.DataFrame(results_series.tolist(), index=df_merged.index)
@@ -738,13 +819,24 @@ def create_df_to_predict(
     # Compute trends using linear regression
     df_merged = compute_trend_slope(df_merged, parameter="PTS", window=5)
     df_merged = compute_trend_slope(df_merged, parameter="TS_PCT", window=5)
-    df_merged = compute_trend_slope(df_merged, parameter="TOTAL_OVER_UNDER_LINE", window=5)
+    df_merged = compute_trend_slope(
+        df_merged, parameter="TOTAL_OVER_UNDER_LINE", window=5
+    )
     df_merged = df_merged.sort_values(by="GAME_DATE", ascending=False)
 
-    columns = ["TEAM_ID", "TEAM_CITY", "TEAM_ABBREVIATION", "TEAM_NAME", "MATCHUP", "GAME_NUMBER"]
+    columns = [
+        "TEAM_ID",
+        "TEAM_CITY",
+        "TEAM_ABBREVIATION",
+        "TEAM_NAME",
+        "MATCHUP",
+        "GAME_NUMBER",
+    ]
 
     # Generate new list with _HOME and _AWAY appended
-    columns_info_before = [f"{col}_TEAM_HOME" for col in columns] + [f"{col}_TEAM_AWAY" for col in columns]
+    columns_info_before = [f"{col}_TEAM_HOME" for col in columns] + [
+        f"{col}_TEAM_AWAY" for col in columns
+    ]
 
     columns_info_before.extend(
         [
@@ -762,20 +854,20 @@ def create_df_to_predict(
     # insert columns that have BEFORE in the name
     columns_info_before.extend([col for col in df_merged.columns if "BEFORE" in col])
 
-
     odds_columns = [
         "TOTAL_OVER_UNDER_LINE",
         "SPREAD",
-        'MONEYLINE_TEAM_HOME', 'MONEYLINE_TEAM_AWAY'
+        "MONEYLINE_TEAM_HOME",
+        "MONEYLINE_TEAM_AWAY",
     ]
 
     columns_info_before.extend(odds_columns)
 
-
     df_to_predict = df_merged[columns_info_before + ["TOTAL_POINTS"]].copy()
     df_to_predict = df_to_predict[df_to_predict["SEASON_TYPE"] != "Preseason"]
     df_to_predict["TOTAL_PTS_SEASON_BEFORE_AVG"] = (
-        df_to_predict["PTS_SEASON_BEFORE_AVG_TEAM_HOME"] + df_to_predict["PTS_SEASON_BEFORE_AVG_TEAM_AWAY"]
+        df_to_predict["PTS_SEASON_BEFORE_AVG_TEAM_HOME"]
+        + df_to_predict["PTS_SEASON_BEFORE_AVG_TEAM_AWAY"]
     )
 
     df_to_predict["TOTAL_PTS_LAST_GAMES_AVG"] = (
@@ -783,9 +875,9 @@ def create_df_to_predict(
         + df_to_predict["PTS_LAST_HOME_AWAY_5_MATCHES_BEFORE_TEAM_AWAY"]
     )
 
-    df_to_predict["BACK_TO_BACK"] = (df_to_predict["REST_DAYS_BEFORE_MATCH_TEAM_AWAY"] == 1) & (
-        df_to_predict["REST_DAYS_BEFORE_MATCH_TEAM_HOME"] == 1
-    )
+    df_to_predict["BACK_TO_BACK"] = (
+        df_to_predict["REST_DAYS_BEFORE_MATCH_TEAM_AWAY"] == 1
+    ) & (df_to_predict["REST_DAYS_BEFORE_MATCH_TEAM_HOME"] == 1)
 
     df_to_predict["DIFERENCE_HOME_OFF_AWAY_DEF_BEFORE_MATCH"] = (
         df_to_predict["OFF_RATING_LAST_HOME_AWAY_5_MATCHES_BEFORE_TEAM_HOME"]
@@ -797,11 +889,15 @@ def create_df_to_predict(
     )
 
     df_to_predict.loc[df_to_predict["MATCHUP_TEAM_HOME"] == 0, "MATCHUP_TEAM_HOME"] = (
-        df_to_predict["TEAM_ABBREVIATION_TEAM_HOME"] + " vs. " + df_to_predict["TEAM_ABBREVIATION_TEAM_AWAY"]
+        df_to_predict["TEAM_ABBREVIATION_TEAM_HOME"]
+        + " vs. "
+        + df_to_predict["TEAM_ABBREVIATION_TEAM_AWAY"]
     )
 
     df_to_predict.loc[df_to_predict["MATCHUP_TEAM_AWAY"] == 0, "MATCHUP_TEAM_AWAY"] = (
-        df_to_predict["TEAM_ABBREVIATION_TEAM_AWAY"] + " @ " + df_to_predict["TEAM_ABBREVIATION_TEAM_HOME"]
+        df_to_predict["TEAM_ABBREVIATION_TEAM_AWAY"]
+        + " @ "
+        + df_to_predict["TEAM_ABBREVIATION_TEAM_HOME"]
     )
     # filter for date_to_predict
     if isinstance(date_to_predict, str):
@@ -809,19 +905,25 @@ def create_df_to_predict(
 
     if filter_for_date_to_predict:
         df_to_predict = df_to_predict[df_to_predict["GAME_DATE"] == date_to_predict]
-        assert (df_to_predict["TOTAL_POINTS"] == 0).all(), "Error: TOTAL_POINTS contains non-zero values!"
+        assert (
+            df_to_predict["TOTAL_POINTS"] == 0
+        ).all(), "Error: TOTAL_POINTS contains non-zero values!"
         df_to_predict.drop(columns=["TOTAL_POINTS"], inplace=True)
     df_to_predict.drop(columns=["IS_OVERTIME"], inplace=True)
-    
+
     # df_to_predict['TOTAL_OVER_UNDER_LINE'] = None
-    first_col = 'TOTAL_OVER_UNDER_LINE'
-    df_to_predict = df_to_predict[[first_col] + [col for col in df_to_predict.columns if col != first_col]]
+    first_col = "TOTAL_OVER_UNDER_LINE"
+    df_to_predict = df_to_predict[
+        [first_col] + [col for col in df_to_predict.columns if col != first_col]
+    ]
 
     # add INJURIES NOT YET SUBMITTED to games games_not_updated in TOTAL_OVER_UNDER_LINE
     if games_not_updated is not None:
         for game_id in games_not_updated:
-            df_to_predict.loc[df_to_predict["GAME_ID"] == game_id, "TOTAL_OVER_UNDER_LINE"] = 'INJURIES NOT YET SUBMITTED'
-    
+            df_to_predict.loc[
+                df_to_predict["GAME_ID"] == game_id, "TOTAL_OVER_UNDER_LINE"
+            ] = "INJURIES NOT YET SUBMITTED"
+
     print()
     print("--" * 20)
     print(f"Processed data for {date_to_predict.date()}")
@@ -835,9 +937,13 @@ if __name__ == "__main__":
     # Constants
     DATA_PATH = "/home/adrian_alvarez/Projects/NBA-predictor/data/"
     OUTPUT_PATH = "/home/adrian_alvarez/Projects/NBA-predictor/injury_reports/"
-    NBA_INJURY_REPORTS_URL = "https://official.nba.com/nba-injury-report-2024-25-season/"
+    NBA_INJURY_REPORTS_URL = (
+        "https://official.nba.com/nba-injury-report-2024-25-season/"
+    )
 
     # get today
     date_to_predict = datetime.now().strftime("%Y-%m-%d")
-    df_to_predict = create_df_to_predict(DATA_PATH, date_to_predict, NBA_INJURY_REPORTS_URL, OUTPUT_PATH)
+    df_to_predict = create_df_to_predict(
+        DATA_PATH, date_to_predict, NBA_INJURY_REPORTS_URL, OUTPUT_PATH
+    )
     df_to_predict
