@@ -21,6 +21,8 @@ from .constants import (  # Team mappings; Season types; Game configuration; Sta
     WEIGHTED_MA_WEIGHTS,
     WEIGHTED_ROLLING_WINDOW,
 )
+from .legend import LEGEND
+from .settings import Settings, get_settings, settings
 
 __all__ = [
     # Team mappings
@@ -44,4 +46,10 @@ __all__ = [
     "TEAM_CONVERSION_DICT",
     "TEAM_NAME_EQUIVALENT_DICT",
     "SEASON_TYPE_MAPPING",
+    # Settings
+    "Settings",
+    "settings",
+    "get_settings",
+    # Legend
+    "LEGEND",
 ]
