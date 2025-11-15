@@ -460,7 +460,7 @@ def update_odds_df(date_to_predict,odds_folder, df_name, season_to_download, ODD
     return df_odds
 
 if __name__ == "__main__":
-
+    ODDS_API_KEY = ''
     odds_folder = '/home/adrian_alvarez/Projects/NBA-predictor/odds_data/'
 
     df_name = "odds_data.csv"
