@@ -4,6 +4,7 @@ NBA Over/Under Predictor - Games Database Management Package
 This package contains utilities for fetching and updating NBA game data from the NBA API.
 """
 
+from .update_database import update_database
 from .update_database_utils import (
     classify_season_type,
     fetch_box_score_data,
@@ -14,6 +15,7 @@ from .update_database_utils import (
 )
 
 __all__ = [
+    "update_database",
     "get_nba_season_to_update",
     "reset_nba_http_session",
     "classify_season_type",

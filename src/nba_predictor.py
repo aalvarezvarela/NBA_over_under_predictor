@@ -17,10 +17,10 @@ Usage:
 import argparse
 from datetime import datetime
 
-from config import LEGEND, settings
-from data_processing import create_df_to_predict
-from fetch_data.manage_games_database import update_database
-from models import predict_nba_games, save_predictions_to_excel
+from .config import LEGEND, settings
+from .data_processing import create_df_to_predict
+from .fetch_data.manage_games_database import update_database
+from .models import predict_nba_games, save_predictions_to_excel
 
 
 def print_step_header(step_number: int, title: str) -> None:

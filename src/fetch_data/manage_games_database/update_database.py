@@ -23,7 +23,9 @@ def load_existing_data(filepath: str, dtype: dict):
 
 
 def update_database(database_folder: str):
-    # from .update_database_utils import fetch_nba_data, get_nba_season_to_update  # Try to sort the 300 games block issue
+    from .update_database_utils import fetch_nba_data, get_nba_season_to_update
+
+    # Try to sort the 300 games block issue
     remove_modules = [
         module
         for module in sys.modules
@@ -56,8 +58,6 @@ def update_database(database_folder: str):
     # Remove `update_database_utils` module if it exists
     if "src.update_database_utils" in sys.modules:
         del sys.modules["src.update_database_utils"]
-
-    from update_database_utils import fetch_nba_data, get_nba_season_to_update
 
     # Get Season to Update
     season_nullable = get_nba_season_to_update()
