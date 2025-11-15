@@ -68,10 +68,10 @@ def update_database(database_folder: str):
 
     # Load existing team and player data if available
     input_df = load_existing_data(
-        database_folder + teams_filename, dtype={"GAME_ID": str}
+        database_folder + "/" + teams_filename, dtype={"GAME_ID": str}
     )
     input_player_df = load_existing_data(
-        database_folder + players_filename, dtype={"GAME_ID": str}
+        database_folder + "/" + players_filename, dtype={"GAME_ID": str}
     )
 
     team_df, players_df, limit_reached = fetch_nba_data(

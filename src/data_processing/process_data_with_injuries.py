@@ -16,7 +16,11 @@ from nba_api.stats.endpoints import ScoreboardV2
 from scipy.stats import linregress
 from tqdm import tqdm
 
-from ..fetch_data.manage_odds_data.update_odds_utils import merge_teams_df_with_odds
+try:
+    from ..fetch_data.manage_odds_data.update_odds_utils import merge_teams_df_with_odds
+except ImportError:
+    from fetch_data.manage_odds_data.update_odds_utils import merge_teams_df_with_odds
+
 from .injury_processing import process_injury_data, retrieve_injury_report_as_df
 from .statistics import (
     attach_top3_stats,

@@ -14,7 +14,12 @@ import requests
 from nba_api.stats.endpoints import LeagueGameFinder
 from tqdm import tqdm
 
-from ...config.constants import TEAM_NAME_STANDARDIZATION as TEAM_NAME_EQUIVALENT_DICT
+try:
+    from ...config.constants import (
+        TEAM_NAME_STANDARDIZATION as TEAM_NAME_EQUIVALENT_DICT,
+    )
+except ImportError:
+    from config.constants import TEAM_NAME_STANDARDIZATION as TEAM_NAME_EQUIVALENT_DICT
 
 
 def get_events_for_date(sport_id, date, BASE_URL, HEADERS):

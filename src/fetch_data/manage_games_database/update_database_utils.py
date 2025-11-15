@@ -14,13 +14,16 @@ import pandas as pd
 import requests
 from nba_api.library.http import NBAHTTP
 from nba_api.stats.endpoints import (
-    BoxScoreAdvancedV2,
+    BoxScoreAdvancedV3,
     BoxScoreTraditionalV2,
     LeagueGameFinder,
 )
 from tqdm import tqdm
 
-from ...config.constants import SEASON_TYPE_MAP as SEASON_TYPE_MAPPING
+try:
+    from ...config.constants import SEASON_TYPE_MAP as SEASON_TYPE_MAPPING
+except ImportError:
+    from config.constants import SEASON_TYPE_MAP as SEASON_TYPE_MAPPING
 
 
 def get_nba_season_to_update():
@@ -72,7 +75,7 @@ def fetch_box_score_data(game_id: str, n_tries: int = 3):
     box_score_traditional = None
     box_score_advanced = None
 
-    for api_call in [BoxScoreTraditionalV2, BoxScoreAdvancedV2]:
+    for api_call in [BoxScoreTraditionalV2, BoxScoreAdvancedV3]:
         attempts = 0
         time.sleep(random.uniform(0.1, 0.3))  # Avoid rate limiting
 
@@ -82,7 +85,7 @@ def fetch_box_score_data(game_id: str, n_tries: int = 3):
 
                 if api_call == BoxScoreTraditionalV2:
                     box_score_traditional = data
-                elif api_call == BoxScoreAdvancedV2:
+                elif api_call == BoxScoreAdvancedV3:
                     box_score_advanced = data
 
                 break  # Exit the retry loop for this API call if successful

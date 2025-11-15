@@ -18,7 +18,10 @@ from bs4 import BeautifulSoup
 from nba_api.stats.endpoints import commonplayerinfo
 from nba_api.stats.static import players, teams
 
-from ..config.constants import TEAM_ID_MAP as TEAM_CONVERSION_DICT
+try:
+    from ..config.constants import TEAM_ID_MAP as TEAM_CONVERSION_DICT
+except ImportError:
+    from config.constants import TEAM_ID_MAP as TEAM_CONVERSION_DICT
 
 date_pattern = re.compile(r"^\d{2}/\d{2}/\d{4}$")  # e.g. 03/11/2025
 time_pattern = re.compile(r"^\d{2}:\d{2} \(ET\)$")  # e.g. 07:00 (ET)

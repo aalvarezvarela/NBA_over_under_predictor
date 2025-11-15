@@ -10,7 +10,10 @@ import pickle
 
 import pandas as pd
 
-from ..config.settings import settings
+try:
+    from ..config.settings import settings
+except ImportError:
+    from config.settings import settings
 
 
 def predict_nba_games(

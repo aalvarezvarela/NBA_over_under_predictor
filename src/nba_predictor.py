@@ -10,17 +10,28 @@ It orchestrates the entire prediction pipeline:
 5. Exports results to Excel
 
 Usage:
-    python nba_predictor.py                    # Predict for today
-    python nba_predictor.py -d 2025-01-15     # Predict for specific date
+    From project root: python -m src.nba_predictor
+    From src folder:   python nba_predictor.py
+    With date:         python nba_predictor.py -d 2025-01-15
 """
 
 import argparse
+import sys
 from datetime import datetime
+from pathlib import Path
 
-from .config import LEGEND, settings
-from .data_processing import create_df_to_predict
-from .fetch_data.manage_games_database import update_database
-from .models import predict_nba_games, save_predictions_to_excel
+# Add parent directory to path if running from src folder
+if __name__ == "__main__":
+    # Get the directory containing this script
+    current_dir = Path(__file__).parent
+    # If we're in the src directory, add it to sys.path
+    if current_dir.name == "src" and str(current_dir) not in sys.path:
+        sys.path.insert(0, str(current_dir))
+
+from config import LEGEND, settings
+from data_processing import create_df_to_predict
+from fetch_data.manage_games_database import update_database
+from models import predict_nba_games, save_predictions_to_excel
 
 
 def print_step_header(step_number: int, title: str) -> None:
