@@ -501,10 +501,13 @@ def create_df_to_predict(
         pd.DataFrame: A DataFrame containing the processed NBA data.
     """
     games = get_schedule_games(date_to_predict)
+    if games.empty:
+        print("No games found for the specified date.")
+        raise ValueError("No games found for the specified date.")  # Return empty DataFrame if no games found
 
     seasons = get_last_two_nba_seasons(date_to_predict)
 
-    df, df_players = load_all_nba_data(data_path, seasons=seasons)
+    df, df_players = load_all_nba_data(data_path + "/" + 'season_games_data', seasons=seasons)
 
     df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], format="%Y-%m-%d")
 

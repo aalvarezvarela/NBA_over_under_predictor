@@ -17,7 +17,7 @@ Usage:
 
 import argparse
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # Add parent directory to path if running from src folder
@@ -31,6 +31,7 @@ if __name__ == "__main__":
 from config import LEGEND, settings
 from data_processing import create_df_to_predict
 from fetch_data.manage_games_database import update_database
+from fetch_data.manage_odds_data.update_odds import update_odds
 from models import predict_nba_games, save_predictions_to_excel
 
 
@@ -80,13 +81,22 @@ Examples:
 
     # Determine the date to predict
     if args.date:
-        try:
-            date_to_predict = datetime.strptime(args.date, "%Y-%m-%d").strftime(
-                "%Y-%m-%d"
-            )
-        except ValueError:
-            print("❌ Error: Invalid date format. Please use YYYY-MM-DD.")
-            return 1
+        # Handle special keywords
+        if args.date.lower() == "tomorrow":
+            date_to_predict = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+        elif args.date.lower() == "today":
+            date_to_predict = datetime.now().strftime("%Y-%m-%d")
+        else:
+            # Try to parse as a date string
+            try:
+                date_to_predict = datetime.strptime(args.date, "%Y-%m-%d").strftime(
+                    "%Y-%m-%d"
+                )
+            except ValueError:
+                print(
+                    "❌ Error: Invalid date format. Please use YYYY-MM-DD, 'today', or 'tomorrow'."
+                )
+                return 1
     else:
         date_to_predict = datetime.now().strftime("%Y-%m-%d")
 
@@ -96,6 +106,7 @@ Examples:
     print("=" * 60)
     print(f"📅 Prediction Date: {date_to_predict}")
     print(f"📁 Data Folder: {settings.data_folder}")
+    print(f"💰 Odds Data Folder: {settings.odds_data_folder}")
     print(f"🤖 Regressor Model: {settings.regressor_model_path}")
     print(f"🤖 Classifier Model: {settings.classifier_model_path}")
     print(f"📊 Output Folder: {settings.output_path}")
@@ -109,15 +120,31 @@ Examples:
     try:
         # Step 1: Update the database
         print_step_header(1, "Updating Game Database")
-        update_database(str(data_folder))
+        limit = True
+        while limit:
+            limit = update_database(str(data_folder / "season_games_data/"), date = datetime.strptime(date_to_predict, "%Y-%m-%d"))
 
-        # Step 2: Prepare data for prediction
-        print_step_header(2, "Processing Data and Injury Reports")
+        # Step 2: Update odds data
+        print_step_header(2, "Fetching Betting Odds Data")
+        odds_folder = settings.get_absolute_path(settings.odds_data_folder)
+        odds_folder.mkdir(parents=True, exist_ok=True)
+
+        df_odds = update_odds(
+            date_to_predict=date_to_predict,
+            odds_folder=str(odds_folder),
+            ODDS_API_KEY=settings.odds_api_key,
+            BASE_URL=settings.odds_base_url,
+        )
+        print("✓ Odds data updated successfully")
+
+        # Step 3: Prepare data for prediction
+        print_step_header(3, "Processing Data and Injury Reports")
         df_to_predict = create_df_to_predict(
             data_path=str(data_folder),
             date_to_predict=date_to_predict,
             nba_injury_reports_url=settings.nba_injury_reports_url,
             reports_path=str(settings.get_absolute_path(settings.report_path)),
+            df_odds=df_odds,
             filter_for_date_to_predict=True,
         )
 
@@ -128,12 +155,12 @@ Examples:
 
         print(f"✓ Found {len(df_to_predict)} games to predict")
 
-        # Step 3: Generate predictions
-        print_step_header(3, "Generating Predictions")
+        # Step 4: Generate predictions
+        print_step_header(4, "Generating Predictions")
         predictions_dfs = predict_nba_games(df_to_predict)
 
-        # Step 4: Save predictions
-        print_step_header(4, "Saving Results")
+        # Step 5: Save predictions
+        print_step_header(5, "Saving Results")
         output_file = output_dir / f"NBA_predictions_{date_to_predict}.xlsx"
         save_predictions_to_excel(predictions_dfs, str(output_file), LEGEND)
 

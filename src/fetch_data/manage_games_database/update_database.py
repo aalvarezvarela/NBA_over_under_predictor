@@ -22,7 +22,7 @@ def load_existing_data(filepath: str, dtype: dict):
         return None
 
 
-def update_database(database_folder: str):
+def update_database(database_folder: str, date = None):
     from .update_database_utils import fetch_nba_data, get_nba_season_to_update
 
     # Try to sort the 300 games block issue
@@ -59,8 +59,12 @@ def update_database(database_folder: str):
     if "src.update_database_utils" in sys.modules:
         del sys.modules["src.update_database_utils"]
 
+    if not date:
+        from datetime import datetime
+
+        date = datetime.now()
     # Get Season to Update
-    season_nullable = get_nba_season_to_update()
+    season_nullable = get_nba_season_to_update(date)
     teams_filename = f"nba_games_{season_nullable.replace('-', '_')}.csv"
     players_filename = f"nba_players_{season_nullable.replace('-', '_')}.csv"
 
@@ -68,10 +72,10 @@ def update_database(database_folder: str):
 
     # Load existing team and player data if available
     input_df = load_existing_data(
-        database_folder + "/" + teams_filename, dtype={"GAME_ID": str}
+        os.path.join(database_folder, teams_filename), dtype={"GAME_ID": str}
     )
     input_player_df = load_existing_data(
-        database_folder + "/" + players_filename, dtype={"GAME_ID": str}
+        os.path.join(database_folder, players_filename), dtype={"GAME_ID": str}
     )
 
     team_df, players_df, limit_reached = fetch_nba_data(
@@ -83,12 +87,14 @@ def update_database(database_folder: str):
     os.makedirs(database_folder, exist_ok=True)
     # # Save updated data
     if team_df is not None:
-        team_df.to_csv(database_folder + teams_filename, index=False)
-        print(f"Data saved to {database_folder + teams_filename}")
+        teams_path = os.path.join(database_folder, teams_filename)
+        team_df.to_csv(teams_path, index=False)
+        print(f"Data saved to {teams_path}")
 
     if players_df is not None:
-        players_df.to_csv(database_folder + players_filename, index=False)
-        print(f"Data saved to {database_folder + players_filename}")
+        players_path = os.path.join(database_folder, players_filename)
+        players_df.to_csv(players_path, index=False)
+        print(f"Data saved to {players_path}")
 
     print(f"Completed season: {season_nullable}\n" + "-" * 50)
     return limit_reached

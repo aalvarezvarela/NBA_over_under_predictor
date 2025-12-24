@@ -15,23 +15,36 @@ import requests
 from nba_api.library.http import NBAHTTP
 from nba_api.stats.endpoints import (
     BoxScoreAdvancedV3,
-    BoxScoreTraditionalV2,
+    BoxScoreTraditionalV3,
     LeagueGameFinder,
 )
 from tqdm import tqdm
 
 try:
-    from ...config.constants import SEASON_TYPE_MAP as SEASON_TYPE_MAPPING
-except ImportError:
     from config.constants import SEASON_TYPE_MAP as SEASON_TYPE_MAPPING
 
+    from .mapping_v3_v2 import (
+        V3_TO_V2_ADVANCED_PLAYER_MAP,
+        V3_TO_V2_ADVANCED_TEAM_MAP,
+        V3_TO_V2_TRADITIONAL_MAP,
+    )
+except ImportError:
+    from config.constants import SEASON_TYPE_MAP as SEASON_TYPE_MAPPING
+    from mapping_v3_v2 import (
+        V3_TO_V2_ADVANCED_PLAYER_MAP,
+        V3_TO_V2_ADVANCED_TEAM_MAP,
+        V3_TO_V2_TRADITIONAL_MAP,
+    )
 
-def get_nba_season_to_update():
-    today = datetime.today()
-    year = today.year
+
+def get_nba_season_to_update(date):
+    #convert it to date if string
+    if isinstance(date, str):
+        date = datetime.strptime(date, "%Y-%m-%d")
+    year = date.year
 
     # If we are before July, we are still in the previous season
-    if today.month < 11:
+    if date.month < 11:
         season = f"{year-1}-{str(year)[-2:]}"
     else:
         season = f"{year}-{str(year+1)[-2:]}"
@@ -75,7 +88,7 @@ def fetch_box_score_data(game_id: str, n_tries: int = 3):
     box_score_traditional = None
     box_score_advanced = None
 
-    for api_call in [BoxScoreTraditionalV2, BoxScoreAdvancedV3]:
+    for api_call in [BoxScoreTraditionalV3, BoxScoreAdvancedV3]:
         attempts = 0
         time.sleep(random.uniform(0.1, 0.3))  # Avoid rate limiting
 
@@ -83,7 +96,7 @@ def fetch_box_score_data(game_id: str, n_tries: int = 3):
             try:
                 data = api_call(game_id=game_id)
 
-                if api_call == BoxScoreTraditionalV2:
+                if api_call == BoxScoreTraditionalV3:
                     box_score_traditional = data
                 elif api_call == BoxScoreAdvancedV3:
                     box_score_advanced = data
@@ -216,6 +229,12 @@ def fetch_nba_data(
         player_adv = box_score_advanced.get_data_frames()[0].fillna("")
         team_adv = box_score_advanced.get_data_frames()[1].fillna("")
 
+        # Apply V3 to V2 mappings to maintain consistency with historical data
+        player_trad.rename(columns=V3_TO_V2_TRADITIONAL_MAP, inplace=True)
+        team_trad.rename(columns=V3_TO_V2_TRADITIONAL_MAP, inplace=True)
+        player_adv.rename(columns=V3_TO_V2_ADVANCED_PLAYER_MAP, inplace=True)
+        team_adv.rename(columns=V3_TO_V2_ADVANCED_TEAM_MAP, inplace=True)
+
         player_stats, team_stats = merge_stats(
             player_trad, player_adv, team_trad, team_adv, game_id
         )
@@ -254,12 +273,6 @@ def fetch_nba_data(
             [input_df, merged_games], ignore_index=True
         ).drop_duplicates()
 
-    if input_player_stats is not None:
-        player_stats_df = pd.concat(
-            [input_player_stats, player_stats_df], ignore_index=True
-        ).drop_duplicates()
-
-    return merged_games, player_stats_df, limit_reached
     if input_player_stats is not None:
         player_stats_df = pd.concat(
             [input_player_stats, player_stats_df], ignore_index=True

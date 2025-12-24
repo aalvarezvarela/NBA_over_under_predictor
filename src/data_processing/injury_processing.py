@@ -263,6 +263,8 @@ def retrieve_injury_report_as_df(NBA_INJURY_REPORTS_URL, reports_path):
     extracts the data, and saves it to a CSV file.
     """
     game_date = datetime.now().strftime("%Y-%m-%d")
+    # Ensure the reports directory exists
+    os.makedirs(reports_path, exist_ok=True)
     # Get the latest PDF
     pdf_name = f"latest_report_{game_date}.pdf"
     pdf_path = os.path.join(reports_path, pdf_name)
