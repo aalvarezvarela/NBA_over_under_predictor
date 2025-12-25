@@ -90,7 +90,7 @@ def fetch_box_score_data(game_id: str, n_tries: int = 3):
 
     for api_call in [BoxScoreTraditionalV3, BoxScoreAdvancedV3]:
         attempts = 0
-        time.sleep(random.uniform(0.1, 0.3))  # Avoid rate limiting
+        time.sleep(random.uniform(0.01, 0.03))  # Avoid rate limiting
 
         while attempts < n_tries:
             try:
@@ -215,7 +215,7 @@ def fetch_nba_data(
     fetched_counter = 0
 
     for game_id in tqdm(game_ids, desc="Fetching NBA Game Data"):
-        time.sleep(random.uniform(0.5, 1.0))  # Avoid rate limiting
+        time.sleep(random.uniform(0.1, 0.5))  # Avoid rate limiting
 
         box_score_traditional, box_score_advanced, limit_reached = fetch_box_score_data(
             game_id, n_tries
@@ -225,7 +225,7 @@ def fetch_nba_data(
             continue
 
         player_trad = box_score_traditional.get_data_frames()[0].fillna("")
-        team_trad = box_score_traditional.get_data_frames()[1].fillna("")
+        team_trad = box_score_traditional.get_data_frames()[2].fillna("")
         player_adv = box_score_advanced.get_data_frames()[0].fillna("")
         team_adv = box_score_advanced.get_data_frames()[1].fillna("")
 
@@ -243,8 +243,8 @@ def fetch_nba_data(
 
         fetched_counter += 1
         if fetched_counter == 299:
-            print("Waiting 30 secs to avoid rate limit...")
-            time.sleep(30)
+            print("Waiting 5 secs to avoid rate limit...")
+            time.sleep(5)
             reset_nba_http_session()
             limit_reached = True
 

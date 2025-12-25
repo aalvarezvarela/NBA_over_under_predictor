@@ -2,6 +2,7 @@ V3_TO_V2_TRADITIONAL_MAP = {
     # Game / Team identifiers
     "gameId": "GAME_ID",
     "teamId": "TEAM_ID",
+    "teamName": "TEAM_NAME",
     "teamTricode": "TEAM_ABBREVIATION",
     "teamCity": "TEAM_CITY",
     # Player identifiers / names
@@ -29,7 +30,7 @@ V3_TO_V2_TRADITIONAL_MAP = {
     "assists": "AST",
     "steals": "STL",
     "blocks": "BLK",
-    "turnovers": "TO",
+    "turnovers": "TOV",
     "foulsPersonal": "PF",
     "points": "PTS",
     # Plus minus
@@ -40,6 +41,8 @@ V3_TO_V2_ADVANCED_PLAYER_MAP = {
     # IDs / team descriptors
     "gameId": "GAME_ID",
     "teamId": "TEAM_ID",
+    "teamName": "TEAM_NAME",
+
     "teamTricode": "TEAM_ABBREVIATION",
     "teamCity": "TEAM_CITY",
     # Player descriptors
