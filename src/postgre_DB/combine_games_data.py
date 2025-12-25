@@ -29,18 +29,26 @@ def combine_all_nba_games(data_dir, file_prefix="nba_games"):
             print(
                 f"Loaded: {len(df)} rows, {len(df.columns)} columns from {os.path.basename(file)}"
             )
-            #Change "TO" column to "TOV" to avoid conflict with SQL keyword
+
+            # Extract season_year from filename (e.g., nba_players_2024_25.csv -> 2024)
+            filename = os.path.basename(file)
+            # Extract the year portion: nba_players_2024_25.csv -> 2024
+            season_year = filename.split("_")[-2]
+            df["SEASON_YEAR"] = int(season_year)
+            print(f"  Extracted season_year: {season_year}")
+
+            # Change "TO" column to "TOV" to avoid conflict with SQL keyword
             if "TO" in df.columns:
                 df = df.rename(columns={"TO": "TOV"})
             if "teamName" in df.columns:
                 df = df.rename(columns={"teamName": "TEAM_NAME"})
             if file_prefix == "nba_players":
-                #drop columns staring with lower case + TEAM_NAME
+                # drop columns staring with lower case + TEAM_NAME
                 cols_to_drop = [col for col in df.columns if col[0].islower()]
                 df = df.drop(columns=cols_to_drop)
                 if "TEAM_NAME" in df.columns:
                     df = df.drop(columns=["TEAM_NAME"])
-            
+
             dataframes.append(df)
         except Exception as e:
             print(f"Error reading {file}: {e}")

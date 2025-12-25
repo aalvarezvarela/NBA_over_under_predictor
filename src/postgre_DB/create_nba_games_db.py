@@ -72,6 +72,7 @@ def create_table():
         create_table_query = """
         CREATE TABLE nba_games (
             SEASON_ID TEXT NOT NULL,
+            SEASON_YEAR INTEGER NOT NULL,
             TEAM_ID TEXT NOT NULL,
             TEAM_ABBREVIATION VARCHAR(10),
             TEAM_NAME VARCHAR(100),
@@ -125,7 +126,7 @@ def create_table():
             PACE_PER40 NUMERIC(8, 3),
             POSS NUMERIC(8, 3),
             PIE NUMERIC(8, 3),
-            PRIMARY KEY (GAME_ID, TEAM_ID, SEASON_ID)
+            PRIMARY KEY (GAME_ID, TEAM_ID, SEASON_ID, SEASON_YEAR)
         )
         """
 
@@ -161,6 +162,11 @@ def load_data_to_db(df):
 
         # Convert data types
         print("Converting data types...")
+
+        # Extract season_year from SEASON_ID (last 4 digits)
+        if "SEASON_ID" in df.columns:
+            df["SEASON_YEAR"] = df["SEASON_ID"].astype(str).str[-4:].astype(int)
+            print("Extracted season_year from SEASON_ID")
 
         # Handle WL column - replace empty/NaN with None (NULL)
         if "WL" in df.columns:
@@ -241,15 +247,15 @@ def load_data_to_db(df):
 
         print(f"Loading {len(df)} rows into database...")
 
-        # Prepare column names (excluding teamSlug)
+        # Prepare column names (excluding teamSlug) - use lowercase to match PostgreSQL table schema
         columns = [col for col in df.columns if col != "teamSlug"]
-        column_names = ", ".join([f'"{col}"' for col in columns])  # Quote column names
+        column_names = ", ".join([col.lower() for col in columns])
         placeholders = ", ".join(["%s"] * len(columns))
 
         insert_query = f"""
         INSERT INTO nba_games ({column_names})
         VALUES ({placeholders})
-        ON CONFLICT ("GAME_ID", "TEAM_ID", "SEASON_ID") DO NOTHING
+        ON CONFLICT (game_id, team_id, season_id, season_year) DO NOTHING
         """
 
         # Insert data in batches

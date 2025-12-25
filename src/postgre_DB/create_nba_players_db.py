@@ -72,6 +72,7 @@ def create_table():
         create_table_query = """
         CREATE TABLE nba_players (
             game_id TEXT NOT NULL,
+            season_year INTEGER NOT NULL,
             team_id TEXT NOT NULL,
             team_abbreviation VARCHAR(10),
             team_city VARCHAR(50),
@@ -126,7 +127,7 @@ def create_table():
             pace_per40 NUMERIC(8, 3),
             poss NUMERIC(8, 3),
             pie NUMERIC(8, 3),
-            PRIMARY KEY (game_id, team_id, player_id)
+            PRIMARY KEY (game_id, team_id, player_id, season_year)
         )
         """
 
@@ -240,7 +241,7 @@ def load_data_to_db(df):
         insert_query = f"""
         INSERT INTO nba_players ({column_names})
         VALUES ({placeholders})
-        ON CONFLICT (game_id, team_id, player_id) DO NOTHING
+        ON CONFLICT (game_id, team_id, player_id, season_year) DO NOTHING
         """
 
         # Insert data in batches
