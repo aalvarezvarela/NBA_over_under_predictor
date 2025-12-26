@@ -9,7 +9,6 @@ from .db_loader import (
     connect_to_db,
     load_all_nba_data_from_db,
     load_games_from_db,
-    load_odds_from_db,
     load_players_from_db,
 )
 
@@ -17,6 +16,5 @@ __all__ = [
     "load_all_nba_data_from_db",
     "load_games_from_db",
     "load_players_from_db",
-    "load_odds_from_db",
     "connect_to_db",
 ]
