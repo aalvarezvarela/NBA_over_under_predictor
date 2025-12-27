@@ -3,53 +3,36 @@ import os
 import pandas as pd
 import psycopg
 
-# Database configuration
-DB_NAME = "nba_games"
-DB_USER = "adrian_alvarez"
-DB_PASSWORD = "12345"
-DB_HOST = "127.0.0.1"
-DB_PORT = "5432"
+from .db_config import (
+    connect_games_db as connect_app_db,
+)
 
-
-def connect_postgres_db():
-    return psycopg.connect(
-        dbname="postgres",
-        user=DB_USER,
-        password=DB_PASSWORD,
-        host=DB_HOST,
-        port=DB_PORT,
-        autocommit=True,
-    )
-
-
-def connect_app_db():
-    return psycopg.connect(
-        dbname=DB_NAME,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        host=DB_HOST,
-        port=DB_PORT,
-    )
+# Import database configuration from centralized config
+from .db_config import (
+    connect_postgres_db,
+    get_games_db_name,
+)
 
 
 def create_database():
     """Create the PostgreSQL database if it doesn't exist."""
     try:
+        db_name = get_games_db_name()
         # Connect to PostgreSQL server
         conn = connect_postgres_db()
         cursor = conn.cursor()
 
         # Check if database exists
         cursor.execute(
-            "SELECT 1 FROM pg_catalog.pg_database WHERE datname = %s", (DB_NAME,)
+            "SELECT 1 FROM pg_catalog.pg_database WHERE datname = %s", (db_name,)
         )
         exists = cursor.fetchone()
 
         if not exists:
-            cursor.execute(f"CREATE DATABASE {DB_NAME}")
-            print(f"Database '{DB_NAME}' created successfully!")
+            cursor.execute(f"CREATE DATABASE {db_name}")
+            print(f"Database '{db_name}' created successfully!")
         else:
-            print(f"Database '{DB_NAME}' already exists.")
+            print(f"Database '{db_name}' already exists.")
 
         cursor.close()
         conn.close()
@@ -149,15 +132,26 @@ def create_table():
         return False
 
 
-def load_data_to_db(df):
-    """Load the combined dataframe into PostgreSQL."""
+def load_data_to_db(df, conn=None):
+    """Load the combined dataframe into PostgreSQL.
+
+    Args:
+        df: DataFrame to load into the database
+        conn: Optional database connection. If None, creates a new connection.
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    close_conn = False
     try:
         # Remove teamSlug column if it exists
         if "teamSlug" in df.columns:
             df = df.drop(columns=["teamSlug"])
             print("Removed 'teamSlug' column")
 
-        conn = connect_app_db()
+        if conn is None:
+            conn = connect_app_db()
+            close_conn = True
         cursor = conn.cursor()
 
         # Convert data types
@@ -278,13 +272,16 @@ def load_data_to_db(df):
         print(f"Total rows in database: {count}")
 
         cursor.close()
-        conn.close()
+        if close_conn:
+            conn.close()
         return True
     except Exception as e:
         print(f"Error loading data: {e}")
         import traceback
 
         traceback.print_exc()
+        if close_conn and conn:
+            conn.close()
         return False
 
 

@@ -12,33 +12,25 @@ from datetime import datetime
 
 import pandas as pd
 import requests
+from config.constants import SEASON_TYPE_MAP as SEASON_TYPE_MAPPING
 from nba_api.library.http import NBAHTTP
 from nba_api.stats.endpoints import (
     BoxScoreAdvancedV3,
     BoxScoreTraditionalV3,
     LeagueGameFinder,
 )
+from postgre_DB.db_config import connect_games_db, connect_players_db
 from tqdm import tqdm
 
-try:
-    from config.constants import SEASON_TYPE_MAP as SEASON_TYPE_MAPPING
-
-    from .mapping_v3_v2 import (
-        V3_TO_V2_ADVANCED_PLAYER_MAP,
-        V3_TO_V2_ADVANCED_TEAM_MAP,
-        V3_TO_V2_TRADITIONAL_MAP,
-    )
-except ImportError:
-    from config.constants import SEASON_TYPE_MAP as SEASON_TYPE_MAPPING
-    from mapping_v3_v2 import (
-        V3_TO_V2_ADVANCED_PLAYER_MAP,
-        V3_TO_V2_ADVANCED_TEAM_MAP,
-        V3_TO_V2_TRADITIONAL_MAP,
-    )
+from .mapping_v3_v2 import (
+    V3_TO_V2_ADVANCED_PLAYER_MAP,
+    V3_TO_V2_ADVANCED_TEAM_MAP,
+    V3_TO_V2_TRADITIONAL_MAP,
+)
 
 
 def get_nba_season_to_update(date):
-    #convert it to date if string
+    # convert it to date if string
     if isinstance(date, str):
         date = datetime.strptime(date, "%Y-%m-%d")
     year = date.year
@@ -52,6 +44,83 @@ def get_nba_season_to_update(date):
     return season
 
 
+def get_existing_game_ids_from_db(season_year: str, db_connection=None) -> set:
+    """Query existing game IDs from PostgreSQL database for a specific season.
+
+    Args:
+        season_year: The first 4 digits of the season (e.g., '2024')
+        db_connection: Optional database connection. If None, attempts to create one.
+
+    Returns:
+        set: Set of existing game IDs in the database for the given season
+    """
+
+    close_conn = False
+    if db_connection is None:
+        db_connection = connect_games_db()
+        close_conn = True
+
+    cursor = db_connection.cursor()
+
+    # Query distinct game IDs for the season
+    query = """
+        SELECT DISTINCT game_id 
+        FROM nba_games 
+        WHERE season_year = %s
+    """
+    cursor.execute(query, (int(season_year),))
+    game_ids = {row[0] for row in cursor.fetchall()}
+
+    cursor.close()
+    if close_conn:
+        db_connection.close()
+
+    print(f"Found {len(game_ids)} existing games in database for season {season_year}")
+    return game_ids
+
+
+def get_existing_player_game_ids_from_db(season_year: str, db_connection=None) -> set:
+    """Query existing player game IDs from PostgreSQL database for a specific season.
+
+    Args:
+        season_year: The first 4 digits of the season (e.g., '2024')
+        db_connection: Optional database connection. If None, attempts to create one.
+
+    Returns:
+        set: Set of existing game IDs in the player database for the given season
+    """
+    # Try to import DB connection function
+
+    close_conn = False
+    if db_connection is None:
+        try:
+            db_connection = connect_players_db()
+            close_conn = True
+        except Exception as e:
+            print(f"Could not connect to players database: {e}")
+            return set()
+
+    cursor = db_connection.cursor()
+
+    # Query distinct game IDs for the season
+    query = """
+        SELECT DISTINCT game_id 
+        FROM nba_players 
+        WHERE season_year = %s
+    """
+    cursor.execute(query, (int(season_year),))
+    game_ids = {row[0] for row in cursor.fetchall()}
+
+    cursor.close()
+    if close_conn:
+        db_connection.close()
+
+    print(
+        f"Found {len(game_ids)} existing player games in database for season {season_year}"
+    )
+    return game_ids
+
+
 def reset_nba_http_session():
     """Resets the NBA API HTTP session to prevent stale connections."""
     old_session = NBAHTTP.get_session()
@@ -59,22 +128,7 @@ def reset_nba_http_session():
         old_session.close()
     NBAHTTP._session = None
     NBAHTTP.set_session(requests.Session())
-    # reload_nba_api()
 
-
-# import nba_api  # Explicitly import the main package
-
-# def reload_nba_api():
-#     """
-#     Reloads NBA API modules to refresh any changes in the imported classes.
-#     """
-#     importlib.reload(nba_api.library.http)
-#     importlib.reload(nba_api.stats.endpoints)
-
-#     # Re-import the necessary classes
-#     global NBAHTTP, BoxScoreAdvancedV2, BoxScoreTraditionalV2, LeagueGameFinder
-#     from nba_api.library.http import NBAHTTP
-#     from nba_api.stats.endpoints import BoxScoreAdvancedV2, BoxScoreTraditionalV2, LeagueGameFinder
 
 
 def classify_season_type(game_id: str) -> str:
@@ -156,6 +210,7 @@ def fetch_nba_data(
     season_nullable: str,
     input_df: pd.DataFrame = None,
     input_player_stats: pd.DataFrame = None,
+    existing_game_ids: set = None,
     n_tries: int = 3,
 ) -> tuple[pd.DataFrame, pd.DataFrame, bool]:
     """
@@ -169,9 +224,12 @@ def fetch_nba_data(
         season_nullable (str): The NBA season in the format 'YYYY-YY' (e.g., '2023-24').
         input_df (pd.DataFrame, optional): An existing DataFrame containing previously fetched game data.
                                            If provided, new game data will be appended, avoiding duplicates.
+                                           Deprecated - use existing_game_ids instead.
         input_player_stats (pd.DataFrame, optional): An existing DataFrame containing previously fetched
                                                      player statistics. If provided, new player stats
                                                      will be appended, avoiding duplicates.
+        existing_game_ids (set, optional): A set of game IDs already present in the database.
+                                           If provided, only games not in this set will be fetched.
         n_tries (int, optional): The number of attempts to fetch each game's box score data in case of failures.
                                  Default is 3.
 
@@ -185,9 +243,9 @@ def fetch_nba_data(
         ValueError: If the `season_nullable` format is incorrect.
 
     Notes:
-        - The function avoids redundant requests by skipping games already present in `input_df`.
+        - The function avoids redundant requests by skipping games already present in `existing_game_ids` or `input_df`.
         - The function introduces a delay between API requests to prevent hitting rate limits.
-        - If the rate limit is reached (299 games fetched), the function pauses for 30 seconds
+        - If the rate limit is reached (299 games fetched), the function pauses for 5 seconds
           and resets the HTTP session before stopping further requests.
     """
 
@@ -202,8 +260,14 @@ def fetch_nba_data(
     games["SEASON_TYPE"] = games["GAME_ID"].apply(classify_season_type)
     games["HOME"] = games["MATCHUP"].str.contains("vs.")
 
-    existing_game_ids = set(input_df["GAME_ID"]) if input_df is not None else set()
-    game_ids = set(games["GAME_ID"]) - existing_game_ids
+    # Determine existing game IDs from provided set or input_df (backward compatibility)
+    if existing_game_ids is not None:
+        existing_ids = existing_game_ids
+
+    else:
+        existing_ids = set()
+
+    game_ids = set(games["GAME_ID"]) - existing_ids
 
     if not game_ids:
         print(
@@ -263,19 +327,38 @@ def fetch_nba_data(
     )
     team_stats_df.rename(columns={"TO": "TOV"}, inplace=True)
 
+    # Extract season year from season_nullable (first 4 digits)
+    season_year = season_nullable[:4]
+
     merged_games = pd.merge(
         games, team_stats_df, on=["GAME_ID", "TEAM_ID"], suffixes=("", "_drop")
     )
     merged_games = merged_games.loc[:, ~merged_games.columns.str.endswith("_drop")]
+    merged_games["SEASON_YEAR"] = season_year
 
     if input_df is not None:
         merged_games = pd.concat(
             [input_df, merged_games], ignore_index=True
-        ).drop_duplicates()
+        ).drop_duplicates(subset=["GAME_ID", "TEAM_ID", "SEASON_ID"], keep="last")
+    else:
+        # Remove duplicates even if no input_df (safety measure)
+        merged_games = merged_games.drop_duplicates(
+            subset=["GAME_ID", "TEAM_ID", "SEASON_ID"], keep="last"
+        )
 
     if input_player_stats is not None:
         player_stats_df = pd.concat(
             [input_player_stats, player_stats_df], ignore_index=True
-        ).drop_duplicates()
+        ).drop_duplicates(subset=["GAME_ID", "PLAYER_ID", "TEAM_ID"], keep="last")
+    else:
+        # Remove duplicates even if no input_player_stats (safety measure)
+        if not player_stats_df.empty:
+            player_stats_df = player_stats_df.drop_duplicates(
+                subset=["GAME_ID", "PLAYER_ID", "TEAM_ID"], keep="last"
+            )
+
+    # Add season_year to player_stats_df if it's not empty
+    if not player_stats_df.empty:
+        player_stats_df["SEASON_YEAR"] = season_year
 
     return merged_games, player_stats_df, limit_reached

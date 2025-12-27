@@ -159,7 +159,9 @@ Examples:
         print_step_header(4, "Generating Predictions")
         predictions_dfs = predict_nba_games(df_to_predict)
 
-        # Step 5: Save predictions
+        # Step 5: Send summary prediction [0] of dataframes to DB
+        
+        # Step 6: Save predictions
         print_step_header(5, "Saving Results")
         output_file = output_dir / f"NBA_predictions_{date_to_predict}.xlsx"
         save_predictions_to_excel(predictions_dfs, str(output_file), LEGEND)

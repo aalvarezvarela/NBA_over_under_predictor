@@ -11,15 +11,10 @@ from collections import Counter
 
 import pandas as pd
 import requests
+from config.constants import TEAM_NAME_STANDARDIZATION as TEAM_NAME_EQUIVALENT_DICT
 from nba_api.stats.endpoints import LeagueGameFinder
+from postgre_DB.db_config import connect_odds_db
 from tqdm import tqdm
-
-try:
-    from ...config.constants import (
-        TEAM_NAME_STANDARDIZATION as TEAM_NAME_EQUIVALENT_DICT,
-    )
-except ImportError:
-    from config.constants import TEAM_NAME_STANDARDIZATION as TEAM_NAME_EQUIVALENT_DICT
 
 
 def get_events_for_date(sport_id, date, BASE_URL, HEADERS):
@@ -38,6 +33,138 @@ def get_events_for_date(sport_id, date, BASE_URL, HEADERS):
 
 def most_common(lst):
     return Counter(lst).most_common(1)[0][0] if lst else None
+
+
+def get_existing_odds_from_db(season_year: str = None) -> pd.DataFrame:
+    """Query existing odds data from PostgreSQL database.
+
+    Args:
+        season_year: Optional season year to filter by. If None, returns all odds.
+
+    Returns:
+        pd.DataFrame: DataFrame containing existing odds data
+    """
+    try:
+        conn = connect_odds_db()
+        cursor = conn.cursor()
+
+        # Query all odds data or filter by season if provided
+        if season_year:
+            # Filter by year in game_date
+            query = """
+                SELECT * FROM nba_odds
+                WHERE EXTRACT(YEAR FROM game_date) = %s
+                ORDER BY game_date DESC
+            """
+            cursor.execute(query, (int(season_year),))
+        else:
+            query = "SELECT * FROM nba_odds ORDER BY game_date DESC"
+            cursor.execute(query)
+
+        rows = cursor.fetchall()
+        columns = [desc[0] for desc in cursor.description]
+        df = pd.DataFrame(rows, columns=columns)
+
+        cursor.close()
+        conn.close()
+
+        # Convert numeric columns from Decimal to float for pandas compatibility
+        numeric_cols = [
+            "most_common_total_line",
+            "average_total_line",
+            "most_common_moneyline_home",
+            "average_moneyline_home",
+            "most_common_moneyline_away",
+            "average_moneyline_away",
+            "most_common_spread_home",
+            "average_spread_home",
+            "most_common_spread_away",
+            "average_spread_away",
+        ]
+
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        print(f"Loaded {len(df)} odds records from database")
+        return df
+
+    except Exception as e:
+        print(f"Error loading odds from database: {e}")
+        return pd.DataFrame()
+
+
+def update_odds_db(df_odds: pd.DataFrame) -> bool:
+    """Upload odds data to PostgreSQL database.
+
+    Args:
+        df_odds: DataFrame containing odds data to upload
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    if df_odds is None or df_odds.empty:
+        print("No odds data to upload to PostgreSQL.")
+        return False
+
+    conn = connect_odds_db()
+    cursor = conn.cursor()
+
+    print(f"Uploading {len(df_odds)} odds records to database...")
+
+    # Convert game_date to timestamp if needed
+    df_upload = df_odds.copy()
+    df_upload["game_date"] = pd.to_datetime(df_upload["game_date"], utc=True)
+
+    # Convert numeric columns
+    numeric_cols = [
+        "most_common_total_line",
+        "average_total_line",
+        "most_common_moneyline_home",
+        "average_moneyline_home",
+        "most_common_moneyline_away",
+        "average_moneyline_away",
+        "most_common_spread_home",
+        "average_spread_home",
+        "most_common_spread_away",
+        "average_spread_away",
+    ]
+
+    for col in numeric_cols:
+        if col in df_upload.columns:
+            df_upload[col] = pd.to_numeric(df_upload[col], errors="coerce")
+
+    # Convert pandas NA values to None
+    df_upload = df_upload.where(pd.notna(df_upload), None)
+
+    # Prepare column names
+    columns = df_upload.columns.tolist()
+    column_names = ", ".join(columns)
+    placeholders = ", ".join(["%s"] * len(columns))
+
+    insert_query = f"""
+    INSERT INTO nba_odds ({column_names})
+    VALUES ({placeholders})
+    ON CONFLICT (game_date, team_home, team_away) DO NOTHING
+    """
+
+    # Insert data in batches
+    batch_size = 1000
+    total_inserted = 0
+
+    for i in range(0, len(df_upload), batch_size):
+        batch = df_upload.iloc[i : i + batch_size]
+        values = [tuple(row) for row in batch[columns].values]
+        cursor.executemany(insert_query, values)
+        conn.commit()
+        total_inserted += len(batch)
+        print(f"Uploaded {total_inserted}/{len(df_upload)} rows...")
+
+    print(f"\n✅ Successfully uploaded {total_inserted} odds records to database!")
+
+    cursor.close()
+    conn.close()
+    return True
 
 
 def process_odds_date(
@@ -141,6 +268,11 @@ def process_odds_date(
 
 
 def process_odds_df(df_odds):
+    # Ensure game_date is datetime (handle both timezone-aware and naive datetimes)
+    if not pd.api.types.is_datetime64_any_dtype(df_odds["game_date"]):
+        df_odds["game_date"] = pd.to_datetime(df_odds["game_date"], utc=True)
+        df_odds["game_date"] = df_odds["game_date"].dt.tz_localize(None)
+
     df_odds = df_odds[df_odds["most_common_total_line"] > 50]
 
     df_odds.sort_values(by=["game_date", "team_home"], ascending=False, inplace=True)
@@ -354,7 +486,15 @@ def update_odds_df(
         "x-rapidapi-host": "therundown-therundown-v1.p.rapidapi.com",
     }
 
-    df_odds = pd.read_csv(os.path.join(odds_folder, df_name))
+    # Load from CSV (kept for backward compatibility)
+    df_odds_csv = pd.read_csv(os.path.join(odds_folder, df_name))
+    df_odds_csv["game_date"] = pd.to_datetime(df_odds_csv["game_date"])
+
+    # Load from database (primary source)
+    season_year = season_to_download[:4]  # Extract year from season like "2024-25"
+    df_odds = get_existing_odds_from_db(season_year)
+
+    # Ensure game_date is datetime
     df_odds["game_date"] = pd.to_datetime(df_odds["game_date"])
 
     game_finder = LeagueGameFinder(
@@ -384,6 +524,8 @@ def update_odds_df(
         df_odds.reset_index(drop=True, inplace=True)
 
     df_odds.to_csv(os.path.join(odds_folder, df_name), index=False)
+    # Here update after today and tomorrow are loaded
+    update_odds_db(df_odds)
 
     df_today = process_odds_date(date_to_predict, BASE_URL, HEADERS, is_today=True)
     df_odds = pd.concat([df_odds, df_today], ignore_index=True)

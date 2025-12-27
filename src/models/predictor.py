@@ -7,13 +7,15 @@ approaches and generates comprehensive prediction reports.
 """
 
 import pickle
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import pandas as pd
-
-try:
-    from ..config.settings import settings
-except ImportError:
-    from config.settings import settings
+from config.settings import settings
+from postgre_DB.create_nba_predictions_db import (
+    create_predictions_table,
+    insert_predictions,
+)
 
 
 def predict_nba_games(
@@ -115,6 +117,7 @@ def predict_nba_games(
         "GAME_ID",
         "SEASON_TYPE",
         "GAME_DATE",
+        "GAME_TIME",
         "TEAM_NAME_TEAM_HOME",
         "GAME_NUMBER_TEAM_HOME",
         "TEAM_NAME_TEAM_AWAY",
@@ -130,6 +133,20 @@ def predict_nba_games(
     # change complate date to just year month day
 
     df_summary = df[summary_columns].copy()
+
+    # Add prediction timestamp and time to match
+
+    # Create timezone-aware timestamp in Madrid time
+    df_summary["PREDICTION_DATE"] = datetime.now(ZoneInfo("Europe/Madrid"))
+
+    # Calculate time to match in minutes
+    df_summary["TIME_TO_MATCH_MINUTES"] = (
+        pd.to_datetime(df_summary["GAME_TIME"]) - df_summary["PREDICTION_DATE"]
+    ).dt.total_seconds() / 60
+    df_summary["TIME_TO_MATCH_MINUTES"] = (
+        df_summary["TIME_TO_MATCH_MINUTES"].round(0).astype(int)
+    )
+
     list_of_dfs.append(df_summary)
 
     # Sheet 2: Summary with Top 10 Most Important Features
@@ -165,6 +182,11 @@ def predict_nba_games(
 
     df_full_features = df[full_feature_columns].copy()
     list_of_dfs.append(df_full_features)
+
+    # Drop rows with NaN in PREDICTED_TOTAL_SCORE before saving to database
+    df_summary_clean = df_summary.dropna(subset=["PREDICTED_TOTAL_SCORE"])
+    create_predictions_table()
+    insert_predictions(df_summary_clean)
 
     return list_of_dfs
 
@@ -221,59 +243,11 @@ def save_predictions_to_excel(
 
     with pd.ExcelWriter(file_path, engine="xlsxwriter") as writer:
         for df, sheet in zip(list_of_dfs, sheet_names, strict=True):
+            df = df.copy()
+            # Convert GAME_TIME and PREDICTION_DATE to string to avoid timezone issues
+            for col in ["GAME_TIME", "PREDICTION_DATE"]:
+                if col in df.columns:
+                    df[col] = df[col].astype(str)
             df.to_excel(writer, sheet_name=sheet, index=False)
 
     print(f"Predictions saved successfully at {file_path}")
-
-
-def main():
-    """
-    Main execution function for generating NBA game predictions.
-
-    This function:
-    1. Loads configuration settings
-    2. Fetches and processes game data for today's date
-    3. Runs predictions using both models
-    4. Saves results to Excel file
-    """
-    from datetime import datetime
-
-    from ..data_processing import create_df_to_predict
-
-    # Get today's date
-    date_to_predict = datetime.now().strftime("%Y-%m-%d")
-
-    print(f"Generating predictions for {date_to_predict}...")
-    print(f"Data folder: {settings.data_folder}")
-    print(f"Using regressor: {settings.regressor_model_path}")
-    print(f"Using classifier: {settings.classifier_model_path}")
-
-    # Create the prediction dataframe
-    df_to_predict = create_df_to_predict(
-        data_path=settings.get_absolute_path(settings.data_folder),
-        date_to_predict=date_to_predict,
-        nba_injury_reports_url=settings.nba_injury_reports_url,
-        reports_path=settings.get_absolute_path(settings.report_path),
-    )
-
-    # Generate predictions
-    predictions_dfs = predict_nba_games(df_to_predict)
-
-    # Prepare output path
-    output_path = settings.get_absolute_path(settings.output_path)
-    output_path.mkdir(parents=True, exist_ok=True)
-    output_file = output_path / f"predictions_{date_to_predict}.xlsx"
-
-    # Create a basic legend/catalogue (you may want to import this from elsewhere)
-    # For now, using an empty dict - replace with actual column descriptions
-    catalogue = {}
-
-    # Save predictions
-    save_predictions_to_excel(predictions_dfs, str(output_file), catalogue)
-    print(f"\n✓ Predictions completed successfully!")
-    print(f"  Output saved to: {output_file}")
-
-
-if __name__ == "__main__":
-    main()
-    main()

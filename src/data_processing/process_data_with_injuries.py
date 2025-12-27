@@ -12,14 +12,11 @@ from typing import Union
 
 import numpy as np
 import pandas as pd
+from fetch_data.manage_odds_data.update_odds_utils import merge_teams_df_with_odds
 from nba_api.stats.endpoints import ScoreboardV2
+from postgre_DB import load_all_nba_data_from_db
 from scipy.stats import linregress
 from tqdm import tqdm
-
-try:
-    from ..fetch_data.manage_odds_data.update_odds_utils import merge_teams_df_with_odds
-except ImportError:
-    from fetch_data.manage_odds_data.update_odds_utils import merge_teams_df_with_odds
 
 from .injury_processing import process_injury_data, retrieve_injury_report_as_df
 from .statistics import (
@@ -46,12 +43,14 @@ def get_schedule_games(date):
     # Validate date format
     try:
         datetime.strptime(date, "%Y-%m-%d")
+
     except ValueError:
         raise ValueError("Invalid date format. Please use YYYY-MM-DD.")
 
     # Fetch games
-    scoreboard = ScoreboardV2(game_date=date)
-    games = scoreboard.get_data_frames()[0]
+    scoreboard_v2 = ScoreboardV2(game_date=date)
+
+    games = scoreboard_v2.get_data_frames()[0]
 
     return games
 
@@ -190,12 +189,18 @@ def standardize_and_merge_nba_data(df, games):
     )
     games_renamed["SEASON_ID"] = games_renamed["SEASON_ID"].astype(str)
     # Create separate DataFrames for home and away teams
-    home_games = games_renamed[["GAME_ID", "TEAM_ID", "GAME_DATE", "SEASON_ID"]].copy()
+    cols_to_keep = ["GAME_ID", "TEAM_ID", "GAME_DATE", "SEASON_ID"]
+    if "GAME_TIME" in games_renamed.columns:
+        cols_to_keep.append("GAME_TIME")
+
+    home_games = games_renamed[cols_to_keep].copy()
     home_games["HOME"] = True  # Mark as home team
 
-    away_games = games_renamed[
-        ["GAME_ID", "TEAM_ID_AWAY", "GAME_DATE", "SEASON_ID"]
-    ].copy()
+    cols_to_keep_away = ["GAME_ID", "TEAM_ID_AWAY", "GAME_DATE", "SEASON_ID"]
+    if "GAME_TIME" in games_renamed.columns:
+        cols_to_keep_away.append("GAME_TIME")
+
+    away_games = games_renamed[cols_to_keep_away].copy()
     away_games.rename(columns={"TEAM_ID_AWAY": "TEAM_ID"}, inplace=True)
     away_games["HOME"] = False  # Mark as away team
 
@@ -211,8 +216,13 @@ def standardize_and_merge_nba_data(df, games):
     ].drop_duplicates()
     games_expanded = games_expanded.merge(team_info_from_df, on="TEAM_ID", how="left")
 
-    # Merge with `df`, keeping only the columns present in `df`
-    df = pd.concat([df, games_expanded], ignore_index=True, join="outer")[df.columns]
+    # Merge with `df`, keeping columns from both dataframes
+    # Preserve GAME_TIME if it exists in games_expanded
+    combined_df = pd.concat([df, games_expanded], ignore_index=True, join="outer")
+    columns_to_keep = list(df.columns)
+    if "GAME_TIME" in combined_df.columns and "GAME_TIME" not in columns_to_keep:
+        columns_to_keep.append("GAME_TIME")
+    df = combined_df[columns_to_keep]
 
     # remove duplicated rows based on TEAM_ID and GAME_DATE, keeping the last one
     df = df.drop_duplicates(subset=["TEAM_ID", "GAME_DATE"], keep="last").reset_index(
@@ -507,13 +517,22 @@ def create_df_to_predict(
             "No games found for the specified date."
         )  # Return empty DataFrame if no games found
 
+    # Extract just the date portion (first 10 chars: YYYY-MM-DD) and combine with time
+    games["GAME_TIME"] = pd.to_datetime(
+        games["GAME_DATE_EST"].astype(str).str[:10] + " " + games["GAME_STATUS_TEXT"],
+        format="%Y-%m-%d %I:%M %p ET",
+        errors="coerce",
+    )
+    # Make it timezone-aware (Eastern Time)
+    games["GAME_TIME"] = games["GAME_TIME"].dt.tz_localize(
+        "US/Eastern", ambiguous="infer", nonexistent="shift_forward"
+    )
+
     seasons = get_last_two_nba_seasons(date_to_predict)
 
     # df_2, df_players_2 = load_all_nba_data(
     #     data_path + "/" + "season_games_data", seasons=seasons
     # )
-
-    from postgre_DB import load_all_nba_data_from_db
 
     df, df_players = load_all_nba_data_from_db(seasons=seasons)
 
@@ -775,6 +794,7 @@ def create_df_to_predict(
         "SEASON_TYPE",
         "SEASON_YEAR",
         "IS_OVERTIME",
+        "GAME_TIME",
     ]
 
     df_home = df[df["HOME"]].copy().drop(columns="HOME")
@@ -859,6 +879,7 @@ def create_df_to_predict(
             "IS_OVERTIME",
             "GAME_ID",
             "GAME_DATE",
+            "GAME_TIME",
             "SEASON_TYPE",
             "IS_PLAYOFF_GAME",
             "PLAYOFF_GAMES_LAST_SEASON_TEAM_AWAY",
