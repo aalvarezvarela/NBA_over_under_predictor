@@ -189,4 +189,7 @@ Examples:
 
 
 if __name__ == "__main__":
+    print('Sleeping for 2 hours')
+    import time
+    time.sleep(2 * 60 * 60)  # Sleep for 2 hours
     main()

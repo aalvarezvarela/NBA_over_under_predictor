@@ -172,7 +172,7 @@ def process_odds_date(
 ) -> pd.DataFrame:
     sport_id = 4
     matches = get_events_for_date(sport_id, date, BASE_URL, HEADERS)
-    time.sleep(1)
+    time.sleep(0.5)
     if len(matches) == 0:
         print(f"No matches found for {date}")
         return pd.DataFrame()
