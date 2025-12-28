@@ -795,6 +795,10 @@ def create_df_to_predict(
         "SEASON_YEAR",
         "IS_OVERTIME",
         "GAME_TIME",
+        "average_total_over_money",
+        "average_total_under_money",
+        "most_common_total_over_money",
+        "most_common_total_under_money",
     ]
 
     df_home = df[df["HOME"]].copy().drop(columns="HOME")
@@ -895,6 +899,10 @@ def create_df_to_predict(
         "SPREAD",
         "MONEYLINE_TEAM_HOME",
         "MONEYLINE_TEAM_AWAY",
+        "average_total_over_money",
+        "average_total_under_money",
+        "most_common_total_over_money",
+        "most_common_total_under_money",
     ]
 
     columns_info_before.extend(odds_columns)

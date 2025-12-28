@@ -68,7 +68,7 @@ def get_latest_pdf(nba_injury_report_url, save_path="latest_report_today.pdf"):
 
         if not timestamps:
             print("No valid timestamps found in PDF links.")
-            return
+            raise ValueError("No valid timestamps found in PDF links.")
 
         # Convert timestamps to 24-hour format for proper sorting
         def convert_to_24h(hour, period):
@@ -79,13 +79,13 @@ def get_latest_pdf(nba_injury_report_url, save_path="latest_report_today.pdf"):
                 return hour + 12  # Convert PM times correctly
             return hour
 
-        timestamps = [
-            (link, convert_to_24h(hour, period)) for link, hour, period in timestamps
-        ]
+        # timestamps = [
+        #     (link, convert_to_24h(hour, period)) for link, hour, period in timestamps
+        # ]
 
         # Find the latest timestamp
-        latest_pdf_url, latest_timestamp = max(timestamps, key=lambda x: x[1])
-
+        # latest_pdf_url, latest_timestamp = max(timestamps, key=lambda x: x[1])
+        latest_pdf_url= injury_reports[-1]
         print(f"The latest injury report link is: {latest_pdf_url}")
 
         # If the URL is relative, make it absolute

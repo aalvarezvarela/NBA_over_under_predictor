@@ -124,6 +124,10 @@ def predict_nba_games(
         "GAME_NUMBER_TEAM_AWAY",
         "MATCHUP",
         "TOTAL_OVER_UNDER_LINE",
+        "average_total_over_money",
+        "average_total_under_money",
+        "most_common_total_over_money",
+        "most_common_total_under_money",
         "PREDICTED_TOTAL_SCORE",
         "Margin Difference Prediction vs Over/Under",
         "Regressor Prediction",
@@ -185,7 +189,6 @@ def predict_nba_games(
 
     # Drop rows with NaN in PREDICTED_TOTAL_SCORE before saving to database
     df_summary_clean = df_summary.dropna(subset=["PREDICTED_TOTAL_SCORE"])
-    create_predictions_table()
     insert_predictions(df_summary_clean)
 
     return list_of_dfs

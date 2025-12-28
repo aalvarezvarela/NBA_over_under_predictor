@@ -186,7 +186,12 @@ def process_odds_date(
     spread_away_field = (
         "point_spread_away_delta" if not is_today else "point_spread_away"
     )
-
+    total_money_over_field = (
+        "total_over_money_delta" if not is_today else "total_over_money"
+    )
+    total_money_under_field = (
+        "total_under_money_delta" if not is_today else "total_under_money"
+    )
     match_data = []
     for event in matches:
         if not event.get("teams"):
@@ -203,6 +208,10 @@ def process_odds_date(
             [],
             [],
         )
+        total_over_money_deltas = []
+        total_under_money_deltas = []
+        total_over_money_deltas_for_common = []
+        total_under_money_deltas_for_common = []
 
         for line in event.get("lines", {}).values():
             total_info = line.get("total", {})
@@ -213,11 +222,19 @@ def process_odds_date(
                 total_line = abs(total_info[total_field])
                 if total_line > 100:
                     total_lines.append(total_line)
+                    # Extract total_over_money_delta and total_under_money_delta if present
+                    if total_money_over_field in total_info and abs(total_info[total_money_over_field]) > 10:
+                        val = abs(total_info[total_money_over_field])
+                        total_over_money_deltas.append(val)
+                        total_over_money_deltas_for_common.append(val)
+                    if total_money_under_field in total_info and abs(total_info[total_money_under_field]) > 10:
+                        val = abs(total_info[total_money_under_field])
+                        total_under_money_deltas.append(val)
+                        total_under_money_deltas_for_common.append(val)
 
             if moneyline_info:
                 if moneyline_home_field in moneyline_info:
                     val = moneyline_info[moneyline_home_field]
-                    # Add only if abs(val) >= 0.05
                     if abs(val) >= 0.05:
                         moneyline_home.append(val)
 
@@ -260,6 +277,24 @@ def process_odds_date(
                 "most_common_spread_away": most_common(spread_away),
                 "average_spread_away": sum(spread_away) / len(spread_away)
                 if spread_away
+                else None,
+                "average_total_over_money": sum(total_over_money_deltas)
+                / len(total_over_money_deltas)
+                if total_over_money_deltas
+                else None,
+                "average_total_under_money": sum(total_under_money_deltas)
+                / len(total_under_money_deltas)
+                if total_under_money_deltas
+                else None,
+                "most_common_total_over_money": most_common(
+                    total_over_money_deltas_for_common
+                )
+                if total_over_money_deltas_for_common
+                else None,
+                "most_common_total_under_money": most_common(
+                    total_under_money_deltas_for_common
+                )
+                if total_under_money_deltas_for_common
                 else None,
             }
         )
@@ -317,6 +352,10 @@ def process_odds_df(df_odds):
         "MONEYLINE_AWAY",
         "TOTAL_OVER_UNDER_LINE",
         "SPREAD_HOME",
+        "average_total_over_money",
+        "average_total_under_money",
+        "most_common_total_over_money",
+        "most_common_total_under_money",
     ]
 
     df_odds_processed = df_odds_renamed[final_columns + ["GAME_DATE_ORIGINAL"]]
@@ -366,6 +405,10 @@ def merge_teams_df_with_odds(df_odds, df_team):
             "TOTAL_OVER_UNDER_LINE",
             "SPREAD_HOME",
             "GAME_DATE_ORIGINAL",
+            "average_total_over_money",
+            "average_total_under_money",
+            "most_common_total_over_money",
+            "most_common_total_under_money",
         ]
     ].copy()
 
@@ -387,6 +430,10 @@ def merge_teams_df_with_odds(df_odds, df_team):
             "TOTAL_OVER_UNDER_LINE",
             "SPREAD_AWAY",
             "GAME_DATE_ORIGINAL",
+            "average_total_over_money",
+            "average_total_under_money",
+            "most_common_total_over_money",
+            "most_common_total_under_money",
         ]
     ].copy()
 
@@ -428,7 +475,9 @@ def merge_teams_df_with_odds(df_odds, df_team):
     # 4) Coalesce columns of interest
     df_team_final = df_team1.copy()
 
-    for col in ["MONEYLINE", "SPREAD", "TOTAL_OVER_UNDER_LINE"]:
+    for col in ["MONEYLINE", "SPREAD", "TOTAL_OVER_UNDER_LINE", 
+                "average_total_over_money", "average_total_under_money",
+                "most_common_total_over_money", "most_common_total_under_money"]:
         # If the first merge is missing data, fill from the second merge
         df_team_final[col] = df_team1[col].fillna(df_team2[col])
 

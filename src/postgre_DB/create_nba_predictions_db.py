@@ -48,6 +48,10 @@ def create_predictions_table():
             GAME_NUMBER_TEAM_AWAY INTEGER,
             MATCHUP TEXT,
             TOTAL_OVER_UNDER_LINE NUMERIC,
+            average_total_over_money NUMERIC,
+            average_total_under_money NUMERIC,
+            most_common_total_over_money NUMERIC,
+            most_common_total_under_money NUMERIC,
             PREDICTED_TOTAL_SCORE NUMERIC,
             Margin_Difference_Prediction_vs_Over_Under NUMERIC,
             Regressor_Prediction TEXT,
@@ -90,6 +94,16 @@ def insert_predictions(df: pd.DataFrame):
             "Classifier_Prediction_model2": "Classifier_Prediction_model2",
         }
     )
+    # Add new columns if missing, default to None
+    for new_col in [
+        "average_total_over_money",
+        "average_total_under_money",
+        "most_common_total_over_money",
+        "most_common_total_under_money",
+    ]:
+        if new_col not in df.columns:
+            df[new_col] = None
+
     # Only keep columns that exist in the table
     columns = [
         "GAME_ID",
@@ -102,6 +116,10 @@ def insert_predictions(df: pd.DataFrame):
         "GAME_NUMBER_TEAM_AWAY",
         "MATCHUP",
         "TOTAL_OVER_UNDER_LINE",
+        "average_total_over_money",
+        "average_total_under_money",
+        "most_common_total_over_money",
+        "most_common_total_under_money",
         "PREDICTED_TOTAL_SCORE",
         "Margin_Difference_Prediction_vs_Over_Under",
         "Regressor_Prediction",

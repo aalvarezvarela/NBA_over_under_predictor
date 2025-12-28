@@ -67,6 +67,10 @@ def create_odds_table():
             average_spread_home NUMERIC(8, 4),
             most_common_spread_away NUMERIC(8, 4),
             average_spread_away NUMERIC(8, 4),
+            average_total_over_money NUMERIC(8, 4),
+            average_total_under_money NUMERIC(8, 4),
+            most_common_total_over_money NUMERIC(8, 4),
+            most_common_total_under_money NUMERIC(8, 4),
             PRIMARY KEY (game_date, team_home, team_away)
         )
         """
@@ -88,6 +92,19 @@ def create_odds_table():
     except Exception as e:
         print(f"Error creating odds table: {e}")
         return False
+
+
+def coalesce_duplicate_columns(df: pd.DataFrame) -> pd.DataFrame:
+    # For any duplicated column name, keep a single column whose values are
+    # the first non-null across the duplicates, then drop the extras.
+    dup_names = df.columns[df.columns.duplicated()].unique()
+    for name in dup_names:
+        cols = df.loc[:, df.columns == name]  # DataFrame of all duplicates
+        # take first non-null left-to-right
+        df[name] = cols.bfill(axis=1).iloc[:, 0]
+        # drop all duplicates, then re-add the single coalesced one by leaving df[name]
+        df = df.loc[:, ~df.columns.duplicated(keep="first")]
+    return df
 
 
 def load_odds_data_to_db(csv_path, conn=None):
@@ -116,12 +133,32 @@ def load_odds_data_to_db(csv_path, conn=None):
             close_conn = True
         cursor = conn.cursor()
 
+        df = df.rename(
+            columns={
+                "average_total_over_money_delta": "average_total_over_money",
+                "average_total_under_money_delta": "average_total_under_money",
+                "most_common_total_over_money_delta": "most_common_total_over_money",
+                "most_common_total_under_money_delta": "most_common_total_under_money",
+            }
+        )
+        df = coalesce_duplicate_columns(df)
+
         # Convert data types
         print("Converting data types...")
 
+        # Add new columns if missing, default to None
+        for new_col in [
+            "average_total_over_money",
+            "average_total_under_money",
+            "most_common_total_over_money",
+            "most_common_total_under_money",
+        ]:
+            if new_col not in df.columns:
+                df[new_col] = None
+
         # Convert game_date to timestamp
         if "game_date" in df.columns:
-            df["game_date"] = pd.to_datetime(df["game_date"], errors="coerce")
+            df["game_date"] = pd.to_datetime(df["game_date"], errors="coerce", utc=True)
 
         # Convert numeric columns
         numeric_cols = [
@@ -135,6 +172,10 @@ def load_odds_data_to_db(csv_path, conn=None):
             "average_spread_home",
             "most_common_spread_away",
             "average_spread_away",
+            "average_total_over_money",
+            "average_total_under_money",
+            "most_common_total_over_money",
+            "most_common_total_under_money",
         ]
 
         for col in numeric_cols:
@@ -165,7 +206,11 @@ def load_odds_data_to_db(csv_path, conn=None):
             most_common_spread_home = EXCLUDED.most_common_spread_home,
             average_spread_home = EXCLUDED.average_spread_home,
             most_common_spread_away = EXCLUDED.most_common_spread_away,
-            average_spread_away = EXCLUDED.average_spread_away
+            average_spread_away = EXCLUDED.average_spread_away,
+            average_total_over_money = EXCLUDED.average_total_over_money,
+            average_total_under_money = EXCLUDED.average_total_under_money,
+            most_common_total_over_money = EXCLUDED.most_common_total_over_money,
+            most_common_total_under_money = EXCLUDED.most_common_total_under_money
         """
 
         # Insert data in batches
