@@ -2,87 +2,92 @@ import os
 
 import pandas as pd
 import psycopg
+from psycopg import sql
 
 from .db_config import (
-    connect_postgres_db,
-    get_odds_db_name,
+    connect_nba_db,
+    get_schema_name_odds,
 )
 
 
-def create_database():
-    """Create the PostgreSQL database if it doesn't exist."""
-    try:
-        db_name = get_odds_db_name()
-        # Connect to PostgreSQL server
-        conn = connect_postgres_db()
-        cursor = conn.cursor()
-
-        # Check if database exists
-        cursor.execute(
-            "SELECT 1 FROM pg_catalog.pg_database WHERE datname = %s", (db_name,)
+def create_odds_schema_if_not_exists(conn: psycopg.Connection, schema: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(schema))
         )
-        exists = cursor.fetchone()
-
-        if not exists:
-            cursor.execute(f"CREATE DATABASE {db_name}")
-            print(f"Database '{db_name}' created successfully!")
-        else:
-            print(f"Database '{db_name}' already exists.")
-
-        cursor.close()
-        conn.close()
-        return True
-    except Exception as e:
-        print(f"Error creating database: {e}")
-        return False
+    conn.commit()
 
 
-def create_odds_table():
-    """Create the nba_odds table with appropriate data types."""
+def create_odds_table(drop_existing: bool = True):
+    """Create the nba_odds table inside schema SCHEMA_NAME_ODDS."""
     try:
-        conn = connect_postgres_db()
-        cursor = conn.cursor()
+        schema = get_schema_name_odds()
+        conn = connect_nba_db()
 
-        # Drop table if exists (for fresh start)
-        cursor.execute("DROP TABLE IF EXISTS nba_odds CASCADE")
+        create_odds_schema_if_not_exists(conn, schema)
 
-        # Create table with composite primary key
-        create_table_query = """
-        CREATE TABLE nba_odds (
-            game_date TIMESTAMP WITH TIME ZONE NOT NULL,
-            team_home VARCHAR(100) NOT NULL,
-            team_away VARCHAR(100) NOT NULL,
-            most_common_total_line NUMERIC(8, 4),
-            average_total_line NUMERIC(8, 4),
-            most_common_moneyline_home NUMERIC(10, 4),
-            average_moneyline_home NUMERIC(10, 4),
-            most_common_moneyline_away NUMERIC(10, 4),
-            average_moneyline_away NUMERIC(10, 4),
-            most_common_spread_home NUMERIC(8, 4),
-            average_spread_home NUMERIC(8, 4),
-            most_common_spread_away NUMERIC(8, 4),
-            average_spread_away NUMERIC(8, 4),
-            average_total_over_money NUMERIC(8, 4),
-            average_total_under_money NUMERIC(8, 4),
-            most_common_total_over_money NUMERIC(8, 4),
-            most_common_total_under_money NUMERIC(8, 4),
-            PRIMARY KEY (game_date, team_home, team_away)
-        )
-        """
+        with conn.cursor() as cur:
+            if drop_existing:
+                cur.execute(
+                    sql.SQL("DROP TABLE IF EXISTS {}.{} CASCADE").format(
+                        sql.Identifier(schema),
+                        sql.Identifier("nba_odds"),
+                    )
+                )
 
-        cursor.execute(create_table_query)
+            create_table_query = sql.SQL(
+                """
+                CREATE TABLE IF NOT EXISTS {}.{} (
+                    game_date TIMESTAMP WITH TIME ZONE NOT NULL,
+                    team_home VARCHAR(100) NOT NULL,
+                    team_away VARCHAR(100) NOT NULL,
+                    most_common_total_line NUMERIC(8, 4),
+                    average_total_line NUMERIC(8, 4),
+                    most_common_moneyline_home NUMERIC(10, 4),
+                    average_moneyline_home NUMERIC(10, 4),
+                    most_common_moneyline_away NUMERIC(10, 4),
+                    average_moneyline_away NUMERIC(10, 4),
+                    most_common_spread_home NUMERIC(8, 4),
+                    average_spread_home NUMERIC(8, 4),
+                    most_common_spread_away NUMERIC(8, 4),
+                    average_spread_away NUMERIC(8, 4),
+                    average_total_over_money NUMERIC(8, 4),
+                    average_total_under_money NUMERIC(8, 4),
+                    most_common_total_over_money NUMERIC(8, 4),
+                    most_common_total_under_money NUMERIC(8, 4),
+                    PRIMARY KEY (game_date, team_home, team_away)
+                )
+                """
+            ).format(sql.Identifier(schema), sql.Identifier("nba_odds"))
+
+            cur.execute(create_table_query)
+
+            # Indexes
+            cur.execute(
+                sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {}.{}(game_date)").format(
+                    sql.Identifier("idx_odds_game_date"),
+                    sql.Identifier(schema),
+                    sql.Identifier("nba_odds"),
+                )
+            )
+            cur.execute(
+                sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {}.{}(team_home)").format(
+                    sql.Identifier("idx_odds_team_home"),
+                    sql.Identifier(schema),
+                    sql.Identifier("nba_odds"),
+                )
+            )
+            cur.execute(
+                sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {}.{}(team_away)").format(
+                    sql.Identifier("idx_odds_team_away"),
+                    sql.Identifier(schema),
+                    sql.Identifier("nba_odds"),
+                )
+            )
+
         conn.commit()
-        print("Table 'nba_odds' created successfully with composite primary key!")
-
-        # Create indexes for better query performance
-        cursor.execute("CREATE INDEX idx_odds_game_date ON nba_odds(game_date)")
-        cursor.execute("CREATE INDEX idx_odds_team_home ON nba_odds(team_home)")
-        cursor.execute("CREATE INDEX idx_odds_team_away ON nba_odds(team_away)")
-        conn.commit()
-        print("Indexes created successfully!")
-
-        cursor.close()
         conn.close()
+        print(f"Table '{schema}.nba_odds' created successfully!")
         return True
     except Exception as e:
         print(f"Error creating odds table: {e}")
@@ -90,147 +95,126 @@ def create_odds_table():
 
 
 def coalesce_duplicate_columns(df: pd.DataFrame) -> pd.DataFrame:
-    # For any duplicated column name, keep a single column whose values are
-    # the first non-null across the duplicates, then drop the extras.
     dup_names = df.columns[df.columns.duplicated()].unique()
     for name in dup_names:
-        cols = df.loc[:, df.columns == name]  # DataFrame of all duplicates
-        # take first non-null left-to-right
+        cols = df.loc[:, df.columns == name]
         df[name] = cols.bfill(axis=1).iloc[:, 0]
-        # drop all duplicates, then re-add the single coalesced one by leaving df[name]
         df = df.loc[:, ~df.columns.duplicated(keep="first")]
     return df
 
 
-def load_odds_data_to_db(csv_path, conn=None):
-    """Load odds data from CSV into PostgreSQL.
-
-    Args:
-        csv_path: Path to the odds CSV file
-        conn: Optional database connection. If None, creates a new connection.
-
-    Returns:
-        bool: True if successful, False otherwise
-    """
+def load_odds_data_to_db(csv_path: str, conn: psycopg.Connection | None = None) -> bool:
+    """Load odds data from CSV into schema SCHEMA_NAME_ODDS table nba_odds."""
     close_conn = False
+    schema = get_schema_name_odds()
+
     try:
         if not os.path.exists(csv_path):
             print(f"Error: CSV file not found at {csv_path}")
             return False
 
-        # Read the CSV file
         print(f"Reading odds data from {csv_path}...")
         df = pd.read_csv(csv_path)
         print(f"Loaded {len(df)} rows from CSV")
 
-        if conn is None:
-            conn = connect_postgres_db()
-            close_conn = True
-        cursor = conn.cursor()
-
-        df = df.rename(
-            columns={
-                "average_total_over_money_delta": "average_total_over_money",
-                "average_total_under_money_delta": "average_total_under_money",
-                "most_common_total_over_money_delta": "most_common_total_over_money",
-                "most_common_total_under_money_delta": "most_common_total_under_money",
-            }
-        )
         df = coalesce_duplicate_columns(df)
 
-        # Convert data types
-        print("Converting data types...")
+        if conn is None:
+            conn = connect_nba_db()
+            close_conn = True
 
-        # Add new columns if missing, default to None
-        for new_col in [
-            "average_total_over_money",
-            "average_total_under_money",
-            "most_common_total_over_money",
-            "most_common_total_under_money",
-        ]:
-            if new_col not in df.columns:
-                df[new_col] = None
+        create_odds_schema_if_not_exists(conn, schema)
 
-        # Convert game_date to timestamp
-        if "game_date" in df.columns:
-            df["game_date"] = pd.to_datetime(df["game_date"], errors="coerce", utc=True)
+        with conn.cursor() as cur:
+            print("Converting data types...")
 
-        # Convert numeric columns
-        numeric_cols = [
-            "most_common_total_line",
-            "average_total_line",
-            "most_common_moneyline_home",
-            "average_moneyline_home",
-            "most_common_moneyline_away",
-            "average_moneyline_away",
-            "most_common_spread_home",
-            "average_spread_home",
-            "most_common_spread_away",
-            "average_spread_away",
-            "average_total_over_money",
-            "average_total_under_money",
-            "most_common_total_over_money",
-            "most_common_total_under_money",
-        ]
+            # Ensure required columns exist (in case some are missing)
+            for new_col in [
+                "average_total_over_money",
+                "average_total_under_money",
+                "most_common_total_over_money",
+                "most_common_total_under_money",
+            ]:
+                if new_col not in df.columns:
+                    df[new_col] = None
 
-        for col in numeric_cols:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
+            if "game_date" in df.columns:
+                df["game_date"] = pd.to_datetime(
+                    df["game_date"], errors="coerce", utc=True
+                )
 
-        # Convert all pandas NA/NaT values to None (NULL) for PostgreSQL compatibility
-        print("Converting pandas NA values to None...")
-        df = df.where(pd.notna(df), None)
+            numeric_cols = [
+                "most_common_total_line",
+                "average_total_line",
+                "most_common_moneyline_home",
+                "average_moneyline_home",
+                "most_common_moneyline_away",
+                "average_moneyline_away",
+                "most_common_spread_home",
+                "average_spread_home",
+                "most_common_spread_away",
+                "average_spread_away",
+                "average_total_over_money",
+                "average_total_under_money",
+                "most_common_total_over_money",
+                "most_common_total_under_money",
+            ]
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        print(f"Loading {len(df)} rows into database...")
+            df = df.where(pd.notna(df), None)
 
-        # Prepare column names
-        columns = df.columns.tolist()
-        column_names = ", ".join(columns)
-        placeholders = ", ".join(["%s"] * len(columns))
+            print(f"Loading {len(df)} rows into database...")
 
-        insert_query = f"""
-        INSERT INTO nba_odds ({column_names})
-        VALUES ({placeholders})
-        ON CONFLICT (game_date, team_home, team_away) DO UPDATE SET
-            most_common_total_line = EXCLUDED.most_common_total_line,
-            average_total_line = EXCLUDED.average_total_line,
-            most_common_moneyline_home = EXCLUDED.most_common_moneyline_home,
-            average_moneyline_home = EXCLUDED.average_moneyline_home,
-            most_common_moneyline_away = EXCLUDED.most_common_moneyline_away,
-            average_moneyline_away = EXCLUDED.average_moneyline_away,
-            most_common_spread_home = EXCLUDED.most_common_spread_home,
-            average_spread_home = EXCLUDED.average_spread_home,
-            most_common_spread_away = EXCLUDED.most_common_spread_away,
-            average_spread_away = EXCLUDED.average_spread_away,
-            average_total_over_money = EXCLUDED.average_total_over_money,
-            average_total_under_money = EXCLUDED.average_total_under_money,
-            most_common_total_over_money = EXCLUDED.most_common_total_over_money,
-            most_common_total_under_money = EXCLUDED.most_common_total_under_money
-        """
+            columns = df.columns.tolist()
+            column_names = ", ".join(columns)
+            placeholders = ", ".join(["%s"] * len(columns))
 
-        # Insert data in batches
-        batch_size = 1000
-        total_inserted = 0
+            insert_query = sql.SQL(
+                f"""
+                INSERT INTO {{}}.{{}} ({column_names})
+                VALUES ({placeholders})
+                ON CONFLICT (game_date, team_home, team_away) DO UPDATE SET
+                    most_common_total_line = EXCLUDED.most_common_total_line,
+                    average_total_line = EXCLUDED.average_total_line,
+                    most_common_moneyline_home = EXCLUDED.most_common_moneyline_home,
+                    average_moneyline_home = EXCLUDED.average_moneyline_home,
+                    most_common_moneyline_away = EXCLUDED.most_common_moneyline_away,
+                    average_moneyline_away = EXCLUDED.average_moneyline_away,
+                    most_common_spread_home = EXCLUDED.most_common_spread_home,
+                    average_spread_home = EXCLUDED.average_spread_home,
+                    most_common_spread_away = EXCLUDED.most_common_spread_away,
+                    average_spread_away = EXCLUDED.average_spread_away,
+                    average_total_over_money = EXCLUDED.average_total_over_money,
+                    average_total_under_money = EXCLUDED.average_total_under_money,
+                    most_common_total_over_money = EXCLUDED.most_common_total_over_money,
+                    most_common_total_under_money = EXCLUDED.most_common_total_under_money
+                """
+            ).format(sql.Identifier(schema), sql.Identifier("nba_odds"))
 
-        for i in range(0, len(df), batch_size):
-            batch = df.iloc[i : i + batch_size]
-            values = [tuple(row) for row in batch[columns].values]
-            cursor.executemany(insert_query, values)
-            conn.commit()
-            total_inserted += len(batch)
-            print(f"Inserted {total_inserted}/{len(df)} rows...")
+            batch_size = 1000
+            total_processed = 0
+            for i in range(0, len(df), batch_size):
+                batch = df.iloc[i : i + batch_size]
+                values = [tuple(row) for row in batch[columns].values]
+                cur.executemany(insert_query, values)
+                conn.commit()
+                total_processed += len(batch)
+                print(f"Processed {total_processed}/{len(df)} rows...")
 
-        print(f"\nSuccessfully loaded {total_inserted} rows into the database!")
+            cur.execute(
+                sql.SQL("SELECT COUNT(*) FROM {}.{}").format(
+                    sql.Identifier(schema), sql.Identifier("nba_odds")
+                )
+            )
+            count = cur.fetchone()[0]
+            print(f"Total rows in {schema}.nba_odds: {count}")
 
-        # Verify count
-        cursor.execute("SELECT COUNT(*) FROM nba_odds")
-        count = cursor.fetchone()[0]
-        print(f"Total rows in nba_odds table: {count}")
-
-        cursor.close()
         if close_conn:
             conn.close()
         return True
+
     except Exception as e:
         print(f"Error loading odds data: {e}")
         import traceback
@@ -242,35 +226,24 @@ def load_odds_data_to_db(csv_path, conn=None):
 
 
 def get_odds_for_game(game_date, team_home, team_away):
-    """Retrieve odds data for a specific game.
-
-    Args:
-        game_date: Game date (datetime object or string)
-        team_home: Home team name
-        team_away: Away team name
-
-    Returns:
-        dict: Odds data for the game, or None if not found
-    """
+    """Retrieve odds data for a specific game from schema SCHEMA_NAME_ODDS."""
+    schema = get_schema_name_odds()
     try:
-        conn = connect_postgres_db()
-        cursor = conn.cursor()
+        conn = connect_nba_db()
+        with conn.cursor() as cur:
+            query = sql.SQL(
+                "SELECT * FROM {}.{} WHERE game_date = %s AND team_home = %s AND team_away = %s"
+            ).format(sql.Identifier(schema), sql.Identifier("nba_odds"))
 
-        query = """
-        SELECT * FROM nba_odds
-        WHERE game_date = %s AND team_home = %s AND team_away = %s
-        """
+            cur.execute(query, (game_date, team_home, team_away))
+            row = cur.fetchone()
 
-        cursor.execute(query, (game_date, team_home, team_away))
-        row = cursor.fetchone()
+            if row:
+                columns = [desc[0] for desc in cur.description]
+                result = dict(zip(columns, row))
+            else:
+                result = None
 
-        if row:
-            columns = [desc[0] for desc in cursor.description]
-            result = dict(zip(columns, row))
-        else:
-            result = None
-
-        cursor.close()
         conn.close()
         return result
     except Exception as e:
@@ -278,32 +251,22 @@ def get_odds_for_game(game_date, team_home, team_away):
         return None
 
 
-def get_recent_odds(limit=10):
-    """Retrieve the most recent odds data.
-
-    Args:
-        limit: Number of records to retrieve
-
-    Returns:
-        list: List of dictionaries containing odds data
-    """
+def get_recent_odds(limit: int = 10):
+    """Retrieve the most recent odds data from schema SCHEMA_NAME_ODDS."""
+    schema = get_schema_name_odds()
     try:
-        conn = connect_postgres_db()
-        cursor = conn.cursor()
+        conn = connect_nba_db()
+        with conn.cursor() as cur:
+            query = sql.SQL(
+                "SELECT * FROM {}.{} ORDER BY game_date DESC LIMIT %s"
+            ).format(sql.Identifier(schema), sql.Identifier("nba_odds"))
 
-        query = """
-        SELECT * FROM nba_odds
-        ORDER BY game_date DESC
-        LIMIT %s
-        """
+            cur.execute(query, (limit,))
+            rows = cur.fetchall()
 
-        cursor.execute(query, (limit,))
-        rows = cursor.fetchall()
+            columns = [desc[0] for desc in cur.description]
+            results = [dict(zip(columns, row)) for row in rows]
 
-        columns = [desc[0] for desc in cursor.description]
-        results = [dict(zip(columns, row)) for row in rows]
-
-        cursor.close()
         conn.close()
         return results
     except Exception as e:
@@ -312,21 +275,18 @@ def get_recent_odds(limit=10):
 
 
 if __name__ == "__main__":
-    print("Step 1: Creating database...")
-    if not create_database():
-        exit(1)
 
-    print("\nStep 2: Creating nba_odds table...")
+
+    print("\nStep 2: Creating schema + nba_odds table...")
     if not create_odds_table():
-        exit(1)
+        raise SystemExit(1)
 
     print("\nStep 3: Loading odds data...")
     odds_csv_path = "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/odds_data/odds_data.csv"
 
     if load_odds_data_to_db(odds_csv_path):
-        print("\n✅ Odds database setup complete!")
+        print("\nOdds setup complete.")
 
-        # Display some sample data
         print("\nSample of recent odds:")
         recent_odds = get_recent_odds(5)
         for odds in recent_odds:
@@ -337,4 +297,4 @@ if __name__ == "__main__":
             )
     else:
         print("Failed to load odds data!")
-        exit(1)
+        raise SystemExit(1)

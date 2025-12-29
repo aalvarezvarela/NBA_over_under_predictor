@@ -1,153 +1,192 @@
 import pandas as pd
+import psycopg
+from psycopg import sql
 
-from .db_config import connect_postgres_db, connect_predictions_db, get_config
-
-
-def create_predictions_database():
-    """Create the predictions database if it doesn't exist."""
-    db_name = get_predictions_db_name()
-    conn = connect_postgres_db()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT 1 FROM pg_catalog.pg_database WHERE datname = %s", (db_name,)
-    )
-    exists = cursor.fetchone()
-    if not exists:
-        cursor.execute(f"CREATE DATABASE {db_name}")
-        print(f"Database '{db_name}' created successfully!")
-    else:
-        print(f"Database '{db_name}' already exists.")
-    cursor.close()
-    conn.close()
+from .db_config import (
+    connect_nba_db,
+    get_schema_name_predictions,
+)
 
 
-def get_predictions_db_name():
-    config = get_config()
-    return config.get("Database", "DB_NAME_PREDICTIONS")
-
-
-DB_NAME = get_predictions_db_name()
+def create_prediction_schema_if_not_exists(conn: psycopg.Connection, schema: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(schema))
+        )
+    conn.commit()
 
 
 def create_predictions_table():
-    """Create the nba_predictions table if it doesn't exist."""
-    create_predictions_database()
-    conn = connect_predictions_db()
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS nba_predictions (
-            id SERIAL PRIMARY KEY,
-            GAME_ID TEXT NOT NULL,
-            SEASON_TYPE TEXT,
-            GAME_DATE DATE,
-            GAME_TIME TEXT,
-            TEAM_NAME_TEAM_HOME TEXT,
-            GAME_NUMBER_TEAM_HOME INTEGER,
-            TEAM_NAME_TEAM_AWAY TEXT,
-            GAME_NUMBER_TEAM_AWAY INTEGER,
-            MATCHUP TEXT,
-            TOTAL_OVER_UNDER_LINE NUMERIC,
-            average_total_over_money NUMERIC,
-            average_total_under_money NUMERIC,
-            most_common_total_over_money NUMERIC,
-            most_common_total_under_money NUMERIC,
-            PREDICTED_TOTAL_SCORE NUMERIC,
-            Margin_Difference_Prediction_vs_Over_Under NUMERIC,
-            Regressor_Prediction TEXT,
-            Classifier_Prediction_model2 TEXT,
-            PREDICTION_DATE TEXT,
-            TIME_TO_MATCH_MINUTES INTEGER,
-            total_scored_points NUMERIC
-        )
-        """
-    )
-    # Ensure unique constraint exists (idempotent)
-    cursor.execute("""
-        DO $$
-        BEGIN
-            IF NOT EXISTS (
-                SELECT 1 FROM pg_constraint WHERE conname = 'unique_game_prediction'
-            ) THEN
-                ALTER TABLE nba_predictions ADD CONSTRAINT unique_game_prediction UNIQUE (GAME_ID, PREDICTION_DATE);
-            END IF;
-        END$$;
-    """)
-    conn.commit()
-    cursor.close()
-    conn.close()
+    """
+    Create the nba_predictions table inside schema SCHEMA_NAME_PREDICTIONS.
+    """
+
+    schema = get_schema_name_predictions()
+    conn = connect_nba_db()
+
+    try:
+        create_prediction_schema_if_not_exists(conn, schema)
+
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS {}.{} (
+                        id SERIAL PRIMARY KEY,
+                        game_id TEXT NOT NULL,
+                        season_type TEXT,
+                        game_date DATE,
+                        game_time TEXT,
+                        team_name_team_home TEXT,
+                        game_number_team_home INTEGER,
+                        team_name_team_away TEXT,
+                        game_number_team_away INTEGER,
+                        matchup TEXT,
+                        total_over_under_line NUMERIC,
+                        average_total_over_money NUMERIC,
+                        average_total_under_money NUMERIC,
+                        most_common_total_over_money NUMERIC,
+                        most_common_total_under_money NUMERIC,
+                        predicted_total_score NUMERIC,
+                        margin_difference_prediction_vs_over_under NUMERIC,
+                        regressor_prediction TEXT,
+                        classifier_prediction_model2 TEXT,
+                        prediction_date TEXT,
+                        time_to_match_minutes INTEGER,
+                        total_scored_points NUMERIC
+                    )
+                    """
+                ).format(sql.Identifier(schema), sql.Identifier("nba_predictions"))
+            )
+
+            # Unique constraint (idempotent) on (game_id, prediction_date)
+            cur.execute(
+                sql.SQL(
+                    """
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1
+                            FROM pg_constraint
+                            WHERE conname = 'unique_game_prediction'
+                        ) THEN
+                            ALTER TABLE {}.{}
+                            ADD CONSTRAINT unique_game_prediction UNIQUE (game_id, prediction_date);
+                        END IF;
+                    END $$;
+                    """
+                ).format(sql.Identifier(schema), sql.Identifier("nba_predictions"))
+            )
+
+        conn.commit()
+        print(f"Table '{schema}.nba_predictions' is ready.")
+    finally:
+        conn.close()
 
 
 def insert_predictions(df: pd.DataFrame):
-    """Insert the summary DataFrame into nba_predictions table."""
-    create_predictions_database()
-    conn = connect_predictions_db()
-    cursor = conn.cursor()
-    # Add empty total_scored_points column if not present
-    if "total_scored_points" not in df.columns:
-        df["total_scored_points"] = None
-    # Rename columns to match DB
-    df = df.rename(
-        columns={
-            "Margin Difference Prediction vs Over/Under": "Margin_Difference_Prediction_vs_Over_Under",
-            "Regressor Prediction": "Regressor_Prediction",
-            "Classifier_Prediction_model2": "Classifier_Prediction_model2",
-        }
-    )
-    # Add new columns if missing, default to None
-    for new_col in [
-        "average_total_over_money",
-        "average_total_under_money",
-        "most_common_total_over_money",
-        "most_common_total_under_money",
-    ]:
-        if new_col not in df.columns:
-            df[new_col] = None
+    """
+    Insert the summary DataFrame into schema.table nba_predictions.
+    Upserts on (game_id, prediction_date).
+    """
+    create_predictions_table()
 
-    # Only keep columns that exist in the table
-    columns = [
-        "GAME_ID",
-        "SEASON_TYPE",
-        "GAME_DATE",
-        "GAME_TIME",
-        "TEAM_NAME_TEAM_HOME",
-        "GAME_NUMBER_TEAM_HOME",
-        "TEAM_NAME_TEAM_AWAY",
-        "GAME_NUMBER_TEAM_AWAY",
-        "MATCHUP",
-        "TOTAL_OVER_UNDER_LINE",
-        "average_total_over_money",
-        "average_total_under_money",
-        "most_common_total_over_money",
-        "most_common_total_under_money",
-        "PREDICTED_TOTAL_SCORE",
-        "Margin_Difference_Prediction_vs_Over_Under",
-        "Regressor_Prediction",
-        "Classifier_Prediction_model2",
-        "PREDICTION_DATE",
-        "TIME_TO_MATCH_MINUTES",
-        "total_scored_points",
-    ]
-    # Insert rows
-    for _, row in df[columns].iterrows():
-        values = tuple(row)
+    schema = get_schema_name_predictions()
+    conn = connect_nba_db()
+
+    try:
+        # Ensure required columns exist
+        if "total_scored_points" not in df.columns:
+            df["total_scored_points"] = None
+
+        # Normalize column names to match DB (lowercase in DB)
+        df = df.rename(
+            columns={
+                "GAME_ID": "game_id",
+                "SEASON_TYPE": "season_type",
+                "GAME_DATE": "game_date",
+                "GAME_TIME": "game_time",
+                "TEAM_NAME_TEAM_HOME": "team_name_team_home",
+                "GAME_NUMBER_TEAM_HOME": "game_number_team_home",
+                "TEAM_NAME_TEAM_AWAY": "team_name_team_away",
+                "GAME_NUMBER_TEAM_AWAY": "game_number_team_away",
+                "MATCHUP": "matchup",
+                "TOTAL_OVER_UNDER_LINE": "total_over_under_line",
+                "PREDICTED_TOTAL_SCORE": "predicted_total_score",
+                "PREDICTION_DATE": "prediction_date",
+                "TIME_TO_MATCH_MINUTES": "time_to_match_minutes",
+                # Your original human-readable name
+                "Margin Difference Prediction vs Over/Under": "margin_difference_prediction_vs_over_under",
+                "Margin_Difference_Prediction_vs_Over_Under": "margin_difference_prediction_vs_over_under",
+                "Regressor Prediction": "regressor_prediction",
+                "Regressor_Prediction": "regressor_prediction",
+                "Classifier_Prediction_model2": "classifier_prediction_model2",
+            }
+        )
+
+        # Add new columns if missing
+        for new_col in [
+            "average_total_over_money",
+            "average_total_under_money",
+            "most_common_total_over_money",
+            "most_common_total_under_money",
+        ]:
+            if new_col not in df.columns:
+                df[new_col] = None
+
+        # Keep only DB columns (excluding id which is SERIAL)
+        columns = [
+            "game_id",
+            "season_type",
+            "game_date",
+            "game_time",
+            "team_name_team_home",
+            "game_number_team_home",
+            "team_name_team_away",
+            "game_number_team_away",
+            "matchup",
+            "total_over_under_line",
+            "average_total_over_money",
+            "average_total_under_money",
+            "most_common_total_over_money",
+            "most_common_total_under_money",
+            "predicted_total_score",
+            "margin_difference_prediction_vs_over_under",
+            "regressor_prediction",
+            "classifier_prediction_model2",
+            "prediction_date",
+            "time_to_match_minutes",
+            "total_scored_points",
+        ]
+
+        # Convert pandas NA to None
+        df = df.where(pd.notna(df), None)
+
+        values = [tuple(row) for row in df[columns].itertuples(index=False, name=None)]
+
         placeholders = ", ".join(["%s"] * len(columns))
         update_assignments = ", ".join(
             [
                 f"{col} = EXCLUDED.{col}"
                 for col in columns
-                if col not in ["GAME_ID", "PREDICTION_DATE", "id"]
+                if col not in ("game_id", "prediction_date")
             ]
         )
-        insert_query = f"""
-        INSERT INTO nba_predictions ({', '.join(columns)})
-        VALUES ({placeholders})
-        ON CONFLICT (GAME_ID, PREDICTION_DATE) DO UPDATE SET {update_assignments}
-        """
-        cursor.execute(insert_query, values)
-    conn.commit()
-    cursor.close()
-    conn.close()
+
+        insert_query = sql.SQL(
+            f"""
+            INSERT INTO {{}}.{{}} ({", ".join(columns)})
+            VALUES ({placeholders})
+            ON CONFLICT (game_id, prediction_date) DO UPDATE SET {update_assignments}
+            """
+        ).format(sql.Identifier(schema), sql.Identifier("nba_predictions"))
+
+        with conn.cursor() as cur:
+            cur.executemany(insert_query, values)
+        conn.commit()
+
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":

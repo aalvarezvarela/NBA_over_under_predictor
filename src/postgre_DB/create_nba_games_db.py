@@ -1,36 +1,35 @@
-import os
-
 import pandas as pd
 import psycopg
+from psycopg import sql
 
 from .db_config import (
-    connect_games_db,
+    connect_nba_db,
     connect_postgres_db,
-    get_games_db_name,
+    get_db_credentials,
+    get_schema_name_games,
 )
 
 
 def create_database():
-    """Create the PostgreSQL database if it doesn't exist."""
+    """Create the single PostgreSQL database (DB_NAME) if it doesn't exist."""
     try:
-        db_name = get_games_db_name()
-        # Connect to PostgreSQL server
+        db_name = get_db_credentials()["dbname"]
+
         conn = connect_postgres_db()
-        cursor = conn.cursor()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM pg_catalog.pg_database WHERE datname = %s", (db_name,)
+            )
+            exists = cur.fetchone()
 
-        # Check if database exists
-        cursor.execute(
-            "SELECT 1 FROM pg_catalog.pg_database WHERE datname = %s", (db_name,)
-        )
-        exists = cursor.fetchone()
+            if not exists:
+                cur.execute(
+                    sql.SQL("CREATE DATABASE {}").format(sql.Identifier(db_name))
+                )
+                print(f"Database '{db_name}' created successfully!")
+            else:
+                print(f"Database '{db_name}' already exists.")
 
-        if not exists:
-            cursor.execute(f"CREATE DATABASE {db_name}")
-            print(f"Database '{db_name}' created successfully!")
-        else:
-            print(f"Database '{db_name}' already exists.")
-
-        cursor.close()
         conn.close()
         return True
     except Exception as e:
@@ -38,239 +37,253 @@ def create_database():
         return False
 
 
-def create_table():
-    """Create the nba_games table with appropriate data types."""
-    try:
-        conn = connect_games_db()
-        cursor = conn.cursor()
-
-        # Drop table if exists (for fresh start)
-        cursor.execute("DROP TABLE IF EXISTS nba_games CASCADE")
-
-        # Create table with composite primary key
-        create_table_query = """
-        CREATE TABLE nba_games (
-            SEASON_ID TEXT NOT NULL,
-            SEASON_YEAR INTEGER NOT NULL,
-            TEAM_ID TEXT NOT NULL,
-            TEAM_ABBREVIATION VARCHAR(10),
-            TEAM_NAME VARCHAR(100),
-            GAME_ID TEXT NOT NULL,
-            GAME_DATE DATE NOT NULL,
-            MATCHUP VARCHAR(50),
-            WL VARCHAR(1),
-            MIN INTEGER,
-            PTS INTEGER NOT NULL,
-            FGM INTEGER,
-            FGA INTEGER,
-            FG_PCT NUMERIC(5, 3),
-            FG3M INTEGER,
-            FG3A INTEGER,
-            FG3_PCT NUMERIC(5, 3),
-            FTM INTEGER,
-            FTA INTEGER,
-            FT_PCT NUMERIC(5, 3),
-            OREB INTEGER,
-            DREB INTEGER,
-            REB INTEGER,
-            AST INTEGER,
-            STL INTEGER,
-            BLK INTEGER,
-            TOV INTEGER,
-            PF INTEGER,
-            PLUS_MINUS INTEGER,
-            SEASON_TYPE VARCHAR(20),
-            HOME BOOLEAN,
-            TEAM_CITY VARCHAR(50),
-            E_OFF_RATING NUMERIC(8, 3),
-            OFF_RATING NUMERIC(8, 3),
-            E_DEF_RATING NUMERIC(8, 3),
-            DEF_RATING NUMERIC(8, 3),
-            E_NET_RATING NUMERIC(8, 3),
-            NET_RATING NUMERIC(8, 3),
-            AST_PCT NUMERIC(8, 3),
-            AST_TOV NUMERIC(8, 3),
-            AST_RATIO NUMERIC(8, 3),
-            OREB_PCT NUMERIC(8, 3),
-            DREB_PCT NUMERIC(8, 3),
-            REB_PCT NUMERIC(8, 3),
-            E_TM_TOV_PCT NUMERIC(8, 3),
-            TM_TOV_PCT NUMERIC(8, 3),
-            EFG_PCT NUMERIC(8, 3),
-            TS_PCT NUMERIC(8, 3),
-            USG_PCT NUMERIC(8, 3),
-            E_USG_PCT NUMERIC(8, 3),
-            E_PACE NUMERIC(8, 3),
-            PACE NUMERIC(8, 3),
-            PACE_PER40 NUMERIC(8, 3),
-            POSS NUMERIC(8, 3),
-            PIE NUMERIC(8, 3),
-            PRIMARY KEY (GAME_ID, TEAM_ID, SEASON_ID, SEASON_YEAR)
+def create_schema_if_not_exists(conn: psycopg.Connection, schema: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(schema))
         )
-        """
+    conn.commit()
 
-        cursor.execute(create_table_query)
+
+def create_games_schema(drop_existing: bool = True):
+    """Create the nba_games table in schema SCHEMA_NAME_GAMES."""
+    try:
+        schema = get_schema_name_games()
+        conn = connect_nba_db()
+
+        create_schema_if_not_exists(conn, schema)
+
+        with conn.cursor() as cur:
+            if drop_existing:
+                cur.execute(
+                    sql.SQL("DROP TABLE IF EXISTS {}.{} CASCADE").format(
+                        sql.Identifier(schema),
+                        sql.Identifier("nba_games"),
+                    )
+                )
+
+            create_table_query = sql.SQL(
+                """
+                CREATE TABLE IF NOT EXISTS {}.{} (
+                    season_id TEXT NOT NULL,
+                    season_year INTEGER NOT NULL,
+                    team_id TEXT NOT NULL,
+                    team_abbreviation VARCHAR(10),
+                    team_name VARCHAR(100),
+                    game_id TEXT NOT NULL,
+                    game_date DATE NOT NULL,
+                    matchup VARCHAR(50),
+                    wl VARCHAR(1),
+                    min INTEGER,
+                    pts INTEGER NOT NULL,
+                    fgm INTEGER,
+                    fga INTEGER,
+                    fg_pct NUMERIC(5, 3),
+                    fg3m INTEGER,
+                    fg3a INTEGER,
+                    fg3_pct NUMERIC(5, 3),
+                    ftm INTEGER,
+                    fta INTEGER,
+                    ft_pct NUMERIC(5, 3),
+                    oreb INTEGER,
+                    dreb INTEGER,
+                    reb INTEGER,
+                    ast INTEGER,
+                    stl INTEGER,
+                    blk INTEGER,
+                    tov INTEGER,
+                    pf INTEGER,
+                    plus_minus INTEGER,
+                    season_type VARCHAR(20),
+                    home BOOLEAN,
+                    team_city VARCHAR(50),
+                    e_off_rating NUMERIC(8, 3),
+                    off_rating NUMERIC(8, 3),
+                    e_def_rating NUMERIC(8, 3),
+                    def_rating NUMERIC(8, 3),
+                    e_net_rating NUMERIC(8, 3),
+                    net_rating NUMERIC(8, 3),
+                    ast_pct NUMERIC(8, 3),
+                    ast_tov NUMERIC(8, 3),
+                    ast_ratio NUMERIC(8, 3),
+                    oreb_pct NUMERIC(8, 3),
+                    dreb_pct NUMERIC(8, 3),
+                    reb_pct NUMERIC(8, 3),
+                    e_tm_tov_pct NUMERIC(8, 3),
+                    tm_tov_pct NUMERIC(8, 3),
+                    efg_pct NUMERIC(8, 3),
+                    ts_pct NUMERIC(8, 3),
+                    usg_pct NUMERIC(8, 3),
+                    e_usg_pct NUMERIC(8, 3),
+                    e_pace NUMERIC(8, 3),
+                    pace NUMERIC(8, 3),
+                    pace_per40 NUMERIC(8, 3),
+                    poss NUMERIC(8, 3),
+                    pie NUMERIC(8, 3),
+                    PRIMARY KEY (game_id, team_id, season_id, season_year)
+                )
+                """
+            ).format(sql.Identifier(schema), sql.Identifier("nba_games"))
+
+            cur.execute(create_table_query)
+
+            # Indexes
+            cur.execute(
+                sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {}.{}(game_date)").format(
+                    sql.Identifier("idx_nba_games_game_date"),
+                    sql.Identifier(schema),
+                    sql.Identifier("nba_games"),
+                )
+            )
+            cur.execute(
+                sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {}.{}(team_id)").format(
+                    sql.Identifier("idx_nba_games_team_id"),
+                    sql.Identifier(schema),
+                    sql.Identifier("nba_games"),
+                )
+            )
+            cur.execute(
+                sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {}.{}(season_id)").format(
+                    sql.Identifier("idx_nba_games_season_id"),
+                    sql.Identifier(schema),
+                    sql.Identifier("nba_games"),
+                )
+            )
+
         conn.commit()
-        print("Table 'nba_games' created successfully with composite primary key!")
-
-        # Create indexes for better query performance
-        cursor.execute("CREATE INDEX idx_game_date ON nba_games(GAME_DATE)")
-        cursor.execute("CREATE INDEX idx_team_id ON nba_games(TEAM_ID)")
-        cursor.execute("CREATE INDEX idx_season_id ON nba_games(SEASON_ID)")
-        conn.commit()
-        print("Indexes created successfully!")
-
-        cursor.close()
         conn.close()
+        print(f"Table '{schema}.nba_games' created successfully!")
         return True
     except Exception as e:
         print(f"Error creating table: {e}")
         return False
 
 
-def load_data_to_db(df, conn=None):
-    """Load the combined dataframe into PostgreSQL.
-
-    Args:
-        df: DataFrame to load into the database
-        conn: Optional database connection. If None, creates a new connection.
-
-    Returns:
-        bool: True if successful, False otherwise
-    """
+def load_games_data_to_db(df: pd.DataFrame, conn: psycopg.Connection | None = None):
+    """Load dataframe into schema SCHEMA_NAME_GAMES table nba_games."""
     close_conn = False
+    schema = get_schema_name_games()
+
     try:
-        # Remove teamSlug column if it exists
         if "teamSlug" in df.columns:
             df = df.drop(columns=["teamSlug"])
-            print("Removed 'teamSlug' column")
 
         if conn is None:
-            conn = connect_games_db()
+            conn = connect_nba_db()
             close_conn = True
-        cursor = conn.cursor()
 
-        # Convert data types
-        print("Converting data types...")
+        create_schema_if_not_exists(conn, schema)
 
-        # Extract season_year from SEASON_ID (last 4 digits)
-        if "SEASON_ID" in df.columns:
-            df["SEASON_YEAR"] = df["SEASON_ID"].astype(str).str[-4:].astype(int)
-            print("Extracted season_year from SEASON_ID")
+        with conn.cursor() as cur:
+            if "SEASON_ID" in df.columns:
+                df["SEASON_YEAR"] = df["SEASON_ID"].astype(str).str[-4:].astype(int)
 
-        # Handle WL column - replace empty/NaN with None (NULL)
-        if "WL" in df.columns:
-            df["WL"] = df["WL"].replace("", None)
-            df["WL"] = df["WL"].where(df["WL"].notna(), None)
+            if "WL" in df.columns:
+                df["WL"] = df["WL"].replace("", None)
+                df["WL"] = df["WL"].where(df["WL"].notna(), None)
 
-        # Convert HOME to boolean
-        if "HOME" in df.columns:
-            df["HOME"] = df["HOME"].map(
-                {"True": True, "False": False, True: True, False: False}
+            if "HOME" in df.columns:
+                df["HOME"] = df["HOME"].map(
+                    {"True": True, "False": False, True: True, False: False}
+                )
+
+            if "GAME_DATE" in df.columns:
+                df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], errors="coerce")
+
+            integer_cols = [
+                "MIN",
+                "PTS",
+                "FGM",
+                "FGA",
+                "FG3M",
+                "FG3A",
+                "FTM",
+                "FTA",
+                "OREB",
+                "DREB",
+                "REB",
+                "AST",
+                "STL",
+                "BLK",
+                "TOV",
+                "PF",
+            ]
+            for col in integer_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
+
+            float_cols = [
+                "FG_PCT",
+                "FG3_PCT",
+                "FT_PCT",
+                "E_OFF_RATING",
+                "OFF_RATING",
+                "E_DEF_RATING",
+                "DEF_RATING",
+                "E_NET_RATING",
+                "NET_RATING",
+                "AST_PCT",
+                "AST_TOV",
+                "AST_RATIO",
+                "OREB_PCT",
+                "DREB_PCT",
+                "REB_PCT",
+                "E_TM_TOV_PCT",
+                "TM_TOV_PCT",
+                "EFG_PCT",
+                "TS_PCT",
+                "USG_PCT",
+                "E_USG_PCT",
+                "E_PACE",
+                "PACE",
+                "PACE_PER40",
+                "POSS",
+                "PIE",
+                "PLUS_MINUS",
+            ]
+            for col in float_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+
+            df = df.where(pd.notna(df), None)
+
+            columns = [col for col in df.columns if col != "teamSlug"]
+            column_names = ", ".join([col.lower() for col in columns])
+            placeholders = ", ".join(["%s"] * len(columns))
+
+            insert_query = sql.SQL(
+                """
+                INSERT INTO {}.{} ({})
+                VALUES ({})
+                ON CONFLICT (game_id, team_id, season_id, season_year) DO NOTHING
+                """
+            ).format(
+                sql.Identifier(schema),
+                sql.Identifier("nba_games"),
+                sql.SQL(column_names),
+                sql.SQL(placeholders),
             )
 
-        # Convert GAME_DATE to date format
-        if "GAME_DATE" in df.columns:
-            df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], errors="coerce")
+            batch_size = 1000
+            for i in range(0, len(df), batch_size):
+                batch = df.iloc[i : i + batch_size]
+                values = [tuple(row) for row in batch[columns].values]
+                cur.executemany(insert_query, values)
+                conn.commit()
 
-        # Convert numeric columns (those that aren't IDs or text)
-        integer_cols = [
-            "MIN",
-            "PTS",
-            "FGM",
-            "FGA",
-            "FG3M",
-            "FG3A",
-            "FTM",
-            "FTA",
-            "OREB",
-            "DREB",
-            "REB",
-            "AST",
-            "STL",
-            "BLK",
-            "TOV",
-            "PF",
-        ]
+            # Verify count
+            cur.execute(
+                sql.SQL("SELECT COUNT(*) FROM {}.{}").format(
+                    sql.Identifier(schema), sql.Identifier("nba_games")
+                )
+            )
+            count = cur.fetchone()[0]
+            print(f"Total rows in {schema}.nba_games: {count}")
 
-        for col in integer_cols:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
-
-        float_cols = [
-            "FG_PCT",
-            "FG3_PCT",
-            "FT_PCT",
-            "E_OFF_RATING",
-            "OFF_RATING",
-            "E_DEF_RATING",
-            "DEF_RATING",
-            "E_NET_RATING",
-            "NET_RATING",
-            "AST_PCT",
-            "AST_TOV",
-            "AST_RATIO",
-            "OREB_PCT",
-            "DREB_PCT",
-            "REB_PCT",
-            "E_TM_TOV_PCT",
-            "TM_TOV_PCT",
-            "EFG_PCT",
-            "TS_PCT",
-            "USG_PCT",
-            "E_USG_PCT",
-            "E_PACE",
-            "PACE",
-            "PACE_PER40",
-            "POSS",
-            "PIE",
-            "PLUS_MINUS",
-        ]
-
-        for col in float_cols:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-
-        # Convert all pandas NA/NaT values to None (NULL) for PostgreSQL compatibility
-        print("Converting pandas NA values to None...")
-        df = df.where(pd.notna(df), None)
-
-        print(f"Loading {len(df)} rows into database...")
-
-        # Prepare column names (excluding teamSlug) - use lowercase to match PostgreSQL table schema
-        columns = [col for col in df.columns if col != "teamSlug"]
-        column_names = ", ".join([col.lower() for col in columns])
-        placeholders = ", ".join(["%s"] * len(columns))
-
-        insert_query = f"""
-        INSERT INTO nba_games ({column_names})
-        VALUES ({placeholders})
-        ON CONFLICT (game_id, team_id, season_id, season_year) DO NOTHING
-        """
-
-        # Insert data in batches
-        batch_size = 1000
-        total_inserted = 0
-
-        for i in range(0, len(df), batch_size):
-            batch = df.iloc[i : i + batch_size]
-            values = [tuple(row) for row in batch[columns].values]
-            cursor.executemany(insert_query, values)
-            conn.commit()
-            total_inserted += len(batch)
-            print(f"Inserted {total_inserted}/{len(df)} rows...")
-
-        print(f"\nSuccessfully loaded {total_inserted} rows into the database!")
-
-        # Verify count
-        cursor.execute("SELECT COUNT(*) FROM nba_games")
-        count = cursor.fetchone()[0]
-        print(f"Total rows in database: {count}")
-
-        cursor.close()
         if close_conn:
             conn.close()
         return True
+
     except Exception as e:
         print(f"Error loading data: {e}")
         import traceback
@@ -287,7 +300,7 @@ if __name__ == "__main__":
         exit(1)
 
     print("\nStep 2: Creating table...")
-    if not create_table():
+    if not create_games_schema():
         exit(1)
 
     print("\nStep 3: Loading combined data...")
@@ -301,7 +314,7 @@ if __name__ == "__main__":
 
     if df_all_games is not None:
         print("\nStep 4: Inserting data into PostgreSQL...")
-        load_data_to_db(df_all_games)
+        load_games_data_to_db(df_all_games)
     else:
         print("Failed to load combined dataframe!")
         exit(1)
