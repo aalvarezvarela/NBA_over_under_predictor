@@ -13,7 +13,6 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 from config.settings import settings
 from postgre_DB.create_nba_predictions_db import (
-    create_predictions_table,
     insert_predictions,
 )
 

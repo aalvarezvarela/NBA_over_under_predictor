@@ -4,11 +4,6 @@ import pandas as pd
 import psycopg
 
 from .db_config import (
-    connect_odds_db as connect_app_db,
-)
-
-# Import database configuration from centralized config
-from .db_config import (
     connect_postgres_db,
     get_odds_db_name,
 )
@@ -45,7 +40,7 @@ def create_database():
 def create_odds_table():
     """Create the nba_odds table with appropriate data types."""
     try:
-        conn = connect_app_db()
+        conn = connect_postgres_db()
         cursor = conn.cursor()
 
         # Drop table if exists (for fresh start)
@@ -129,7 +124,7 @@ def load_odds_data_to_db(csv_path, conn=None):
         print(f"Loaded {len(df)} rows from CSV")
 
         if conn is None:
-            conn = connect_app_db()
+            conn = connect_postgres_db()
             close_conn = True
         cursor = conn.cursor()
 
@@ -258,7 +253,7 @@ def get_odds_for_game(game_date, team_home, team_away):
         dict: Odds data for the game, or None if not found
     """
     try:
-        conn = connect_app_db()
+        conn = connect_postgres_db()
         cursor = conn.cursor()
 
         query = """
@@ -293,7 +288,7 @@ def get_recent_odds(limit=10):
         list: List of dictionaries containing odds data
     """
     try:
-        conn = connect_app_db()
+        conn = connect_postgres_db()
         cursor = conn.cursor()
 
         query = """

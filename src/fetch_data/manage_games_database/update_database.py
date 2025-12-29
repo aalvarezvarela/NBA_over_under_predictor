@@ -12,12 +12,12 @@ from datetime import datetime
 import pandas as pd
 from postgre_DB.create_nba_games_db import load_data_to_db
 from postgre_DB.create_nba_players_db import load_data_to_db as load_players_to_db
+from utils.general_utils import get_nba_season_nullable
 
 from .update_database_utils import (
     fetch_nba_data,
     get_existing_game_ids_from_db,
     get_existing_player_game_ids_from_db,
-    get_nba_season_to_update,
 )
 
 
@@ -115,7 +115,7 @@ def update_database(database_folder: str, date=None):
     if not date:
         date = datetime.now()
     # Get Season to Update
-    season_nullable = get_nba_season_to_update(date)
+    season_nullable = get_nba_season_nullable(date)
     season_year = season_nullable[:4]  # Extract first 4 digits
     teams_filename = f"nba_games_{season_nullable.replace('-', '_')}.csv"
     players_filename = f"nba_players_{season_nullable.replace('-', '_')}.csv"

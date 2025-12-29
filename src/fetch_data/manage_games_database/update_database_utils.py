@@ -8,7 +8,6 @@ from the NBA API, including game statistics and box scores.
 import random
 import re
 import time
-from datetime import datetime
 
 import pandas as pd
 import requests
@@ -27,21 +26,6 @@ from .mapping_v3_v2 import (
     V3_TO_V2_ADVANCED_TEAM_MAP,
     V3_TO_V2_TRADITIONAL_MAP,
 )
-
-
-def get_nba_season_to_update(date):
-    # convert it to date if string
-    if isinstance(date, str):
-        date = datetime.strptime(date, "%Y-%m-%d")
-    year = date.year
-
-    # If we are before July, we are still in the previous season
-    if date.month < 11:
-        season = f"{year-1}-{str(year)[-2:]}"
-    else:
-        season = f"{year}-{str(year+1)[-2:]}"
-
-    return season
 
 
 def get_existing_game_ids_from_db(season_year: str, db_connection=None) -> set:
@@ -128,7 +112,6 @@ def reset_nba_http_session():
         old_session.close()
     NBAHTTP._session = None
     NBAHTTP.set_session(requests.Session())
-
 
 
 def classify_season_type(game_id: str) -> str:

@@ -5,16 +5,14 @@ This script manages the update of NBA betting odds data by fetching new odds
 from external APIs.
 """
 
-from fetch_data.manage_games_database.update_database_utils import (
-    get_nba_season_to_update,
-)
+from utils.general_utils import get_nba_season_nullable
 
 from .update_odds_utils import update_odds_df
 
 
 def update_odds(date_to_predict, odds_folder: str, ODDS_API_KEY, BASE_URL):
     # Get Season to Update
-    season_nullable = get_nba_season_to_update(date_to_predict)
+    season_nullable = get_nba_season_nullable(date_to_predict)
 
     df_name = "odds_data.csv"
 

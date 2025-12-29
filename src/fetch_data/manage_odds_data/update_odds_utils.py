@@ -166,6 +166,14 @@ def update_odds_db(df_odds: pd.DataFrame) -> bool:
     conn.close()
     return True
 
+def american_to_decimal(a: float) -> float:
+    a = float(a)
+    if not a or a == 0:
+        return None
+    if a > 0:
+        return 1.0 + a / 100.0
+    if a < 0:
+        return 1.0 + 100.0 / abs(a)
 
 def process_odds_date(
     date: str, BASE_URL: str, HEADERS: dict, is_today=False
@@ -222,13 +230,17 @@ def process_odds_date(
                 total_line = abs(total_info[total_field])
                 if total_line > 100:
                     total_lines.append(total_line)
-                    # Extract total_over_money_delta and total_under_money_delta if present
+                    
+                    # Extract total_over_money_delta and total_under_money_delta if present, convert to decimal odds
                     if total_money_over_field in total_info and abs(total_info[total_money_over_field]) > 10:
-                        val = abs(total_info[total_money_over_field])
+                        val = total_info[total_money_over_field]
+                        val = american_to_decimal(val)
                         total_over_money_deltas.append(val)
                         total_over_money_deltas_for_common.append(val)
+                    
                     if total_money_under_field in total_info and abs(total_info[total_money_under_field]) > 10:
-                        val = abs(total_info[total_money_under_field])
+                        val = total_info[total_money_under_field]
+                        val = american_to_decimal(val)
                         total_under_money_deltas.append(val)
                         total_under_money_deltas_for_common.append(val)
 
