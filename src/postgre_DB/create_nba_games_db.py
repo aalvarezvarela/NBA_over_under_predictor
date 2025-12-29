@@ -4,11 +4,7 @@ import pandas as pd
 import psycopg
 
 from .db_config import (
-    connect_games_db as connect_app_db,
-)
-
-# Import database configuration from centralized config
-from .db_config import (
+    connect_games_db,
     connect_postgres_db,
     get_games_db_name,
 )
@@ -45,7 +41,7 @@ def create_database():
 def create_table():
     """Create the nba_games table with appropriate data types."""
     try:
-        conn = connect_app_db()
+        conn = connect_games_db()
         cursor = conn.cursor()
 
         # Drop table if exists (for fresh start)
@@ -150,7 +146,7 @@ def load_data_to_db(df, conn=None):
             print("Removed 'teamSlug' column")
 
         if conn is None:
-            conn = connect_app_db()
+            conn = connect_games_db()
             close_conn = True
         cursor = conn.cursor()
 
