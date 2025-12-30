@@ -9,10 +9,6 @@ on:
                 required: false
                 default: ""
 
-    # # Scheduled trigger (example: every day at 07:00 UTC)
-    # schedule:
-    #     - cron: "0 7 * * *"
-
 # Prevent overlapping runs (important if writing to the same DB)
 concurrency:
     group: nba-predictor

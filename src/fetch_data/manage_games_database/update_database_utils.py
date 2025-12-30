@@ -269,10 +269,20 @@ def fetch_nba_data(
     if not re.match(r"^\d{4}-\d{2}$", season_nullable):
         raise ValueError("Invalid season format. Expected format: 'YYYY-YY'")
 
-    game_finder = LeagueGameFinder(
-        season_nullable=season_nullable, league_id_nullable="00"
-    )
-    games = game_finder.get_data_frames()[0]
+    # Retry LeagueGameFinder up to 3 times if it fails
+    for attempt in range(1, 4):
+        try:
+            game_finder = LeagueGameFinder(
+                season_nullable=season_nullable, league_id_nullable="00"
+            )
+            games = game_finder.get_data_frames()[0]
+            break
+        except Exception as e:
+            print(f"LeagueGameFinder attempt {attempt} failed: {e}")
+            if attempt == 3:
+                raise
+            time.sleep(5 * attempt)
+
     games["SEASON_TYPE"] = games["GAME_ID"].apply(classify_season_type)
     games["HOME"] = games["MATCHUP"].str.contains("vs.")
 

@@ -5,9 +5,9 @@ on:
   schedule:
     - cron: "10 10 * * *"
 
-concurrency:
-  group: backfill-games-players
-  cancel-in-progress: false
+# concurrency:
+#   group: backfill-games-players
+#   cancel-in-progress: false
 
 permissions:
   contents: read
