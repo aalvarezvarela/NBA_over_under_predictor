@@ -149,11 +149,15 @@ def connect_postgres_db() -> psycopg.Connection:
 
     return psycopg.connect(**kwargs)
 
-
 def connect_nba_db() -> psycopg.Connection:
     """Connect to the configured database (local or Supabase)."""
     c = get_db_credentials()
-    print(f"Connecting to database environment: {c['env']}")
+
+    # Prefer DSN for Supabase (pooler/session mode). This also fixes IPv6 issues in GitHub runners.
+    if c["env"] == "supabase":
+        dsn = os.getenv("SUPABASE_DB_URL")
+        if dsn:
+            return psycopg.connect(dsn)
 
     kwargs: dict[str, Any] = dict(
         dbname=c["dbname"],
@@ -162,8 +166,8 @@ def connect_nba_db() -> psycopg.Connection:
         host=c["host"],
         port=c["port"],
     )
-    if c["sslmode"]:
-        kwargs["sslmode"] = c["sslmode"]  # supabase: "require"
+    if c.get("sslmode"):
+        kwargs["sslmode"] = c["sslmode"]
 
     return psycopg.connect(**kwargs)
 
