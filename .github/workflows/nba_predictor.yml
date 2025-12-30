@@ -26,6 +26,8 @@ jobs:
         runs-on: ubuntu-latest
 
         env:
+            PYTHONWARNINGS: "ignore::UserWarning,ignore::DeprecationWarning,ignore::FutureWarning"
+
             # Force Supabase usage
             DB_ENV: supabase
 
