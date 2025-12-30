@@ -12,35 +12,65 @@ from pathlib import Path
 # Locate the config.ini file (assumes it's in the project root)
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 CONFIG_FILE = PROJECT_ROOT / "config.ini"
+SECRETS_FILE = PROJECT_ROOT / "config.secrets.ini"
 
 
 class Settings:
-    """
-    Application settings loaded from config.ini file.
-
-    This class reads configuration from the config.ini file and provides
-    easy access to all application settings through properties.
-    """
-
-    def __init__(self, config_path: str = None):
-        """
-        Initialize settings by loading from config.ini.
-
-        Args:
-            config_path: Optional custom path to config file.
-                        If None, uses default location.
-        """
+    def __init__(self, config_path: str | None = None, secrets_path: str | None = None):
         self.config = configparser.ConfigParser()
 
-        if config_path:
-            self.config.read(config_path)
-        elif CONFIG_FILE.exists():
-            self.config.read(CONFIG_FILE)
-        else:
+        main_path = Path(config_path) if config_path else CONFIG_FILE
+        if not main_path.exists():
             raise FileNotFoundError(
-                f"Config file not found at {CONFIG_FILE}. "
+                f"Config file not found at {main_path}. "
                 "Please ensure config.ini exists in the project root."
             )
+
+        # 1) Load committed config
+        self.config.read(main_path)
+
+        # 2) Overlay optional secrets config (local)
+        secrets_path = Path(secrets_path) if secrets_path else SECRETS_FILE
+        if secrets_path.exists():
+            self.config.read(secrets_path)
+
+    # -------------------------------------------------------------------------
+    # Secret resolver
+    # -------------------------------------------------------------------------
+    def _get_secret(
+        self,
+        section: str,
+        key: str,
+        env_var: str,
+        *,
+        required: bool = True,
+        fallback: str | None = None,
+    ) -> str:
+        """
+        Resolve secrets with priority:
+          1) Environment variable
+          2) config.ini/config.secrets.ini (overlay)
+          3) fallback (if provided)
+        """
+        v = os.getenv(env_var)
+        if v is not None and v != "":
+            return v
+
+        if self.config.has_option(section, key):
+            v = self.config.get(section, key).strip()
+            if v != "":
+                return v
+
+        if fallback is not None:
+            return fallback
+
+        if required:
+            raise ValueError(
+                f"Missing required secret [{section}] {key}. "
+                f"Set env var {env_var} or define it in config.secrets.ini."
+            )
+
+        return ""
 
     # =========================================================================
     # PATHS
@@ -106,8 +136,8 @@ class Settings:
 
     @property
     def odds_api_key(self) -> str:
-        """API key for accessing odds data."""
-        return self.config.get("Odds", "ODDS_API_KEY", fallback="")
+        # Env var in CI, secrets file locally
+        return self._get_secret("Odds", "ODDS_API_KEY", env_var="ODDS_API_KEY")
 
     @property
     def odds_base_url(self) -> str:
@@ -168,16 +198,7 @@ settings = Settings()
 
 
 # For backward compatibility and convenience
-def get_settings(config_path: str = None) -> Settings:
-    """
-    Get a Settings instance.
-
-    Args:
-        config_path: Optional custom path to config file
-
-    Returns:
-        Settings instance
-    """
+def get_settings(config_path: str | None = None) -> Settings:
     if config_path:
         return Settings(config_path)
     return settings

@@ -4,88 +4,171 @@ Reads database credentials from config.ini file.
 """
 
 import configparser
+import os
 from pathlib import Path
+from typing import Any
 
 import psycopg
 from psycopg import sql
 
+_CURRENT_DIR = Path(__file__).resolve().parent
+_PROJECT_ROOT = _CURRENT_DIR.parent.parent
 
-def get_config():
-    """Load configuration from config.ini file."""
-    # Get the project root directory (2 levels up from this file)
-    current_dir = Path(__file__).resolve().parent
-    project_root = current_dir.parent.parent
-    config_path = project_root / "config.ini"
+_CONFIG_INI = _PROJECT_ROOT / "config.ini"
+_SECRETS_INI = _PROJECT_ROOT / "config.secrets.ini"
 
-    if not config_path.exists():
-        raise FileNotFoundError(f"Config file not found at: {config_path}")
+
+def get_config() -> configparser.ConfigParser:
+    """Load configuration from config.ini and overlay config.secrets.ini if present."""
+    if not _CONFIG_INI.exists():
+        raise FileNotFoundError(f"Config file not found at: {_CONFIG_INI}")
 
     config = configparser.ConfigParser()
-    config.read(config_path)
+    config.read(_CONFIG_INI)
+
+    # Overlay optional local secrets file (gitignored)
+    if _SECRETS_INI.exists():
+        config.read(_SECRETS_INI)
+
     return config
 
 
-def get_db_credentials():
-    """Get database credentials from config.ini."""
+def _get_env_or_config(
+    config: configparser.ConfigParser,
+    section: str,
+    key: str,
+    env_var: str,
+    *,
+    required: bool = True,
+    fallback: str | None = None,
+) -> str:
+    """Resolve value with priority: env var -> config -> fallback -> error."""
+    v = os.getenv(env_var)
+    if v is not None and v != "":
+        return v
+
+    if config.has_option(section, key):
+        v = config.get(section, key).strip()
+        if v != "":
+            return v
+
+    if fallback is not None:
+        return fallback
+
+    if required:
+        raise ValueError(
+            f"Missing required setting [{section}] {key}. "
+            f"Set env var {env_var} or define it in config.secrets.ini."
+        )
+
+    return ""
+
+
+def get_db_env() -> str:
+    """Return current DB environment: local|supabase."""
     config = get_config()
+    return (
+        os.getenv("DB_ENV", config.get("Database", "DB_ENV", fallback="local"))
+        .strip()
+        .lower()
+    )
+
+
+def get_db_credentials() -> dict[str, Any]:
+    """
+    Get database credentials with env var overrides and secrets support.
+    """
+    config = get_config()
+    db_env = get_db_env()
+    section = "DatabaseSupabase" if db_env == "supabase" else "DatabaseLocal"
+
+    # Non-secret settings (config.ini)
+    user = config.get(section, "DB_USER")
+    host = config.get(section, "DB_HOST")
+    port = config.get(section, "DB_PORT")
+    sslmode = config.get(section, "DB_SSLMODE", fallback="").strip() or None
+
+    # DB name can be per-environment; fallback to [Database].DB_NAME
+    dbname = config.get(section, "DB_NAME", fallback=config.get("Database", "DB_NAME"))
+    dbname = dbname.strip().strip('"').strip("'")
+
+    # Secret password: env var preferred, else secrets file
+    password_env = (
+        "SUPABASE_DB_PASSWORD" if db_env == "supabase" else "LOCAL_DB_PASSWORD"
+    )
+    password = _get_env_or_config(
+        config, section, "DB_PASSWORD", password_env, required=True
+    )
+
     return {
-        "user": config.get("Database", "DB_USER"),
-        "password": config.get("Database", "DB_PASSWORD"),
-        "host": config.get("Database", "DB_HOST"),
-        "port": config.get("Database", "DB_PORT"),
-        "dbname": config.get("Database", "DB_NAME").strip().strip('"').strip("'"),
+        "env": db_env,
+        "user": user,
+        "password": password,
+        "host": host,
+        "port": port,
+        "dbname": dbname,
+        "sslmode": sslmode,
     }
 
 
-def get_schema_name_games():
-    config = get_config()
-    return config.get("Database", "SCHEMA_NAME_GAMES")
+def get_schema_name_games() -> str:
+    return get_config().get("Database", "SCHEMA_NAME_GAMES")
 
 
-def get_schema_name_players():
-    config = get_config()
-    return config.get("Database", "SCHEMA_NAME_PLAYERS")
+def get_schema_name_players() -> str:
+    return get_config().get("Database", "SCHEMA_NAME_PLAYERS")
 
 
-def get_schema_name_odds():
-    config = get_config()
-    return config.get("Database", "SCHEMA_NAME_ODDS")
+def get_schema_name_odds() -> str:
+    return get_config().get("Database", "SCHEMA_NAME_ODDS")
 
 
-def get_schema_name_predictions():
-    config = get_config()
-    return config.get("Database", "SCHEMA_NAME_PREDICTIONS")
+def get_schema_name_predictions() -> str:
+    return get_config().get("Database", "SCHEMA_NAME_PREDICTIONS")
 
 
-def connect_postgres_db():
-    """Connect to PostgreSQL server (postgres database) for admin tasks."""
-    credentials = get_db_credentials()
-    return psycopg.connect(
+def connect_postgres_db() -> psycopg.Connection:
+    """
+    Connect to the 'postgres' database for admin tasks.
+
+    Note: On Supabase you typically do not need admin DB creation; still usable for
+    maintenance queries if your role permits.
+    """
+    c = get_db_credentials()
+
+    kwargs: dict[str, Any] = dict(
         dbname="postgres",
-        user=credentials["user"],
-        password=credentials["password"],
-        host=credentials["host"],
-        port=credentials["port"],
+        user=c["user"],
+        password=c["password"],
+        host=c["host"],
+        port=c["port"],
         autocommit=True,
     )
+    if c["sslmode"]:
+        kwargs["sslmode"] = c["sslmode"]
+
+    return psycopg.connect(**kwargs)
 
 
-def connect_nba_db():
-    """Connect to the single NBA database."""
-    credentials = get_db_credentials()
-    return psycopg.connect(
-        dbname=credentials["dbname"],
-        user=credentials["user"],
-        password=credentials["password"],
-        host=credentials["host"],
-        port=credentials["port"],
+def connect_nba_db() -> psycopg.Connection:
+    """Connect to the configured database (local or Supabase)."""
+    c = get_db_credentials()
+
+    kwargs: dict[str, Any] = dict(
+        dbname=c["dbname"],
+        user=c["user"],
+        password=c["password"],
+        host=c["host"],
+        port=c["port"],
     )
+    if c["sslmode"]:
+        kwargs["sslmode"] = c["sslmode"]  # supabase: "require"
+
+    return psycopg.connect(**kwargs)
 
 
-def connect_schema_db(schema: str):
-    """
-    Connect to the single NBA database and set search_path to the given schema.
-    """
+def connect_schema_db(schema: str) -> psycopg.Connection:
+    """Connect and set search_path to the given schema."""
     conn = connect_nba_db()
     with conn.cursor() as cur:
         cur.execute(
@@ -95,17 +178,17 @@ def connect_schema_db(schema: str):
     return conn
 
 
-def connect_games_db():
+def connect_games_db() -> psycopg.Connection:
     return connect_schema_db(get_schema_name_games())
 
 
-def connect_players_db():
+def connect_players_db() -> psycopg.Connection:
     return connect_schema_db(get_schema_name_players())
 
 
-def connect_odds_db():
+def connect_odds_db() -> psycopg.Connection:
     return connect_schema_db(get_schema_name_odds())
 
 
-def connect_predictions_db():
+def connect_predictions_db() -> psycopg.Connection:
     return connect_schema_db(get_schema_name_predictions())

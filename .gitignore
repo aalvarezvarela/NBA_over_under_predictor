@@ -209,3 +209,6 @@ __marimo__/
 Predictions/*
 Predictions/NBA_predictions_2025-12-25.xlsx
 *.sql
+database/*
+secrets.ini
+config.secrets.ini
