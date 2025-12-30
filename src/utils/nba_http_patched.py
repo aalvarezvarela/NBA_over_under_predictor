@@ -24,9 +24,9 @@ class PatchedNBAStatsHTTP(NBAStatsHTTP):
       - optional Connection: close in GitHub Actions
     """
 
-    DEFAULT_TIMEOUT: Tuple[float, float] = (10.0, 60.0)
+    DEFAULT_TIMEOUT: Tuple[float, float] = (10.0, 30.0)
 
-    RETRY_TOTAL = 5
+    RETRY_TOTAL = 1
     BACKOFF_FACTOR = 1.0
     STATUS_FORCELIST = (429, 500, 502, 503, 504)
     ALLOWED_METHODS = frozenset(["GET", "HEAD", "OPTIONS"])

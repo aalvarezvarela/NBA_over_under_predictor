@@ -126,15 +126,18 @@ Examples:
 
     try:
         # Step 1: Update the database
-        print_step_header(1, "Updating Game Database")
-        limit = True
-        while limit:
-            limit = update_database(
-                str(data_folder / "season_games_data/"),
-                date=datetime.strptime(date_to_predict, "%Y-%m-%d"),
-                save_csv=args.save_excel,
-            )
-
+        try:
+            print_step_header(1, "Updating Game Database")
+            limit = True
+            while limit:
+                limit = update_database(
+                    str(data_folder / "season_games_data/"),
+                    date=datetime.strptime(date_to_predict, "%Y-%m-%d"),
+                    save_csv=args.save_excel,
+                )
+        except Exception as e:
+            print(f"⚠️  Warning: Database update failed with error: {e}")
+            print("    Proceeding with existing data...")
         # Step 2: Update odds data
         print_step_header(2, "Fetching Betting Odds Data")
         odds_folder = settings.get_absolute_path(settings.odds_data_folder)
