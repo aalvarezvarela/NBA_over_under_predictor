@@ -33,12 +33,7 @@ from .mapping_v3_v2 import (
     V3_TO_V2_TRADITIONAL_MAP,
 )
 
-
-def configure_nba_api_headers() -> None:
-    # Correct location in nba_api
-    from nba_api.stats.library.http import NBAStatsHTTP
-
-    NBAStatsHTTP.headers = {
+NBA_HEADERS ={
         "Host": "stats.nba.com",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
         "Accept": "application/json, text/plain, */*",
@@ -52,12 +47,6 @@ def configure_nba_api_headers() -> None:
         "Sec-Ch-Ua-Mobile": "?0",
         "Sec-Fetch-Dest": "empty",
     }
-
-
-# Call this once at startup
-configure_nba_api_headers()
-
-
 def get_existing_game_ids_from_db(season_year: str, db_connection=None) -> set:
     """Query existing game IDs from PostgreSQL database for a specific season.
 
@@ -300,6 +289,7 @@ def fetch_nba_data(
             game_finder = LeagueGameFinder(
                 season_nullable=season_nullable,
                 league_id_nullable="00",
+                headers=NBA_HEADERS,
             )
             time.sleep(random.uniform(0.1, 0.3))  # Avoid rate limiting
             games = game_finder.get_data_frames()[0]
