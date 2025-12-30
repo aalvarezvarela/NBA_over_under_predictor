@@ -9,12 +9,6 @@ import random
 import re
 import time
 
-from utils.patch_nba_api_http import patch_nba_api_http
-
-patch_nba_api_http()
-
-from nba_api.stats.endpoints import LeagueGameFinder
-
 import pandas as pd
 import requests
 from config.constants import SEASON_TYPE_MAP as SEASON_TYPE_MAPPING
@@ -39,20 +33,27 @@ from .mapping_v3_v2 import (
     V3_TO_V2_TRADITIONAL_MAP,
 )
 
-NBA_HEADERS ={
-        "Host": "stats.nba.com",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.5",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "keep-alive",
-        "Referer": "https://stats.nba.com/",
-        "Pragma": "no-cache",
-        "Cache-Control": "no-cache",
-        "Sec-Ch-Ua": '"Chromium";v="140", "Google Chrome";v="140", "Not;A=Brand";v="24"',
-        "Sec-Ch-Ua-Mobile": "?0",
-        "Sec-Fetch-Dest": "empty",
-    }
+NBA_HEADERS = {
+    "Host": "stats.nba.com",
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/139.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Referer": "https://www.nba.com/",
+    "Pragma": "no-cache",
+    "Cache-Control": "no-cache",
+    "Sec-Ch-Ua": '"Chromium";v="139", "Google Chrome";v="139", "Not.A/Brand";v="24"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Linux"',
+    "Sec-Fetch-Dest": "empty",
+}
+
+
 def get_existing_game_ids_from_db(season_year: str, db_connection=None) -> set:
     """Query existing game IDs from PostgreSQL database for a specific season.
 
@@ -292,14 +293,17 @@ def fetch_nba_data(
     for attempt in range(1, 4):
         try:
             time.sleep(random.uniform(0.1, 0.3))  # Avoid rate limiting
-     
+
             game_finder = LeagueGameFinder(
                 season_nullable=season_nullable,
                 league_id_nullable="00",
+                headers=NBA_HEADERS,
             )
             time.sleep(random.uniform(0.1, 0.3))  # Avoid rate limiting
             games = game_finder.get_data_frames()[0]
-            print(f"Fetched {len(games)} games for season {season_nullable}, attempt {attempt}")
+            print(
+                f"Fetched {len(games)} games for season {season_nullable}, attempt {attempt}"
+            )
             break
         except Exception as e:
             print(
