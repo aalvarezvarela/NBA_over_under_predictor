@@ -559,7 +559,7 @@ def merge_teams_df_with_odds(df_odds, df_team):
 
 
 def update_and_get_odds_df(
-    date_to_predict, odds_folder, df_name, season_to_download, ODDS_API_KEY, BASE_URL
+    date_to_predict, odds_folder, df_name, season_to_download, ODDS_API_KEY, BASE_URL, save_csv: bool = False
 ):
     HEADERS = {
         "x-rapidapi-key": ODDS_API_KEY,
@@ -603,7 +603,11 @@ def update_and_get_odds_df(
         df_odds.sort_values(by="game_date", inplace=True, ascending=False)
         df_odds.reset_index(drop=True, inplace=True)
 
-    df_odds.to_csv(os.path.join(odds_folder, df_name), index=False)
+    if save_csv:
+        # Save updated odds data to CSV
+        odds_path = os.path.join(odds_folder, df_name)
+        df_odds.to_csv(odds_path, index=False)
+        print(f"✓ Odds data saved to CSV at {odds_path}")
     # Here update after today and tomorrow are loaded
     update_odds_db(df_odds)
 

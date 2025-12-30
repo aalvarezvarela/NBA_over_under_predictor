@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 from config.settings import settings
 from postgre_DB.create_nba_predictions_db import (
-    insert_predictions,
+    upload_predictions_to_postgre,
 )
 
 
@@ -188,7 +188,7 @@ def predict_nba_games(
 
     # Drop rows with NaN in PREDICTED_TOTAL_SCORE before saving to database
     df_summary_clean = df_summary.dropna(subset=["PREDICTED_TOTAL_SCORE"])
-    insert_predictions(df_summary_clean)
+    upload_predictions_to_postgre(df_summary_clean)
 
     return list_of_dfs
 

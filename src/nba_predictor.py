@@ -76,6 +76,13 @@ Examples:
         type=str,
         help="Prediction date in YYYY-MM-DD format (default: today)",
     )
+    parser.add_argument(
+        "-s",
+        "--save-excel",
+        action="store_true",
+        default=False,
+        help="If set, save predictions to Excel. Default: False",
+    )
 
     args = parser.parse_args()
 
@@ -122,7 +129,11 @@ Examples:
         print_step_header(1, "Updating Game Database")
         limit = True
         while limit:
-            limit = update_database(str(data_folder / "season_games_data/"), date = datetime.strptime(date_to_predict, "%Y-%m-%d"))
+            limit = update_database(
+                str(data_folder / "season_games_data/"),
+                date=datetime.strptime(date_to_predict, "%Y-%m-%d"),
+                save_csv=args.save_excel,
+            )
 
         # Step 2: Update odds data
         print_step_header(2, "Fetching Betting Odds Data")
@@ -134,6 +145,7 @@ Examples:
             odds_folder=str(odds_folder),
             ODDS_API_KEY=settings.odds_api_key,
             BASE_URL=settings.odds_base_url,
+            save_csv=args.save_excel,
         )
         print("✓ Odds data updated successfully")
 
@@ -160,19 +172,18 @@ Examples:
         predictions_dfs = predict_nba_games(df_to_predict)
 
         # Step 5: Send summary prediction [0] of dataframes to DB
-        
-        # Step 6: Save predictions
-        print_step_header(5, "Saving Results")
-        output_file = output_dir / f"NBA_predictions_{date_to_predict}.xlsx"
-        save_predictions_to_excel(predictions_dfs, str(output_file), LEGEND)
 
-        # Print success summary
-        print("\n" + "=" * 60)
-        print("  ✓ PREDICTION COMPLETED SUCCESSFULLY!")
-        print("=" * 60)
-        print(f"📄 Results saved to: {output_file}")
-        print(f"📊 Total games analyzed: {len(df_to_predict)}")
-        print("\n")
+        # Step 6: Save predictions (optional)
+        if args.save_excel:
+            print_step_header(5, "Saving Results")
+            output_file = output_dir / f"NBA_predictions_{date_to_predict}.xlsx"
+            save_predictions_to_excel(predictions_dfs, str(output_file), LEGEND)
+            print("\n" + "=" * 60)
+            print("  ✓ PREDICTION COMPLETED SUCCESSFULLY!")
+            print("=" * 60)
+            print(f"📄 Results saved to: {output_file}")
+            print(f"📊 Total games analyzed: {len(df_to_predict)}")
+            print("\n")
 
         return 0
 

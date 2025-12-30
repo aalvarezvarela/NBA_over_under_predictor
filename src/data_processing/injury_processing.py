@@ -32,7 +32,7 @@ status_pattern = re.compile(r"^[A-Z][a-zA-Z]*$")
 player_name_pattern = re.compile(r"^[A-Z][a-zA-Z'.\- ]+, [A-Z][a-zA-Z'.\-]+")
 
 
-NBA_INJURY_REPORTS_URL = "https://official.nba.com/nba-injury-report-2024-25-season/"
+# NBA_INJURY_REPORTS_URL = "https://official.nba.com/nba-injury-report-2024-25-season/"
 
 
 def get_latest_pdf(nba_injury_report_url, save_path="latest_report_today.pdf"):
@@ -142,7 +142,7 @@ def classify_token(token, category):
             return True
     if category == "Team":
         if team_pattern.match(token) or token == "Philadelphia 76ers":
-            if not "," in token:
+            if "," not in token:
                 return True
     if category == "Current Status":
         if status_pattern.match(token):
@@ -257,7 +257,7 @@ def read_injury_report(pdf_path):
     return df
 
 
-def retrieve_injury_report_as_df(NBA_INJURY_REPORTS_URL, reports_path):
+def retrieve_injury_report_as_df(nba_injury_reports_url, reports_path):
     """
     Retrieves the latest injury report PDF from the NBA website,
     extracts the data, and saves it to a CSV file.
@@ -268,7 +268,7 @@ def retrieve_injury_report_as_df(NBA_INJURY_REPORTS_URL, reports_path):
     # Get the latest PDF
     pdf_name = f"latest_report_{game_date}.pdf"
     pdf_path = os.path.join(reports_path, pdf_name)
-    get_latest_pdf(NBA_INJURY_REPORTS_URL, pdf_path)
+    get_latest_pdf(nba_injury_reports_url, pdf_path)
 
     # Read the PDF and extract data
     df_report = read_injury_report(pdf_path)

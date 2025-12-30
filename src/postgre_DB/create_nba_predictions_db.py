@@ -85,7 +85,7 @@ def create_predictions_table():
         conn.close()
 
 
-def insert_predictions(df: pd.DataFrame):
+def upload_predictions_to_postgre(df: pd.DataFrame):
     """
     Insert the summary DataFrame into schema.table nba_predictions.
     Upserts on (game_id, prediction_date).
