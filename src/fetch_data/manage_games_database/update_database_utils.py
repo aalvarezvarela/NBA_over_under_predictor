@@ -33,20 +33,29 @@ from .mapping_v3_v2 import (
     V3_TO_V2_TRADITIONAL_MAP,
 )
 
-NBAHTTP.headers = {
-    "Host": "stats.nba.com",
-    "Connection": "keep-alive",
-    "Cache-Control": "no-cache",
-    "Pragma": "no-cache",
-    "User-Agent": (
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.nba.com/",
-    "Origin": "https://www.nba.com",
-}
+
+def configure_nba_api_headers() -> None:
+    # Correct location in nba_api
+    from nba_api.stats.library.http import NBAStatsHTTP
+
+    NBAStatsHTTP.headers = {
+        "Host": "stats.nba.com",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Referer": "https://stats.nba.com/",
+        "Pragma": "no-cache",
+        "Cache-Control": "no-cache",
+        "Sec-Ch-Ua": '"Chromium";v="140", "Google Chrome";v="140", "Not;A=Brand";v="24"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Fetch-Dest": "empty",
+    }
+
+
+# Call this once at startup
+configure_nba_api_headers()
 
 
 def get_existing_game_ids_from_db(season_year: str, db_connection=None) -> set:
