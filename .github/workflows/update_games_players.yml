@@ -1,8 +1,6 @@
 name: Update PostgreSQL DB Games & Players
 
 on:
-  
-  
   schedule:
     - cron: "50 17 * * *"  # 19:45 Madrid during CEST (UTC+2)
     - cron: "50 18 * * *"  # 19:45 Madrid during CET  (UTC+1)
