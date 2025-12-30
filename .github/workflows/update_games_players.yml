@@ -3,8 +3,7 @@ name: Update PostgreSQL DB Games & Players
 on:
   workflow_dispatch:
   schedule:
-    - cron: "10 10 * * *" 
-
+    - cron: "10 10 * * *"
 
 concurrency:
   group: backfill-games-players
@@ -55,6 +54,7 @@ jobs:
 
       - name: Run backfill script (explicit defaults)
         run: |
-          python -m src.update_games_players_database \
+          cd src
+          python -m update_games_players_database \
             --start 2023 \
             --end 2025
