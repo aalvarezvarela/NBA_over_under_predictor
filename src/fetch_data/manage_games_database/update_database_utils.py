@@ -33,6 +33,21 @@ from .mapping_v3_v2 import (
     V3_TO_V2_TRADITIONAL_MAP,
 )
 
+NBAHTTP.headers = {
+    "Host": "stats.nba.com",
+    "Connection": "keep-alive",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.nba.com/",
+    "Origin": "https://www.nba.com",
+}
+
 
 def get_existing_game_ids_from_db(season_year: str, db_connection=None) -> set:
     """Query existing game IDs from PostgreSQL database for a specific season.
@@ -272,13 +287,18 @@ def fetch_nba_data(
     # Retry LeagueGameFinder up to 3 times if it fails
     for attempt in range(1, 4):
         try:
+            time.sleep(random.uniform(0.1, 0.3))  # Avoid rate limiting
             game_finder = LeagueGameFinder(
-                season_nullable=season_nullable, league_id_nullable="00"
+                season_nullable=season_nullable,
+                league_id_nullable="00",
             )
+            time.sleep(random.uniform(0.1, 0.3))  # Avoid rate limiting
             games = game_finder.get_data_frames()[0]
             break
         except Exception as e:
-            print(f"LeagueGameFinder attempt {attempt} failed: {e}")
+            print(
+                f"LeagueGameFinder attempt {attempt} failed: {e}. Season: {season_nullable}"
+            )
             if attempt == 3:
                 raise
             time.sleep(5 * attempt)
