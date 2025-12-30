@@ -24,6 +24,7 @@ jobs:
             PYTHONWARNINGS: "ignore::UserWarning,ignore::DeprecationWarning,ignore::FutureWarning"
             DB_ENV: supabase
             SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+            SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
             ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
             TZ: UTC
 
