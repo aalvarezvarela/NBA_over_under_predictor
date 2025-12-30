@@ -53,7 +53,6 @@ jobs:
 
       - name: Run backfill script (explicit defaults)
         run: |
-          cd src
-          python -m update_games_players_database \
+          python -m src.update_games_players_database \
             --start 2025 \
             --end 2025

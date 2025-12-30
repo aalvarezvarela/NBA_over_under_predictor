@@ -13,7 +13,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from fetch_data.manage_games_database.update_database import update_database
+from src.fetch_data.manage_games_database.update_database import update_database
 
 
 def season_start_date(season_start_year: int) -> datetime:
