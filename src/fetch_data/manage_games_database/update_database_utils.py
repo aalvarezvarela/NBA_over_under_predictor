@@ -289,7 +289,7 @@ def fetch_nba_data(
             game_finder = LeagueGameFinder(
                 season_nullable=season_nullable,
                 league_id_nullable="00",
-                headers=NBA_HEADERS,
+                timeout=300,
             )
             time.sleep(random.uniform(0.1, 0.3))  # Avoid rate limiting
             games = game_finder.get_data_frames()[0]
