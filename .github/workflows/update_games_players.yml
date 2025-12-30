@@ -55,5 +55,5 @@ jobs:
         run: |
           cd src
           python -m update_games_players_database \
-            --start 2024 \
+            --start 2025 \
             --end 2025
