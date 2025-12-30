@@ -1,11 +1,13 @@
 name: Update PostgreSQL DB Games & Players
 
 on:
-  # Two UTC schedules to cover Madrid time across DST changes.
-  # The gate step below ensures it only runs when Europe/Madrid is 19:45.
+  
+  
   schedule:
     - cron: "50 17 * * *"  # 19:45 Madrid during CEST (UTC+2)
     - cron: "50 18 * * *"  # 19:45 Madrid during CET  (UTC+1)
+    - cron: "59 19 * * *"  # 19:45 Madrid during CET  (UTC+1)
+    - cron: "59 18 * * *"  # 19:45 Madrid during CET  (UTC+1)
 
 concurrency:
   group: backfill-games-players
