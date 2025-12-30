@@ -1,12 +1,11 @@
 name: Update PostgreSQL DB Games & Players
 
 on:
-  workflow_dispatch:
-
   # Two UTC schedules to cover Madrid time across DST changes.
   # The gate step below ensures it only runs when Europe/Madrid is 19:45.
   schedule:
-    - cron: "45 18 * * *"  # 19:45 Madrid during CET  (UTC+1)
+    - cron: "50 17 * * *"  # 19:45 Madrid during CEST (UTC+2)
+    - cron: "50 18 * * *"  # 19:45 Madrid during CET  (UTC+1)
 
 concurrency:
   group: backfill-games-players
@@ -32,23 +31,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Gate (run only at 19:45 Europe/Madrid)
-        id: gate
-        run: |
-          MADRID_TIME=$(TZ="Europe/Madrid" date +%H:%M)
-          echo "Madrid time now: $MADRID_TIME"
-          if [ "$MADRID_TIME" = "19:45" ]; then
-            echo "run=yes" >> $GITHUB_OUTPUT
-          else
-            echo "run=no" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Stop if not 19:45 Madrid
-        if: steps.gate.outputs.run != 'yes'
-        run: |
-          echo "Not 19:45 Europe/Madrid. Exiting."
-          exit 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
