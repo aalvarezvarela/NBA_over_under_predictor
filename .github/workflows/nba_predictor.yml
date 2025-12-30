@@ -1,0 +1,72 @@
+name: NBA Predictor
+
+on:
+    # Manual trigger from the GitHub UI (with optional date parameter)
+    workflow_dispatch:
+        inputs:
+            date:
+                description: "Prediction date: YYYY-MM-DD, today, tomorrow (leave empty for default: today)"
+                required: false
+                default: ""
+
+    # # Scheduled trigger (example: every day at 07:00 UTC)
+    # schedule:
+    #     - cron: "0 7 * * *"
+
+# Prevent overlapping runs (important if writing to the same DB)
+concurrency:
+    group: nba-predictor
+    cancel-in-progress: true
+
+permissions:
+    contents: read
+
+jobs:
+    run:
+        runs-on: ubuntu-latest
+
+        env:
+            # Force Supabase usage
+            DB_ENV: supabase
+
+            # Secrets (configure in repo Settings -> Secrets and variables -> Actions)
+            SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+            ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+
+            # Ensure stable time behavior (optional)
+            TZ: UTC
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Set up Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: "3.12"
+                  cache: "pip"
+
+            - name: Install dependencies
+              run: |
+                  python -m pip install --upgrade pip
+                  pip install -r requirements.txt
+
+            - name: Run NBA predictor
+              run: |
+                  DATE="${{ github.event.inputs.date }}"
+                  if [ -n "$DATE" ]; then
+                    python -m src.nba_predictor -d "$DATE"
+                  else
+                    python -m src.nba_predictor
+                  fi
+
+            # Optional: upload outputs (Excel + injury pdfs) so you can download them from the run
+            - name: Upload outputs
+              uses: actions/upload-artifact@v4
+              with:
+                  name: nba-predictor-output
+                  path: |
+                      Predictions/**/*.xlsx
+                      injury_reports/**/*.pdf
+                  if-no-files-found: warn
+                  retention-days: 14
