@@ -9,11 +9,17 @@ Covers seasons from 2005-06 through 2024-25, i.e. games played in calendar years
 
 from __future__ import annotations
 
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
 
-from src.fetch_data.manage_games_database.update_database import update_database
+PROJECT_ROOT = Path(__file__).resolve().parents[1]  # if script is inside src/
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+
+from fetch_data.manage_games_database.update_database import update_database
 
 
 def season_start_date(season_start_year: int) -> datetime:
@@ -73,6 +79,7 @@ def backfill_seasons(
 if __name__ == "__main__":
     import argparse
     import sys
+
     parser = argparse.ArgumentParser(
         description="Backfill NBA games and player logs by season."
     )
@@ -101,12 +108,6 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-
-    # Get the directory containing this script
-    current_dir = Path(__file__).parent
-    # If we're in the src directory, add it to sys.path
-    if current_dir.name == "src" and str(current_dir) not in sys.path:
-        sys.path.insert(0, str(current_dir))
 
     backfill_seasons(
         start_season_year=args.start,
