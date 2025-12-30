@@ -9,6 +9,12 @@ import random
 import re
 import time
 
+from utils.patch_nba_api_http import patch_nba_api_http
+
+patch_nba_api_http()
+
+from nba_api.stats.endpoints import LeagueGameFinder
+
 import pandas as pd
 import requests
 from config.constants import SEASON_TYPE_MAP as SEASON_TYPE_MAPPING
@@ -286,13 +292,14 @@ def fetch_nba_data(
     for attempt in range(1, 4):
         try:
             time.sleep(random.uniform(0.1, 0.3))  # Avoid rate limiting
+     
             game_finder = LeagueGameFinder(
                 season_nullable=season_nullable,
                 league_id_nullable="00",
-                timeout=300,
             )
             time.sleep(random.uniform(0.1, 0.3))  # Avoid rate limiting
             games = game_finder.get_data_frames()[0]
+            print(f"Fetched {len(games)} games for season {season_nullable}, attempt {attempt}")
             break
         except Exception as e:
             print(
