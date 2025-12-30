@@ -13,7 +13,8 @@ import pandas as pd
 import requests
 from config.constants import TEAM_NAME_STANDARDIZATION as TEAM_NAME_EQUIVALENT_DICT
 from nba_api.stats.endpoints import LeagueGameFinder
-from postgre_DB.db_config import connect_odds_db
+from postgre_DB.db_config import connect_nba_db, connect_odds_db, get_schema_name_odds
+from psycopg import sql
 from tqdm import tqdm
 
 
@@ -36,85 +37,39 @@ def most_common(lst):
 
 
 def get_existing_odds_from_db(season_year: str = None) -> pd.DataFrame:
-    """Query existing odds data from PostgreSQL database.
-
-    Args:
-        season_year: Optional season year to filter by. If None, returns all odds.
-
-    Returns:
-        pd.DataFrame: DataFrame containing existing odds data
     """
+    Query existing odds data from PostgreSQL database.
+    If season_year is provided, filters by EXTRACT(YEAR FROM game_date).
+    """
+    schema = get_schema_name_odds()
+    table = schema  # convention: schema == table
+
+    conn = connect_nba_db()
     try:
-        conn = connect_odds_db()
-        cursor = conn.cursor()
+        with conn.cursor() as cur:
+            if season_year:
+                query = sql.SQL("""
+                    SELECT *
+                    FROM {}.{}
+                    WHERE EXTRACT(YEAR FROM game_date) = %s
+                    ORDER BY game_date DESC
+                """).format(sql.Identifier(schema), sql.Identifier(table))
+                cur.execute(query, (int(season_year),))
+            else:
+                query = sql.SQL("""
+                    SELECT *
+                    FROM {}.{}
+                    ORDER BY game_date DESC
+                """).format(sql.Identifier(schema), sql.Identifier(table))
+                cur.execute(query)
 
-        # Query all odds data or filter by season if provided
-        if season_year:
-            # Filter by year in game_date
-            query = """
-                SELECT * FROM nba_odds
-                WHERE EXTRACT(YEAR FROM game_date) = %s
-                ORDER BY game_date DESC
-            """
-            cursor.execute(query, (int(season_year),))
-        else:
-            query = "SELECT * FROM nba_odds ORDER BY game_date DESC"
-            cursor.execute(query)
+            rows = cur.fetchall()
+            columns = [desc[0] for desc in cur.description]
 
-        rows = cursor.fetchall()
-        columns = [desc[0] for desc in cursor.description]
         df = pd.DataFrame(rows, columns=columns)
 
-        cursor.close()
+    finally:
         conn.close()
-
-        # Convert numeric columns from Decimal to float for pandas compatibility
-        numeric_cols = [
-            "most_common_total_line",
-            "average_total_line",
-            "most_common_moneyline_home",
-            "average_moneyline_home",
-            "most_common_moneyline_away",
-            "average_moneyline_away",
-            "most_common_spread_home",
-            "average_spread_home",
-            "most_common_spread_away",
-            "average_spread_away",
-        ]
-
-        for col in numeric_cols:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-
-        print(f"Loaded {len(df)} odds records from database")
-        return df
-
-    except Exception as e:
-        print(f"Error loading odds from database: {e}")
-        return pd.DataFrame()
-
-
-def update_odds_db(df_odds: pd.DataFrame) -> bool:
-    """Upload odds data to PostgreSQL database.
-
-    Args:
-        df_odds: DataFrame containing odds data to upload
-
-    Returns:
-        bool: True if successful, False otherwise
-    """
-    if df_odds is None or df_odds.empty:
-        print("No odds data to upload to PostgreSQL.")
-        return False
-
-    conn = connect_odds_db()
-    cursor = conn.cursor()
-
-    print(f"Uploading {len(df_odds)} odds records to database...")
-
-    # Convert game_date to timestamp if needed
-    df_upload = df_odds.copy()
-    df_upload["game_date"] = pd.to_datetime(df_upload["game_date"], utc=True)
 
     # Convert numeric columns
     numeric_cols = [
@@ -128,43 +83,94 @@ def update_odds_db(df_odds: pd.DataFrame) -> bool:
         "average_spread_home",
         "most_common_spread_away",
         "average_spread_away",
+        "average_total_over_money",
+        "average_total_under_money",
+        "most_common_total_over_money",
+        "most_common_total_under_money",
     ]
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
+    print(f"Loaded {len(df)} odds records from database")
+    return df
+
+def update_odds_db(df_odds: pd.DataFrame) -> bool:
+    if df_odds is None or df_odds.empty:
+        print("No odds data to upload to PostgreSQL.")
+        return False
+
+    schema = get_schema_name_odds()
+    table = schema  # convention: schema == table
+
+    df_upload = df_odds.copy()
+
+    # Optional but recommended: normalize to lowercase to match DB column names
+    df_upload.columns = [c.lower() for c in df_upload.columns]
+
+    # Convert game_date to timestamp (UTC)
+    if "game_date" in df_upload.columns:
+        df_upload["game_date"] = pd.to_datetime(df_upload["game_date"], utc=True, errors="coerce")
+
+    # Convert numeric columns
+    numeric_cols = [
+        "most_common_total_line",
+        "average_total_line",
+        "most_common_moneyline_home",
+        "average_moneyline_home",
+        "most_common_moneyline_away",
+        "average_moneyline_away",
+        "most_common_spread_home",
+        "average_spread_home",
+        "most_common_spread_away",
+        "average_spread_away",
+        "average_total_over_money",
+        "average_total_under_money",
+        "most_common_total_over_money",
+        "most_common_total_under_money",
+    ]
     for col in numeric_cols:
         if col in df_upload.columns:
             df_upload[col] = pd.to_numeric(df_upload[col], errors="coerce")
 
-    # Convert pandas NA values to None
+    # Convert pandas NA to None
     df_upload = df_upload.where(pd.notna(df_upload), None)
 
-    # Prepare column names
     columns = df_upload.columns.tolist()
-    column_names = ", ".join(columns)
-    placeholders = ", ".join(["%s"] * len(columns))
+    values = [tuple(row) for row in df_upload.itertuples(index=False, name=None)]
 
-    insert_query = f"""
-    INSERT INTO nba_odds ({column_names})
-    VALUES ({placeholders})
-    ON CONFLICT (game_date, team_home, team_away) DO NOTHING
-    """
+    col_idents = sql.SQL(", ").join(sql.Identifier(c) for c in columns)
+    placeholders = sql.SQL(", ").join(sql.Placeholder() for _ in columns)
 
-    # Insert data in batches
-    batch_size = 1000
-    total_inserted = 0
+    insert_query = sql.SQL("""
+        INSERT INTO {}.{} ({})
+        VALUES ({})
+        ON CONFLICT (game_date, team_home, team_away) DO NOTHING
+    """).format(
+        sql.Identifier(schema),
+        sql.Identifier(table),
+        col_idents,
+        placeholders,
+    )
 
-    for i in range(0, len(df_upload), batch_size):
-        batch = df_upload.iloc[i : i + batch_size]
-        values = [tuple(row) for row in batch[columns].values]
-        cursor.executemany(insert_query, values)
-        conn.commit()
-        total_inserted += len(batch)
-        print(f"Uploaded {total_inserted}/{len(df_upload)} rows...")
+    print(f"Uploading {len(df_upload)} odds records to database...")
 
-    print(f"\n✅ Successfully uploaded {total_inserted} odds records to database!")
+    conn = connect_nba_db()
+    try:
+        with conn.cursor() as cur:
+            batch_size = 1000
+            for i in range(0, len(values), batch_size):
+                cur.executemany(insert_query, values[i:i + batch_size])
+            conn.commit()
 
-    cursor.close()
-    conn.close()
-    return True
+        print(f"✅ Successfully uploaded {len(values)} odds records to database!")
+        return True
+
+    finally:
+        conn.close()
+
+
+
 
 def american_to_decimal(a: float) -> float:
     a = float(a)
@@ -174,6 +180,7 @@ def american_to_decimal(a: float) -> float:
         return 1.0 + a / 100.0
     if a < 0:
         return 1.0 + 100.0 / abs(a)
+
 
 def process_odds_date(
     date: str, BASE_URL: str, HEADERS: dict, is_today=False
@@ -230,15 +237,21 @@ def process_odds_date(
                 total_line = abs(total_info[total_field])
                 if total_line > 100:
                     total_lines.append(total_line)
-                    
+
                     # Extract total_over_money_delta and total_under_money_delta if present, convert to decimal odds
-                    if total_money_over_field in total_info and abs(total_info[total_money_over_field]) > 10:
+                    if (
+                        total_money_over_field in total_info
+                        and abs(total_info[total_money_over_field]) > 10
+                    ):
                         val = total_info[total_money_over_field]
                         val = american_to_decimal(val)
                         total_over_money_deltas.append(val)
                         total_over_money_deltas_for_common.append(val)
-                    
-                    if total_money_under_field in total_info and abs(total_info[total_money_under_field]) > 10:
+
+                    if (
+                        total_money_under_field in total_info
+                        and abs(total_info[total_money_under_field]) > 10
+                    ):
                         val = total_info[total_money_under_field]
                         val = american_to_decimal(val)
                         total_under_money_deltas.append(val)
@@ -487,9 +500,15 @@ def merge_teams_df_with_odds(df_odds, df_team):
     # 4) Coalesce columns of interest
     df_team_final = df_team1.copy()
 
-    for col in ["MONEYLINE", "SPREAD", "TOTAL_OVER_UNDER_LINE", 
-                "average_total_over_money", "average_total_under_money",
-                "most_common_total_over_money", "most_common_total_under_money"]:
+    for col in [
+        "MONEYLINE",
+        "SPREAD",
+        "TOTAL_OVER_UNDER_LINE",
+        "average_total_over_money",
+        "average_total_under_money",
+        "most_common_total_over_money",
+        "most_common_total_under_money",
+    ]:
         # If the first merge is missing data, fill from the second merge
         df_team_final[col] = df_team1[col].fillna(df_team2[col])
 
@@ -539,7 +558,7 @@ def merge_teams_df_with_odds(df_odds, df_team):
     return df_team_final
 
 
-def update_odds_df(
+def update_and_get_odds_df(
     date_to_predict, odds_folder, df_name, season_to_download, ODDS_API_KEY, BASE_URL
 ):
     HEADERS = {
@@ -608,7 +627,7 @@ if __name__ == "__main__":
 
     df_name = "odds_data.csv"
 
-    df = update_odds_df(
+    df = update_and_get_odds_df(
         odds_folder,
         df_name,
         ODDS_API_KEY,

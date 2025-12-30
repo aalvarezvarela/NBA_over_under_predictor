@@ -84,8 +84,9 @@ def create_local_odds_schema_database():
     else:
         print("Failed to load odds data!")
 
+
 if __name__ == "__main__":
-    create_local_games_schema_database()
+    # create_local_games_schema_database()
     create_local_players_schema_database()
-    create_local_odds_schema_database()
-    create_predictions_table()
+    # create_local_odds_schema_database()
+    # create_predictions_table()

@@ -7,6 +7,7 @@ import configparser
 from pathlib import Path
 
 import psycopg
+from psycopg import sql
 
 
 def get_config():
@@ -84,11 +85,12 @@ def connect_nba_db():
 def connect_schema_db(schema: str):
     """
     Connect to the single NBA database and set search_path to the given schema.
-    This lets you keep queries like: SELECT * FROM nba_games
     """
     conn = connect_nba_db()
     with conn.cursor() as cur:
-        cur.execute("set search_path to %s, public;", (schema,))
+        cur.execute(
+            sql.SQL("SET search_path TO {}, public;").format(sql.Identifier(schema))
+        )
     conn.commit()
     return conn
 

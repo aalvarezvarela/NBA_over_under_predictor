@@ -22,6 +22,7 @@ def create_predictions_table():
     """
 
     schema = get_schema_name_predictions()
+    table = schema  
     conn = connect_nba_db()
 
     try:
@@ -56,7 +57,7 @@ def create_predictions_table():
                         total_scored_points NUMERIC
                     )
                     """
-                ).format(sql.Identifier(schema), sql.Identifier("nba_predictions"))
+                ).format(sql.Identifier(schema), sql.Identifier(table))
             )
 
             # Unique constraint (idempotent) on (game_id, prediction_date)
@@ -75,11 +76,11 @@ def create_predictions_table():
                         END IF;
                     END $$;
                     """
-                ).format(sql.Identifier(schema), sql.Identifier("nba_predictions"))
+                ).format(sql.Identifier(schema), sql.Identifier(table))
             )
 
         conn.commit()
-        print(f"Table '{schema}.nba_predictions' is ready.")
+        print(f"Table '{schema}.{table}' is ready.")
     finally:
         conn.close()
 
@@ -92,6 +93,8 @@ def insert_predictions(df: pd.DataFrame):
     create_predictions_table()
 
     schema = get_schema_name_predictions()
+    table = schema  # convention: schema == table
+
     conn = connect_nba_db()
 
     try:
@@ -179,7 +182,7 @@ def insert_predictions(df: pd.DataFrame):
             VALUES ({placeholders})
             ON CONFLICT (game_id, prediction_date) DO UPDATE SET {update_assignments}
             """
-        ).format(sql.Identifier(schema), sql.Identifier("nba_predictions"))
+        ).format(sql.Identifier(schema), sql.Identifier(table))
 
         with conn.cursor() as cur:
             cur.executemany(insert_query, values)

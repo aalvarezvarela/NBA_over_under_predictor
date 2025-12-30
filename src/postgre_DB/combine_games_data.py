@@ -48,7 +48,13 @@ def combine_all_nba_games(data_dir, file_prefix="nba_games"):
                 df = df.drop(columns=cols_to_drop)
                 if "TEAM_NAME" in df.columns:
                     df = df.drop(columns=["TEAM_NAME"])
-
+                if "NICKNAME" in df.columns:
+                    df = df.drop(columns=["NICKNAME"])
+            #remove any "Unnamed: " columns
+            unnamed_cols = [col for col in df.columns if col.startswith("Unnamed:")]
+            if unnamed_cols:
+                df = df.drop(columns=unnamed_cols)
+            
             dataframes.append(df)
         except Exception as e:
             print(f"Error reading {file}: {e}")

@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import psycopg
 from psycopg import sql
@@ -68,7 +69,7 @@ def create_games_schema(drop_existing: bool = True):
                     season_id TEXT NOT NULL,
                     season_year INTEGER NOT NULL,
                     team_id TEXT NOT NULL,
-                    team_abbreviation VARCHAR(10),
+                    team_abbreviation VARCHAR(100),
                     team_name VARCHAR(100),
                     game_id TEXT NOT NULL,
                     game_date DATE NOT NULL,
@@ -123,7 +124,7 @@ def create_games_schema(drop_existing: bool = True):
                     PRIMARY KEY (game_id, team_id, season_id, season_year)
                 )
                 """
-            ).format(sql.Identifier(schema), sql.Identifier("nba_games"))
+            ).format(sql.Identifier(schema), sql.Identifier(schema))
 
             cur.execute(create_table_query)
 
@@ -132,166 +133,245 @@ def create_games_schema(drop_existing: bool = True):
                 sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {}.{}(game_date)").format(
                     sql.Identifier("idx_nba_games_game_date"),
                     sql.Identifier(schema),
-                    sql.Identifier("nba_games"),
+                    sql.Identifier(schema),
                 )
             )
             cur.execute(
                 sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {}.{}(team_id)").format(
                     sql.Identifier("idx_nba_games_team_id"),
                     sql.Identifier(schema),
-                    sql.Identifier("nba_games"),
+                    sql.Identifier(schema),
                 )
             )
             cur.execute(
                 sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {}.{}(season_id)").format(
                     sql.Identifier("idx_nba_games_season_id"),
                     sql.Identifier(schema),
-                    sql.Identifier("nba_games"),
+                    sql.Identifier(schema),
                 )
             )
 
         conn.commit()
         conn.close()
-        print(f"Table '{schema}.nba_games' created successfully!")
+        print(f"Table '{schema}.{schema}' created successfully!")
         return True
     except Exception as e:
         print(f"Error creating table: {e}")
         return False
 
 
-def load_games_data_to_db(df: pd.DataFrame, conn: psycopg.Connection | None = None):
-    """Load dataframe into schema SCHEMA_NAME_GAMES table nba_games."""
+def load_games_data_to_db(
+    df: pd.DataFrame, conn: psycopg.Connection | None = None
+) -> bool:
     close_conn = False
     schema = get_schema_name_games()
 
-    try:
-        if "teamSlug" in df.columns:
-            df = df.drop(columns=["teamSlug"])
+    if "teamSlug" in df.columns:
+        df = df.drop(columns=["teamSlug"])
 
-        if conn is None:
-            conn = connect_nba_db()
-            close_conn = True
+    if conn is None:
+        conn = connect_nba_db()
+        close_conn = True
 
-        create_schema_if_not_exists(conn, schema)
+    create_schema_if_not_exists(conn, schema)
 
-        with conn.cursor() as cur:
-            if "SEASON_ID" in df.columns:
-                df["SEASON_YEAR"] = df["SEASON_ID"].astype(str).str[-4:].astype(int)
+    # 1) Create SEASON_YEAR
+    if "SEASON_ID" in df.columns:
+        df["SEASON_YEAR"] = df["SEASON_ID"].astype(str).str[-4:].astype("Int64")
 
-            if "WL" in df.columns:
-                df["WL"] = df["WL"].replace("", None)
-                df["WL"] = df["WL"].where(df["WL"].notna(), None)
+    # 2) Clean WL / HOME / GAME_DATE
+    if "WL" in df.columns:
+        df["WL"] = df["WL"].replace("", None)
+        df["WL"] = df["WL"].where(df["WL"].notna(), None)
 
-            if "HOME" in df.columns:
-                df["HOME"] = df["HOME"].map(
-                    {"True": True, "False": False, True: True, False: False}
-                )
+    if "HOME" in df.columns:
+        df["HOME"] = df["HOME"].map(
+            {"True": True, "False": False, True: True, False: False}
+        )
 
-            if "GAME_DATE" in df.columns:
-                df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], errors="coerce")
+    if "GAME_DATE" in df.columns:
+        df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], errors="coerce")
 
-            integer_cols = [
-                "MIN",
-                "PTS",
-                "FGM",
-                "FGA",
-                "FG3M",
-                "FG3A",
-                "FTM",
-                "FTA",
-                "OREB",
-                "DREB",
-                "REB",
-                "AST",
-                "STL",
-                "BLK",
-                "TOV",
-                "PF",
-            ]
-            for col in integer_cols:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
+    # 3) Enforce exact column set in the table
+    insert_cols = [
+        "SEASON_ID",
+        "SEASON_YEAR",
+        "TEAM_ID",
+        "TEAM_ABBREVIATION",
+        "TEAM_NAME",
+        "GAME_ID",
+        "GAME_DATE",
+        "MATCHUP",
+        "WL",
+        "MIN",
+        "PTS",
+        "FGM",
+        "FGA",
+        "FG_PCT",
+        "FG3M",
+        "FG3A",
+        "FG3_PCT",
+        "FTM",
+        "FTA",
+        "FT_PCT",
+        "OREB",
+        "DREB",
+        "REB",
+        "AST",
+        "STL",
+        "BLK",
+        "TOV",
+        "PF",
+        "PLUS_MINUS",
+        "SEASON_TYPE",
+        "HOME",
+        "TEAM_CITY",
+        "E_OFF_RATING",
+        "OFF_RATING",
+        "E_DEF_RATING",
+        "DEF_RATING",
+        "E_NET_RATING",
+        "NET_RATING",
+        "AST_PCT",
+        "AST_TOV",
+        "AST_RATIO",
+        "OREB_PCT",
+        "DREB_PCT",
+        "REB_PCT",
+        "E_TM_TOV_PCT",
+        "TM_TOV_PCT",
+        "EFG_PCT",
+        "TS_PCT",
+        "USG_PCT",
+        "E_USG_PCT",
+        "E_PACE",
+        "PACE",
+        "PACE_PER40",
+        "POSS",
+        "PIE",
+    ]
 
-            float_cols = [
-                "FG_PCT",
-                "FG3_PCT",
-                "FT_PCT",
-                "E_OFF_RATING",
-                "OFF_RATING",
-                "E_DEF_RATING",
-                "DEF_RATING",
-                "E_NET_RATING",
-                "NET_RATING",
-                "AST_PCT",
-                "AST_TOV",
-                "AST_RATIO",
-                "OREB_PCT",
-                "DREB_PCT",
-                "REB_PCT",
-                "E_TM_TOV_PCT",
-                "TM_TOV_PCT",
-                "EFG_PCT",
-                "TS_PCT",
-                "USG_PCT",
-                "E_USG_PCT",
-                "E_PACE",
-                "PACE",
-                "PACE_PER40",
-                "POSS",
-                "PIE",
-                "PLUS_MINUS",
-            ]
-            for col in float_cols:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors="coerce")
+    missing = [c for c in insert_cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required columns for insert: {missing}")
 
-            df = df.where(pd.notna(df), None)
+    df = df[insert_cols].copy()
 
-            columns = [col for col in df.columns if col != "teamSlug"]
-            column_names = ", ".join([col.lower() for col in columns])
-            placeholders = ", ".join(["%s"] * len(columns))
+    # 4) Cast INTEGER columns including PLUS_MINUS (table defines plus_minus INTEGER)
+    integer_cols = [
+        "SEASON_YEAR",
+        "MIN",
+        "PTS",
+        "FGM",
+        "FGA",
+        "FG3M",
+        "FG3A",
+        "FTM",
+        "FTA",
+        "OREB",
+        "DREB",
+        "REB",
+        "AST",
+        "STL",
+        "BLK",
+        "TOV",
+        "PF",
+        "PLUS_MINUS",
+    ]
+    for col in integer_cols:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
 
-            insert_query = sql.SQL(
-                """
-                INSERT INTO {}.{} ({})
-                VALUES ({})
-                ON CONFLICT (game_id, team_id, season_id, season_year) DO NOTHING
-                """
-            ).format(
-                sql.Identifier(schema),
-                sql.Identifier("nba_games"),
-                sql.SQL(column_names),
-                sql.SQL(placeholders),
-            )
+    float_cols = [
+        "FG_PCT",
+        "FG3_PCT",
+        "FT_PCT",
+        "E_OFF_RATING",
+        "OFF_RATING",
+        "E_DEF_RATING",
+        "DEF_RATING",
+        "E_NET_RATING",
+        "NET_RATING",
+        "AST_PCT",
+        "AST_TOV",
+        "AST_RATIO",
+        "OREB_PCT",
+        "DREB_PCT",
+        "REB_PCT",
+        "E_TM_TOV_PCT",
+        "TM_TOV_PCT",
+        "EFG_PCT",
+        "TS_PCT",
+        "USG_PCT",
+        "E_USG_PCT",
+        "E_PACE",
+        "PACE",
+        "PACE_PER40",
+        "POSS",
+        "PIE",
+    ]
+    for col in float_cols:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
 
-            batch_size = 1000
-            for i in range(0, len(df), batch_size):
-                batch = df.iloc[i : i + batch_size]
-                values = [tuple(row) for row in batch[columns].values]
+    # TEAM_ID is TEXT in DB; enforce string to avoid ambiguous casts
+    df["TEAM_ID"] = df["TEAM_ID"].astype(str)
+    df["PLUS_MINUS"] = df["PLUS_MINUS"].replace({np.nan: None})
+    df["PLUS_MINUS"] = df["PLUS_MINUS"].replace(pd.NA, None)
+    # NaN -> None for psycopg
+    df = df.where(pd.notna(df), None)
+
+    # 5) Build a safe INSERT with identifiers for each column
+    col_idents = [sql.Identifier(c.lower()) for c in insert_cols]
+    placeholders = sql.SQL(", ").join(sql.Placeholder() for _ in insert_cols)
+
+    insert_query = sql.SQL("""
+        INSERT INTO {}.{} ({})
+        VALUES ({})
+        ON CONFLICT (game_id, team_id, season_id, season_year) DO NOTHING
+    """).format(
+        sql.Identifier(schema),
+        sql.Identifier(schema),
+        sql.SQL(", ").join(col_idents),
+        placeholders,
+    )
+
+    batch_size = 1000
+    with conn.cursor() as cur:
+        for i in range(0, len(df), batch_size):
+            batch = df.iloc[i : i + batch_size]
+            values = [tuple(r) for r in batch.to_numpy()]
+            try:
                 cur.executemany(insert_query, values)
                 conn.commit()
+            except Exception as e:
+                conn.rollback()
 
-            # Verify count
-            cur.execute(
-                sql.SQL("SELECT COUNT(*) FROM {}.{}").format(
-                    sql.Identifier(schema), sql.Identifier("nba_games")
+                # Print one representative row to debug quickly
+                r0 = batch.iloc[0]
+                print(f"Error inserting batch starting at index {i}: {e}")
+                print(
+                    "Example row keys:",
+                    {
+                        "GAME_ID": r0.get("GAME_ID"),
+                        "TEAM_ID": r0.get("TEAM_ID"),
+                        "SEASON_ID": r0.get("SEASON_ID"),
+                        "SEASON_YEAR": r0.get("SEASON_YEAR"),
+                    },
                 )
+                raise
+
+        # Verify count
+        cur.execute(
+            sql.SQL("SELECT COUNT(*) FROM {}.{}").format(
+                sql.Identifier(schema), sql.Identifier(schema)
             )
-            count = cur.fetchone()[0]
-            print(f"Total rows in {schema}.nba_games: {count}")
+        )
+        count = cur.fetchone()[0]
+        print(f"Total rows in {schema}.{schema}: {count}")
 
-        if close_conn:
-            conn.close()
-        return True
+    if close_conn:
+        conn.close()
 
-    except Exception as e:
-        print(f"Error loading data: {e}")
-        import traceback
-
-        traceback.print_exc()
-        if close_conn and conn:
-            conn.close()
-        return False
+    return True
 
 
 if __name__ == "__main__":

@@ -18,7 +18,13 @@ from nba_api.stats.endpoints import (
     BoxScoreTraditionalV3,
     LeagueGameFinder,
 )
-from postgre_DB.db_config import connect_games_db, connect_players_db
+from postgre_DB.db_config import (
+    connect_games_db,
+    connect_players_db,
+    get_schema_name_games,
+    get_schema_name_players,
+)
+from psycopg import sql
 from tqdm import tqdm
 
 from .mapping_v3_v2 import (
@@ -45,13 +51,17 @@ def get_existing_game_ids_from_db(season_year: str, db_connection=None) -> set:
         close_conn = True
 
     cursor = db_connection.cursor()
+    game_name = get_schema_name_games()
 
     # Query distinct game IDs for the season
-    query = """
-        SELECT DISTINCT game_id 
-        FROM nba_games 
+    query = sql.SQL("""
+        SELECT DISTINCT game_id
+        FROM {}.{}
         WHERE season_year = %s
-    """
+        """).format(
+        sql.Identifier(game_name),  # schema
+        sql.Identifier(game_name),  # table
+    )
     cursor.execute(query, (int(season_year),))
     game_ids = {row[0] for row in cursor.fetchall()}
 
@@ -85,13 +95,16 @@ def get_existing_player_game_ids_from_db(season_year: str, db_connection=None) -
             return set()
 
     cursor = db_connection.cursor()
-
+    player_name = get_schema_name_players()
     # Query distinct game IDs for the season
-    query = """
+    query = sql.SQL("""
         SELECT DISTINCT game_id 
-        FROM nba_players 
+        FROM {}.{} 
         WHERE season_year = %s
-    """
+    """).format(
+        sql.Identifier(player_name),  # schema
+        sql.Identifier(player_name),  # table
+    )
     cursor.execute(query, (int(season_year),))
     game_ids = {row[0] for row in cursor.fetchall()}
 
@@ -127,7 +140,7 @@ def fetch_box_score_data(game_id: str, n_tries: int = 3):
 
     for api_call in [BoxScoreTraditionalV3, BoxScoreAdvancedV3]:
         attempts = 0
-        time.sleep(random.uniform(0.01, 0.03))  # Avoid rate limiting
+        time.sleep(random.uniform(0.05, 0.1))  # Avoid rate limiting
 
         while attempts < n_tries:
             try:
@@ -140,6 +153,26 @@ def fetch_box_score_data(game_id: str, n_tries: int = 3):
 
                 break  # Exit the retry loop for this API call if successful
 
+            except AttributeError as e:
+                # If the error is 'NoneType' object has no attribute 'get', skip and continue
+                if "'NoneType' object has no attribute 'get'" in str(e):
+                    print(f"Skipping {game_id} ({api_call.__name__}): {e}")
+                    time.sleep(1)  # Brief pause before continuing
+                    break  # Do not retry, just skip this game/api_call
+                else:
+                    attempts += 1
+                    print(
+                        f"Attempt {attempts} failed for {game_id} ({api_call.__name__}). Error: {e}"
+                    )
+                    reset_nba_http_session()
+                    if attempts < n_tries:
+                        print(f"Retrying in {5 * attempts} seconds...")
+                        time.sleep(5 * attempts)
+                    else:
+                        print(
+                            f"Failed to fetch data for {game_id} ({api_call.__name__}). Max attempts reached."
+                        )
+                        limit_reached = True
             except Exception as e:
                 attempts += 1
                 print(
@@ -147,8 +180,8 @@ def fetch_box_score_data(game_id: str, n_tries: int = 3):
                 )
                 reset_nba_http_session()
                 if attempts < n_tries:
-                    print(f"Retrying in {20 * attempts} seconds...")
-                    time.sleep(20 * attempts)
+                    print(f"Retrying in {5 * attempts} seconds...")
+                    time.sleep(5 * attempts)
                 else:
                     print(
                         f"Failed to fetch data for {game_id} ({api_call.__name__}). Max attempts reached."

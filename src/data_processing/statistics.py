@@ -605,6 +605,7 @@ def attach_top3_stats(
 
     for stat_col in stat_cols:
         # 1) Precompute cumulative averages for the chosen stat
+        df_players[stat_col] = pd.to_numeric(df_players[stat_col], errors='coerce')
         df_players = precompute_cumulative_avg_stat(df_players, stat_col=stat_col)
 
     # 4) Iterate over each row in df_team

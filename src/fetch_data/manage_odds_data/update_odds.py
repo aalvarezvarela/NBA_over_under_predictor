@@ -7,7 +7,7 @@ from external APIs.
 
 from utils.general_utils import get_nba_season_nullable
 
-from .update_odds_utils import update_odds_df
+from .update_odds_utils import update_and_get_odds_df
 
 
 def update_odds(date_to_predict, odds_folder: str, ODDS_API_KEY, BASE_URL):
@@ -16,7 +16,7 @@ def update_odds(date_to_predict, odds_folder: str, ODDS_API_KEY, BASE_URL):
 
     df_name = "odds_data.csv"
 
-    df_odds = update_odds_df(
+    df_odds = update_and_get_odds_df(
         date_to_predict, odds_folder, df_name, season_nullable, ODDS_API_KEY, BASE_URL
     )
 
@@ -25,7 +25,5 @@ def update_odds(date_to_predict, odds_folder: str, ODDS_API_KEY, BASE_URL):
 
 if __name__ == "__main__":
     # Define Data Folder
-    ODDS_DATA_FOLDER = ".././odds_data/"
-    update_odds(ODDS_DATA_FOLDER)
     ODDS_DATA_FOLDER = ".././odds_data/"
     update_odds(ODDS_DATA_FOLDER)

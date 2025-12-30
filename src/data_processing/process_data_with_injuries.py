@@ -55,22 +55,29 @@ def get_schedule_games(date):
     return games
 
 
-def get_last_two_nba_seasons(date):
-    # convert to datatime if not
-    if not isinstance(date, datetime):
-        date = datetime.strptime(date, "%Y-%m-%d")
-    year = date.year
 
-    # If we are before July, we are still in the previous season
-    if date.month < 11:
-        season = f"{year-1}-{str(year)[-2:]}"
-    else:
-        season = f"{year}-{str(year+1)[-2:]}"
-    # calculate the previous season
-    previous_season = f"{year-2}-{str(year-1)[-2:]}"
+def get_last_two_nba_seasons(d: str | datetime) -> list[str]:
+    """
+    Return the current NBA season (for the given date) and the immediately previous season.
+
+    NBA season boundary:
+      - Months Jan–Aug belong to the season that started the previous calendar year.
+      - Months Sep–Dec belong to the season that starts the current calendar year.
+
+    Examples:
+      - 2025-01-10 -> ["2024-25", "2023-24"]
+      - 2025-10-10 -> ["2025-26", "2024-25"]
+    """
+    if isinstance(d, str):
+        d = datetime.strptime(d, "%Y-%m-%d").date()
+    elif isinstance(d, datetime):
+        d = d.date()
+
+    start_year = d.year - 1 if d.month < 9 else d.year
+    season = f"{start_year}-{str(start_year + 1)[-2:]}"
+    previous_season = f"{start_year - 1}-{str(start_year)[-2:]}"
 
     return [season, previous_season]
-
 
 def load_all_nba_data(data_path, seasons=None):
     """
@@ -687,7 +694,7 @@ def create_df_to_predict(
     df = compute_season_std(df, param="DIFF_FROM_LINE")
 
     df_players = df_players.merge(
-        df[["GAME_ID", "GAME_DATE", "SEASON_ID", "SEASON_YEAR"]],
+        df[["GAME_ID", "GAME_DATE", "SEASON_ID"]],
         on="GAME_ID",
         how="left",
     )
@@ -953,6 +960,7 @@ def create_df_to_predict(
             df_to_predict["TOTAL_POINTS"] == 0
         ).all(), "Error: TOTAL_POINTS contains non-zero values!"
         df_to_predict.drop(columns=["TOTAL_POINTS"], inplace=True)
+    
     df_to_predict.drop(columns=["IS_OVERTIME"], inplace=True)
 
     # df_to_predict['TOTAL_OVER_UNDER_LINE'] = None

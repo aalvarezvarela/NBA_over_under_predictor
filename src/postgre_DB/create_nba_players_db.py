@@ -54,7 +54,7 @@ def create_players_table(drop_existing: bool = True):
                 cur.execute(
                     sql.SQL("DROP TABLE IF EXISTS {}.{} CASCADE").format(
                         sql.Identifier(schema),
-                        sql.Identifier("nba_players"),
+                        sql.Identifier(schema),
                     )
                 )
 
@@ -64,15 +64,15 @@ def create_players_table(drop_existing: bool = True):
                     game_id TEXT NOT NULL,
                     season_year INTEGER NOT NULL,
                     team_id TEXT NOT NULL,
-                    team_abbreviation VARCHAR(10),
-                    team_city VARCHAR(50),
+                    team_abbreviation VARCHAR(100),
+                    team_city VARCHAR(100),
                     team_name VARCHAR(100),
                     player_id TEXT NOT NULL,
                     player_name VARCHAR(100),
-                    nickname VARCHAR(50),
-                    firstname VARCHAR(50),
-                    familyname VARCHAR(50),
-                    start_position VARCHAR(10),
+                    nickname VARCHAR(100),
+                    firstname VARCHAR(100),
+                    familyname VARCHAR(100),
+                    start_position VARCHAR(100),
                     comment TEXT,
                     jerseynum VARCHAR(10),
                     min VARCHAR(20),
@@ -120,7 +120,7 @@ def create_players_table(drop_existing: bool = True):
                     PRIMARY KEY (game_id, team_id, player_id, season_year)
                 )
                 """
-            ).format(sql.Identifier(schema), sql.Identifier("nba_players"))
+            ).format(sql.Identifier(schema), sql.Identifier(schema))
 
             cur.execute(create_table_query)
 
@@ -129,34 +129,34 @@ def create_players_table(drop_existing: bool = True):
                 sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {}.{}(game_id)").format(
                     sql.Identifier("idx_player_game_id"),
                     sql.Identifier(schema),
-                    sql.Identifier("nba_players"),
+                    sql.Identifier(schema),
                 )
             )
             cur.execute(
                 sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {}.{}(team_id)").format(
                     sql.Identifier("idx_player_team_id"),
                     sql.Identifier(schema),
-                    sql.Identifier("nba_players"),
+                    sql.Identifier(schema),
                 )
             )
             cur.execute(
                 sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {}.{}(player_id)").format(
                     sql.Identifier("idx_player_id"),
                     sql.Identifier(schema),
-                    sql.Identifier("nba_players"),
+                    sql.Identifier(schema),
                 )
             )
             cur.execute(
                 sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {}.{}(player_name)").format(
                     sql.Identifier("idx_player_name"),
                     sql.Identifier(schema),
-                    sql.Identifier("nba_players"),
+                    sql.Identifier(schema),
                 )
             )
 
         conn.commit()
         conn.close()
-        print(f"Table '{schema}.nba_players' created successfully!")
+        print(f"Table '{schema}.{schema}' created successfully!")
         return True
 
     except Exception as e:
@@ -169,96 +169,89 @@ def load_players_data_to_db(df: pd.DataFrame, conn: psycopg.Connection | None = 
     close_conn = False
     schema = get_schema_name_players()
 
-    try:
-        # Remove unnecessary slug columns
-        columns_to_remove = ["teamSlug", "playerSlug"]
-        for col in columns_to_remove:
+    # Remove unnecessary slug columns
+    columns_to_remove = ["teamSlug", "playerSlug"]
+    for col in columns_to_remove:
+        if col in df.columns:
+            df = df.drop(columns=[col])
+            print(f"Removed '{col}' column")
+
+    if conn is None:
+        conn = connect_nba_db()
+        close_conn = True
+
+    create_schema_if_not_exists(conn, schema)
+
+    with conn.cursor() as cur:
+        print("Converting data types...")
+
+        integer_cols = [
+            "FGM","FGA","FG3M","FG3A","FTM","FTA","OREB","DREB","REB",
+            "AST","STL","BLK","TOV","PF","PTS",
+        ]
+        for col in integer_cols:
             if col in df.columns:
-                df = df.drop(columns=[col])
-                print(f"Removed '{col}' column")
+                df[col] = pd.to_numeric(df[col], errors="coerce").round().astype("Int64")
+                df[col] = df[col].astype(object).where(df[col].notna(), None)
 
-        if conn is None:
-            conn = connect_nba_db()
-            close_conn = True
+        float_cols = [
+            "FG_PCT","FG3_PCT","FT_PCT","PLUS_MINUS","E_OFF_RATING","OFF_RATING",
+            "E_DEF_RATING","DEF_RATING","E_NET_RATING","NET_RATING","AST_PCT",
+            "AST_TOV","AST_RATIO","OREB_PCT","DREB_PCT","REB_PCT","TM_TOV_PCT",
+            "EFG_PCT","TS_PCT","USG_PCT","E_USG_PCT","E_PACE","PACE","PACE_PER40",
+            "POSS","PIE",
+        ]
+        for col in float_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        create_schema_if_not_exists(conn, schema)
+        # Convert pandas NA/NaT to None
+        df = df.where(pd.notna(df), None)
 
-        with conn.cursor() as cur:
-            print("Converting data types...")
+        print(f"Loading {len(df)} rows into database...")
 
-            integer_cols = [
-                "FGM","FGA","FG3M","FG3A","FTM","FTA","OREB","DREB","REB",
-                "AST","STL","BLK","TOV","PF","PTS",
-            ]
-            for col in integer_cols:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors="coerce").round().astype("Int64")
-                    df[col] = df[col].astype(object).where(df[col].notna(), None)
+        columns = [col for col in df.columns if col not in columns_to_remove]
+        column_names = ", ".join([col.lower() for col in columns])
+        placeholders = ", ".join(["%s"] * len(columns))
 
-            float_cols = [
-                "FG_PCT","FG3_PCT","FT_PCT","PLUS_MINUS","E_OFF_RATING","OFF_RATING",
-                "E_DEF_RATING","DEF_RATING","E_NET_RATING","NET_RATING","AST_PCT",
-                "AST_TOV","AST_RATIO","OREB_PCT","DREB_PCT","REB_PCT","TM_TOV_PCT",
-                "EFG_PCT","TS_PCT","USG_PCT","E_USG_PCT","E_PACE","PACE","PACE_PER40",
-                "POSS","PIE",
-            ]
-            for col in float_cols:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors="coerce")
+        insert_query = sql.SQL(
+            """
+            INSERT INTO {}.{} ({})
+            VALUES ({})
+            ON CONFLICT (game_id, team_id, player_id, season_year) DO NOTHING
+            """
+        ).format(
+            sql.Identifier(schema),
+            sql.Identifier(schema),
+            sql.SQL(column_names),
+            sql.SQL(placeholders),
+        )
 
-            # Convert pandas NA/NaT to None
-            df = df.where(pd.notna(df), None)
+        batch_size = 1000
+        total_inserted = 0
+        for i in range(0, len(df), batch_size):
+            batch = df.iloc[i : i + batch_size]
+            values = [tuple(row) for row in batch[columns].values]
+            cur.executemany(insert_query, values)
+            conn.commit()
+            total_inserted += len(batch)
+            print(f"Inserted {total_inserted}/{len(df)} rows...")
 
-            print(f"Loading {len(df)} rows into database...")
+        print(f"\nSuccessfully loaded {total_inserted} rows into the database!")
 
-            columns = [col for col in df.columns if col not in columns_to_remove]
-            column_names = ", ".join([col.lower() for col in columns])
-            placeholders = ", ".join(["%s"] * len(columns))
-
-            insert_query = sql.SQL(
-                """
-                INSERT INTO {}.{} ({})
-                VALUES ({})
-                ON CONFLICT (game_id, team_id, player_id, season_year) DO NOTHING
-                """
-            ).format(
-                sql.Identifier(schema),
-                sql.Identifier("nba_players"),
-                sql.SQL(column_names),
-                sql.SQL(placeholders),
+        cur.execute(
+            sql.SQL("SELECT COUNT(*) FROM {}.{}").format(
+                sql.Identifier(schema), sql.Identifier(schema)
             )
+        )
+        count = cur.fetchone()[0]
+        print(f"Total rows in {schema}.{schema}: {count}")
 
-            batch_size = 1000
-            total_inserted = 0
-            for i in range(0, len(df), batch_size):
-                batch = df.iloc[i : i + batch_size]
-                values = [tuple(row) for row in batch[columns].values]
-                cur.executemany(insert_query, values)
-                conn.commit()
-                total_inserted += len(batch)
-                print(f"Inserted {total_inserted}/{len(df)} rows...")
+    if close_conn:
+        conn.close()
+    return True
 
-            print(f"\nSuccessfully loaded {total_inserted} rows into the database!")
 
-            cur.execute(
-                sql.SQL("SELECT COUNT(*) FROM {}.{}").format(
-                    sql.Identifier(schema), sql.Identifier("nba_players")
-                )
-            )
-            count = cur.fetchone()[0]
-            print(f"Total rows in {schema}.nba_players: {count}")
-
-        if close_conn:
-            conn.close()
-        return True
-
-    except Exception as e:
-        print(f"Error loading data: {e}")
-        import traceback
-        traceback.print_exc()
-        if close_conn and conn:
-            conn.close()
-        return False
 
 
 if __name__ == "__main__":
