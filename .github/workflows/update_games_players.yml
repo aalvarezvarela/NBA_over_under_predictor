@@ -1,0 +1,79 @@
+name: Update PostgreSQL DB Games & Players
+
+on:
+  workflow_dispatch:
+
+  # Two UTC schedules to cover Madrid time across DST changes.
+  # The gate step below ensures it only runs when Europe/Madrid is 19:45.
+  schedule:
+    - cron: "45 18 * * *"  # 19:45 Madrid during CET  (UTC+1)
+
+concurrency:
+  group: backfill-games-players
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    env:
+      PYTHONWARNINGS: "ignore::UserWarning,ignore::DeprecationWarning,ignore::FutureWarning"
+
+      # Supabase
+      DB_ENV: supabase
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+
+      # Odds (not used by this script, but harmless if present)
+      ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Gate (run only at 19:45 Europe/Madrid)
+        id: gate
+        run: |
+          MADRID_TIME=$(TZ="Europe/Madrid" date +%H:%M)
+          echo "Madrid time now: $MADRID_TIME"
+          if [ "$MADRID_TIME" = "19:45" ]; then
+            echo "run=yes" >> $GITHUB_OUTPUT
+          else
+            echo "run=no" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Stop if not 19:45 Madrid
+        if: steps.gate.outputs.run != 'yes'
+        run: |
+          echo "Not 19:45 Europe/Madrid. Exiting."
+          exit 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: DB sanity check
+        run: |
+          python - <<'PY'
+          import os, psycopg
+          dsn = os.environ["SUPABASE_DB_URL"]
+          with psycopg.connect(dsn) as conn:
+            with conn.cursor() as cur:
+              cur.execute("select current_database(), current_user;")
+              print(cur.fetchone())
+          PY
+
+      - name: Run backfill script (explicit defaults)
+        run: |
+          python -m src.update_games_players_database \
+            --start 2023 \
+            --end 2025

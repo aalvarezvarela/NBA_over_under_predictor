@@ -13,8 +13,6 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-# Import your existing updater
-# Adjust this import to your project structure if needed.
 from fetch_data.manage_games_database.update_database import update_database
 
 
@@ -28,10 +26,10 @@ def season_start_date(season_start_year: int) -> datetime:
 
 
 def backfill_seasons(
-    data_folder: str | Path,
     start_season_year: int = 2006,
     end_season_year: int = 2025,
     save_csv: bool = True,
+    data_folder: str | Path = None,
     sleep_seconds_between_seasons: float = 2.0,
 ) -> None:
     """
@@ -44,8 +42,9 @@ def backfill_seasons(
         save_csv: Whether to also persist CSV snapshots per season.
         sleep_seconds_between_seasons: Small pause to be polite with the NBA API.
     """
-    data_folder = Path(data_folder)
-    data_folder.mkdir(parents=True, exist_ok=True)
+    if save_csv:
+        data_folder = Path(data_folder)
+        data_folder.mkdir(parents=True, exist_ok=True)
 
     for y in range(start_season_year, end_season_year + 1):
         date_in_season = season_start_date(y)
@@ -72,13 +71,40 @@ def backfill_seasons(
 
 
 if __name__ == "__main__":
-    DATA_FOLDER = (
-        "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/season_games_data/"
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Backfill NBA games and player logs by season."
     )
+    parser.add_argument(
+        "--start",
+        type=int,
+        default=2023,
+        help="First season start year (e.g. 2023 for 2023-24)",
+    )
+    parser.add_argument(
+        "--end",
+        type=int,
+        default=2025,
+        help="Last season start year (e.g. 2025 for 2025-26)",
+    )
+    parser.add_argument(
+        "--save-csv",
+        action="store_true",
+        help="If set, save CSV snapshots per season (default: False)",
+    )
+    parser.add_argument(
+        "--data-folder",
+        type=str,
+        default=None,
+        help="Folder to store seasonal CSVs",
+    )
+
+    args = parser.parse_args()
+
     backfill_seasons(
-        data_folder=DATA_FOLDER,
-        start_season_year=2023,  
-        end_season_year=2025,  
-        save_csv=True,
-        sleep_seconds_between_seasons=2.0,
+        start_season_year=args.start,
+        end_season_year=args.end,
+        save_csv=args.save_csv,
+        data_folder=args.data_folder,
     )

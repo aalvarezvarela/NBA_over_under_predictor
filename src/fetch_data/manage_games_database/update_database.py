@@ -110,7 +110,9 @@ def update_database(database_folder: str, date=None, save_csv: bool = True):
 
     # Remove `update_database_utils` module if it exists
     database_utils_module = [
-        module for module in sys.modules if "update_database_utils" in module or "fetch_box_score_data" in module
+        module
+        for module in sys.modules
+        if "update_database_utils" in module or "fetch_box_score_data" in module
     ]
 
     if database_utils_module:
@@ -152,7 +154,6 @@ def update_database(database_folder: str, date=None, save_csv: bool = True):
         existing_game_ids=all_existing_game_ids,
         n_tries=3,
     )
-    os.makedirs(database_folder, exist_ok=True)
 
     # Save updated data to CSV
     if team_df is not None:
@@ -164,6 +165,7 @@ def update_database(database_folder: str, date=None, save_csv: bool = True):
         upload_players_to_postgresql(players_df)
 
     if save_csv:
+        os.makedirs(database_folder, exist_ok=True)
         if team_df is not None:
             teams_filename = f"nba_games_{season_nullable.replace('-', '_')}.csv"
 
