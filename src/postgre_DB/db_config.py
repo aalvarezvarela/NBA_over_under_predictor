@@ -153,6 +153,7 @@ def connect_postgres_db() -> psycopg.Connection:
 def connect_nba_db() -> psycopg.Connection:
     """Connect to the configured database (local or Supabase)."""
     c = get_db_credentials()
+    print(f"Connecting to database environment: {c['env']}")
 
     kwargs: dict[str, Any] = dict(
         dbname=c["dbname"],
