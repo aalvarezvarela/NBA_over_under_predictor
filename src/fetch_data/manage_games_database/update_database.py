@@ -109,15 +109,27 @@ def update_database(database_folder: str, date=None, save_csv: bool = True):
         del sys.modules[module]
 
     # Remove `update_database_utils` module if it exists
-    if "fetch_data.manage_games_database.update_database_utils" in sys.modules:
-        del sys.modules["fetch_data.manage_games_database.update_database_utils"]
+    database_utils_module = [
+        module for module in sys.modules if "update_database_utils" in module or "fetch_box_score_data" in module
+    ]
+
+    if database_utils_module:
+        for module in database_utils_module:
+            print(f"Reloading module: {module}")
+            del sys.modules[module]
+
+        from .update_database_utils import (
+            fetch_nba_data,
+            get_existing_game_ids_from_db,
+            get_existing_player_game_ids_from_db,
+        )
 
     if not date:
         date = datetime.now()
     # Get Season to Update
     season_nullable = get_nba_season_nullable(date)
     season_year = season_nullable[:4]  # Extract first 4 digits
-    
+
     print(f"Updating season: {season_nullable}")
 
     # Query existing game IDs from database
@@ -148,7 +160,6 @@ def update_database(database_folder: str, date=None, save_csv: bool = True):
         upload_games_to_postgresql(team_df)
 
     if players_df is not None:
-
         # Upload player data to PostgreSQL
         upload_players_to_postgresql(players_df)
 
@@ -156,27 +167,38 @@ def update_database(database_folder: str, date=None, save_csv: bool = True):
         if team_df is not None:
             teams_filename = f"nba_games_{season_nullable.replace('-', '_')}.csv"
 
-            #load existing csv data
+            # load existing csv data
             teams_path = os.path.join(database_folder, teams_filename)
             df_teams_existing = load_existing_data(teams_path, dtype={"GAME_ID": str})
-            save_csv_df = pd.concat([df_teams_existing, team_df]) if df_teams_existing is not None else team_df
+            save_csv_df = (
+                pd.concat([df_teams_existing, team_df])
+                if df_teams_existing is not None
+                else team_df
+            )
             save_csv_df.drop_duplicates(subset=["GAME_ID"], inplace=True)
             save_csv_df.reset_index(drop=True, inplace=True)
             save_csv_df.to_csv(teams_path, index=False)
             print(f"Data saved to {teams_path}")
-        
+
         if players_df is not None:
             players_filename = f"nba_players_{season_nullable.replace('-', '_')}.csv"
             players_path = os.path.join(database_folder, players_filename)
-            df_players_existing = load_existing_data(players_path, dtype={"GAME_ID": str})
+            df_players_existing = load_existing_data(
+                players_path, dtype={"GAME_ID": str}
+            )
 
-            save_players_csv_df = pd.concat([df_players_existing, players_df]) if df_players_existing is not None else players_df
-            save_players_csv_df.drop_duplicates(subset=["GAME_ID", "PLAYER_ID"], inplace=True)
+            save_players_csv_df = (
+                pd.concat([df_players_existing, players_df])
+                if df_players_existing is not None
+                else players_df
+            )
+            save_players_csv_df.drop_duplicates(
+                subset=["GAME_ID", "PLAYER_ID"], inplace=True
+            )
             save_players_csv_df.reset_index(drop=True, inplace=True)
             save_players_csv_df.to_csv(players_path, index=False)
             print(f"Player data saved to {players_path}")
-       
-    
+
     print(f"Completed season: {season_nullable}\n" + "-" * 50)
     return limit_reached
 

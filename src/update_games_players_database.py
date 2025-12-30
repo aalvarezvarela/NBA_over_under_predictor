@@ -29,7 +29,7 @@ def season_start_date(season_start_year: int) -> datetime:
 
 def backfill_seasons(
     data_folder: str | Path,
-    start_season_year: int = 2005,
+    start_season_year: int = 2006,
     end_season_year: int = 2025,
     save_csv: bool = True,
     sleep_seconds_between_seasons: float = 2.0,
@@ -77,8 +77,8 @@ if __name__ == "__main__":
     )
     backfill_seasons(
         data_folder=DATA_FOLDER,
-        start_season_year=2006,  # 2005-06 -> games in 2006
-        end_season_year=2024,  # 2024-25 -> games in 2025
+        start_season_year=2023,  
+        end_season_year=2025,  
         save_csv=True,
         sleep_seconds_between_seasons=2.0,
     )

@@ -1,42 +1,42 @@
-# from utils.general_utils import get_nba_season_nullable
-import configparser
-import os
-
-import numpy as np
 import pandas as pd
-import psycopg
 from nba_api.stats.endpoints import LeagueGameFinder
+from psycopg import sql
 from utils.general_utils import get_nba_season_nullable
 
-from .db_config import connect_predictions_db
+from .db_config import connect_nba_db, get_schema_name_predictions
 
 
-def get_predictions_table_name():
-    config = configparser.ConfigParser()
-    config.read(
-        os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "config.ini"
-        )
-    )
-    return config.get("Database", "DB_NAME_PREDICTIONS", fallback="nba_predictions")
+def get_predictions_schema_and_table() -> tuple[str, str]:
+    """
+    In your new structure:
+      schema = SCHEMA_NAME_PREDICTIONS (e.g. 'nba_predictions')
+      table  = same as schema (your convention)
+    """
+    schema = get_schema_name_predictions()
+    table = schema
+    return schema, table
 
 
 def get_game_ids_with_null_total_scored_points() -> pd.DataFrame:
-    table_name = get_predictions_table_name()
-    conn = connect_predictions_db()
-    query = f"""
-        SELECT *
-        FROM {table_name}
-        WHERE total_scored_points IS NULL
-    """
-    df = pd.read_sql_query(query, conn)
-    conn.close()
+    schema, table = get_predictions_schema_and_table()
+
+    conn = connect_nba_db()
+    try:
+        query_obj = sql.SQL("""
+            SELECT *
+            FROM {}.{}
+            WHERE total_scored_points IS NULL
+        """).format(sql.Identifier(schema), sql.Identifier(table))
+        query = query_obj.as_string(conn)  # <-- convert to string for pandas
+
+        df = pd.read_sql_query(query, conn)
+    finally:
+        conn.close()
 
     game_ids = df["game_id"].dropna().unique().tolist()
     if not game_ids:
-        return pd.DataFrame(
-            columns=["game_id", "total_scored_points"]
-        )  # Return empty DataFrame if no game_ids
+        return pd.DataFrame(columns=["game_id", "total_scored_points"])
+
     dates = pd.to_datetime(df["game_date"], errors="coerce").dropna().unique()
     seasons = {get_nba_season_nullable(d) for d in dates}
 
@@ -55,7 +55,6 @@ def get_game_ids_with_null_total_scored_points() -> pd.DataFrame:
     games["total_scored_points"] = games.groupby("game_id")["PTS"].transform("sum")
     games = games[["game_id", "total_scored_points"]].drop_duplicates()
 
-    # return only what you need to update
     updates = games.dropna(subset=["game_id", "total_scored_points"]).copy()
     return updates
 
@@ -80,14 +79,18 @@ def update_total_scored_points(updates: pd.DataFrame) -> None:
     if not rows:
         return
 
-    table_name = get_predictions_table_name()
-    sql = f"""
-        UPDATE {table_name}
+    schema, table = get_predictions_schema_and_table()
+
+    update_stmt = sql.SQL("""
+        UPDATE {}.{}
         SET total_scored_points = %s
         WHERE game_id = %s
-    """
+    """).format(sql.Identifier(schema), sql.Identifier(table))
 
-    with connect_predictions_db() as conn:
+    conn = connect_nba_db()
+    try:
         with conn.cursor() as cur:
-            cur.executemany(sql, rows)
+            cur.executemany(update_stmt, rows)
         conn.commit()
+    finally:
+        conn.close()

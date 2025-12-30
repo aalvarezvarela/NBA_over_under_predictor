@@ -144,7 +144,7 @@ def fetch_box_score_data(game_id: str, n_tries: int = 3):
 
         while attempts < n_tries:
             try:
-                data = api_call(game_id=game_id)
+                data = api_call(game_id=game_id, timeout=10)
 
                 if api_call == BoxScoreTraditionalV3:
                     box_score_traditional = data
@@ -345,7 +345,9 @@ def fetch_nba_data(
 
     # Extract season year from season_nullable (first 4 digits)
     season_year = season_nullable[:4]
-
+    if team_stats_df.empty:
+        print(f"No team stats fetched for season {season_nullable}.")
+        return input_df, input_player_stats, limit_reached
     merged_games = pd.merge(
         games, team_stats_df, on=["GAME_ID", "TEAM_ID"], suffixes=("", "_drop")
     )
