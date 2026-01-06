@@ -484,7 +484,6 @@ def compute_daily_accuracy(
 def plot_daily_accuracy(
     daily_df: pd.DataFrame,
     *,
-    save_path: str = None,
     show_plot: bool = True,
 ) -> None:
     """
@@ -550,9 +549,6 @@ def plot_daily_accuracy(
 
     plt.tight_layout()
 
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
-        print(f"Plot saved to: {save_path}")
 
     if show_plot:
         plt.show()

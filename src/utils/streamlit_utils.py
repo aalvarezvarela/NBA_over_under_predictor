@@ -46,7 +46,7 @@ def get_team_logo_url(team_name: str) -> str:
 
 def render_game_cards(df: pd.DataFrame) -> None:
     """
-    Render games as nice cards with team logos.
+    Render games as nice cards with team logos in two-column layout.
 
     Args:
         df: DataFrame with upcoming game predictions
@@ -54,143 +54,131 @@ def render_game_cards(df: pd.DataFrame) -> None:
     # Sort by game time
     df = df.sort_values("game_time").reset_index(drop=True)
 
-    for idx, row in df.iterrows():
-        home_team = row["team_name_team_home"]
-        away_team = row["team_name_team_away"]
-        game_time = pd.to_datetime(row["game_time"]).strftime(
-            "%b %d, %Y at %I:%M %p UTC"
-        )
+    # Create two-column layout
+    cols_per_row = 2
 
-        # Get predictions
-        regressor_pred = row["regressor_prediction"]
-        classifier_pred = row["classifier_prediction_model2"]
-        both_agree = regressor_pred == classifier_pred
+    for idx in range(0, len(df), cols_per_row):
+        cols = st.columns(cols_per_row)
 
-        # Calculate values
-        ou_line = row["total_over_under_line"]
-        predicted_total = row["predicted_total_score"]
-        margin = row["margin_difference_prediction_vs_over_under"]
-        over_odds = row["average_total_over_money"]
-        under_odds = row["average_total_under_money"]
-        time_to_game = int(row["time_to_match_minutes"])
+        for col_idx, col in enumerate(cols):
+            row_idx = idx + col_idx
+            if row_idx >= len(df):
+                break
 
-        # Determine styling based on agreement
-        if both_agree:
-            border_color = "#4CAF50"
-            bg_color = "#E8F5E9"
-            agree_msg = "✅ BOTH MODELS AGREE!"
-            agree_bg = "#4CAF50"
-        else:
-            border_color = "#FF9800"
-            bg_color = "#FFF3E0"
-            agree_msg = "⚠️ MODELS DISAGREE"
-            agree_bg = "#FF9800"
+            row = df.iloc[row_idx]
 
-        # Create card container
-        with st.container():
-            # Card styling
-            st.markdown(
-                f"""
+            with col:
+                home_team = row["team_name_team_home"]
+                away_team = row["team_name_team_away"]
+                game_time = pd.to_datetime(row["game_time"]).strftime("%I:%M %p")
+                game_date = pd.to_datetime(row["game_time"]).strftime("%b %d, %Y")
+
+                # Get predictions
+                regressor_pred = row["regressor_prediction"]
+                classifier_pred = row["classifier_prediction_model2"]
+                both_agree = regressor_pred == classifier_pred
+
+                # Calculate values
+                ou_line = row["total_over_under_line"]
+                predicted_total = row["predicted_total_score"]
+                margin = row["margin_difference_prediction_vs_over_under"]
+                over_odds = row["average_total_over_money"]
+                under_odds = row["average_total_under_money"]
+
+                # Determine styling based on agreement
+                if both_agree:
+                    border_color = "#4CAF50"
+                    agree_icon = "✅"
+                else:
+                    border_color = "#FF9800"
+                    agree_icon = "⚠️"
+
+                # Create card with header using st.html for proper rendering
+                header_html = f"""
                 <div style="
-                    border: 3px solid {border_color};
-                    border-radius: 15px;
-                    padding: 25px;
-                    margin-bottom: 25px;
-                    background-color: {bg_color};
-                    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+                    border: 2px solid {border_color};
+                    border-radius: 12px 12px 0 0;
+                    overflow: hidden;
+                    box-shadow: 0 3px 6px rgba(0,0,0,0.15);
                 ">
-                """,
-                unsafe_allow_html=True,
-            )
-
-            # Team matchup with logos
-            col1, col2, col3 = st.columns([1, 0.3, 1])
-
-            with col1:
-                st.markdown(
-                    f"""
-                    <div style="text-align: center;">
-                        <img src="{get_team_logo_url(home_team)}" width="80">
-                        <div style="font-size: 1.4rem; font-weight: 700; margin-top: 10px;">{home_team}</div>
-                        <div style="font-size: 1.1rem; color: #666;">HOME</div>
+                    <div style="
+                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                        padding: 20px;
+                        color: white;
+                    ">
+                        <div style="display: flex; align-items: center; justify-content: space-between;">
+                            <div style="flex: 1; text-align: center;">
+                                <img src="{get_team_logo_url(home_team)}" width="100" style="margin-bottom: 8px;">
+                                <div style="font-size: 1.1rem; font-weight: 700;">{home_team}</div>
+                            </div>
+                            
+                            <div style="flex: 0.4; text-align: center;">
+                                <div style="font-size: 2rem; font-weight: 900; margin-bottom: 5px;">VS</div>
+                                <div style="font-size: 0.95rem; font-weight: 600;">{game_date}</div>
+                                <div style="font-size: 1.1rem; font-weight: 700; margin-top: 3px;">🕐 {game_time}</div>
+                            </div>
+                            
+                            <div style="flex: 1; text-align: center;">
+                                <img src="{get_team_logo_url(away_team)}" width="100" style="margin-bottom: 8px;">
+                                <div style="font-size: 1.1rem; font-weight: 700;">{away_team}</div>
+                            </div>
+                        </div>
                     </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-            with col2:
-                st.markdown(
-                    f"""
-                    <div style="text-align: center;">
-                        <div style="font-size: 2.5rem; font-weight: 800; color: #1976D2;">VS</div>
-                        <div style="font-size: 1rem; color: #666; margin-top: 10px;">{game_time}</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-            with col3:
-                st.markdown(
-                    f"""
-                    <div style="text-align: center;">
-                        <img src="{get_team_logo_url(away_team)}" width="80">
-                        <div style="font-size: 1.4rem; font-weight: 700; margin-top: 10px;">{away_team}</div>
-                        <div style="font-size: 1.1rem; color: #666;">AWAY</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-            st.markdown("<hr style='margin: 20px 0;'>", unsafe_allow_html=True)
-
-            # Stats row 1: Line, Predicted, Margin
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("📏 O/U LINE", f"{ou_line:.1f}")
-            with col2:
-                st.metric("🎯 PREDICTED", f"{predicted_total:.1f}")
-            with col3:
-                st.metric("📈 MARGIN", f"{margin:+.1f}")
-
-            # Stats row 2: Model predictions
-            col1, col2 = st.columns(2)
-            with col1:
-                reg_color = "🔵" if regressor_pred == "Under" else "🔴"
-                st.metric("🤖 REGRESSOR", f"{reg_color} {regressor_pred.upper()}")
-            with col2:
-                clf_color = "🔵" if classifier_pred == "Under" else "🔴"
-                st.metric("🧠 CLASSIFIER", f"{clf_color} {classifier_pred.upper()}")
-
-            # Stats row 3: Odds and time
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("📊 OVER ODDS", f"{over_odds:.2f}")
-            with col2:
-                st.metric("📊 UNDER ODDS", f"{under_odds:.2f}")
-            with col3:
-                st.metric("⏱️ TIME TO GAME", f"{time_to_game} min")
-
-            # Agreement banner
-            st.markdown(
-                f"""
-                <div style="
-                    text-align: center; 
-                    margin-top: 20px; 
-                    padding: 15px; 
-                    background: {agree_bg}; 
-                    color: white; 
-                    border-radius: 10px; 
-                    font-size: 1.3rem; 
-                    font-weight: 700;
-                ">
-                    {agree_msg}
                 </div>
-                """,
-                unsafe_allow_html=True,
-            )
+                """
 
-            # Close card
-            st.markdown("</div>", unsafe_allow_html=True)
+                st.components.v1.html(header_html, height=200)
+
+                # Stats section with border to match header
+                with st.container():
+                    st.markdown(
+                        f"""
+                        <div style="border: 2px solid {border_color}; border-top: none; 
+                             border-radius: 0 0 12px 12px; padding: 15px; margin-top: -5px; 
+                             background: white;">
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                    # Agreement indicator
+                    agree_text = "Models Agree" if both_agree else "Models Disagree"
+                    st.markdown(
+                        f"""
+                        <div style="text-align: center; margin-bottom: 10px;">
+                            <span style="font-size: 1.2rem;">{agree_icon}</span>
+                            <span style="font-size: 1rem; font-weight: 600; margin-left: 8px;">
+                                {agree_text}
+                            </span>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                    # Compact stats
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("O/U Line", f"{ou_line:.1f}")
+                    with col2:
+                        st.metric("Predicted", f"{predicted_total:.1f}")
+                    with col3:
+                        st.metric("Margin", f"{margin:+.1f}")
+
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        reg_icon = "🔵" if regressor_pred == "Under" else "🔴"
+                        st.metric("Regressor", f"{reg_icon} {regressor_pred}")
+                    with col2:
+                        clf_icon = "🔵" if classifier_pred == "Under" else "🔴"
+                        st.metric("Classifier", f"{clf_icon} {classifier_pred}")
+
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric("Over Odds", f"{over_odds:.2f}")
+                    with col2:
+                        st.metric("Under Odds", f"{under_odds:.2f}")
+
+                    # Close the stats section div
+                    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def format_upcoming_games_display(df: pd.DataFrame) -> pd.DataFrame:
