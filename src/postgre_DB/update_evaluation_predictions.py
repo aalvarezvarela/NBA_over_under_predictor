@@ -1,46 +1,64 @@
 import numpy as np
 import pandas as pd
+from psycopg import sql
 
-from .db_config import connect_predictions_db
-from .update_total_points_predictions import get_predictions_table_name
+from .db_config import connect_nba_db, get_schema_name_predictions
 
 
 def get_games_with_total_scored_points(
-    date: str = None, start_date: str = None, end_date: str = None
+    date: str = None,
+    start_date: str = None,
+    end_date: str = None,
+    only_null: bool = False,
 ) -> pd.DataFrame:
     """
-    Connects to the nba_predictions database and returns all predictions
-    where total_scored_points IS NOT NULL. Optionally filter by date or date range.
+    Connects to the nba_predictions database and returns all predictions.
+    By default, returns only games where total_scored_points IS NOT NULL.
 
     Args:
         date (str, optional): Filter for a specific date (YYYY-MM-DD).
         start_date (str, optional): Start date for range (inclusive, YYYY-MM-DD).
         end_date (str, optional): End date for range (inclusive, YYYY-MM-DD).
+        only_null (bool, optional): If True, returns games where total_scored_points IS NULL.
+                                       If False (default), returns games where total_scored_points IS NOT NULL.
 
     Returns:
-        pd.DataFrame: All columns from nba_predictions for rows with a known final total.
+        pd.DataFrame: All columns from nba_predictions for rows matching the filter.
     """
-    table_name = get_predictions_table_name()
-    conn = connect_predictions_db()
-    where_clauses = ["total_scored_points IS NOT NULL"]
-    params = []
-    if date:
-        where_clauses.append("game_date = %s")
-        params.append(date)
-    if start_date:
-        where_clauses.append("game_date >= %s")
-        params.append(start_date)
-    if end_date:
-        where_clauses.append("game_date <= %s")
-        params.append(end_date)
-    where_sql = " AND ".join(where_clauses)
-    query = f"""
-        SELECT *
-        FROM {table_name}
-        WHERE {where_sql}
-    """
-    df = pd.read_sql_query(query, conn, params=params)
-    conn.close()
+    schema = get_schema_name_predictions()
+    table = schema  # Your convention: table name = schema name
+
+    conn = connect_nba_db()
+    try:
+        # Set the total_scored_points filter based on only_null parameter
+        if only_null:
+            where_clauses = ["total_scored_points IS NULL"]
+        else:
+            where_clauses = ["total_scored_points IS NOT NULL"]
+
+        params = []
+        if date:
+            where_clauses.append("game_date = %s")
+            params.append(date)
+        if start_date:
+            where_clauses.append("game_date >= %s")
+            params.append(start_date)
+        if end_date:
+            where_clauses.append("game_date <= %s")
+            params.append(end_date)
+        where_sql = " AND ".join(where_clauses)
+
+        query_obj = sql.SQL("""
+            SELECT *
+            FROM {}.{}
+            WHERE {}
+        """).format(sql.Identifier(schema), sql.Identifier(table), sql.SQL(where_sql))
+        query = query_obj.as_string(conn)
+
+        df = pd.read_sql_query(query, conn, params=params)
+    finally:
+        conn.close()
+
     return df
 
 
@@ -163,20 +181,40 @@ def add_ou_betting_metrics(
     df[over_odds_col] = to_decimal_odds(df[over_odds_col])
     df[under_odds_col] = to_decimal_odds(df[under_odds_col])
 
-    def profit_from_pick(prediction, is_correct, odds_over, odds_under) -> pd.Series:
+    def profit_from_pick(prediction, is_correct, odds_over, odds_under) -> float:
         """
-        Profit for a $1 bet following `pick_side` ('over'/'under').
-        If win => +(decimal_odds - 1), if loss => -1, if push/unknown => 0.
-        """
-        if not prediction:
-            return 0.0
-        profit = -1
-        if is_correct and prediction == "over":
-            profit = odds_over - 1
-        elif is_correct and prediction == "under":
-            profit = odds_under - 1
+        Profit for a $1 (or 1 euro) bet following `prediction` side ('over'/'under').
 
-        return profit
+        Returns:
+            - If win: (decimal_odds * 1) - 1 = profit from winning bet
+            - If loss: -1 (lost the 1 euro stake)
+            - If no prediction/push/unknown: 0
+
+        Example:
+            - Bet 1 euro on over at odds 1.91, win: profit = 1.91 - 1 = 0.91
+            - Bet 1 euro on under at odds 2.10, lose: profit = -1.00
+        """
+        # No bet placed or missing prediction
+        if not prediction or pd.isna(prediction):
+            return 0.0
+
+        # Missing odds data - can't calculate profit
+        if pd.isna(odds_over) or pd.isna(odds_under):
+            return 0.0
+
+        # Calculate profit based on outcome
+        if is_correct:
+            # Win: return stake * odds - stake = stake * (odds - 1)
+            # For 1 euro stake: 1 * (odds - 1) = odds - 1
+            if prediction == "over":
+                return float(odds_over - 1)
+            elif prediction == "under":
+                return float(odds_under - 1)
+            else:
+                return 0.0
+        else:
+            # Loss: lose the 1 euro stake
+            return -1.0
 
     df["profit_regressor"] = df.apply(
         lambda row: profit_from_pick(
@@ -228,6 +266,7 @@ def compute_ou_betting_statistics(
     clf_profit_col: str = "profit_classifier",
     both_profit_col: str = "profit_both_agree",
     both_pick_col: str = "both_agree_side",
+    game_date_col: str = "game_date",
     print_report: bool = True,
     title: str = "Over/Under Betting Performance Summary",
     float_decimals: int = 4,
@@ -241,7 +280,7 @@ def compute_ou_betting_statistics(
     Returns a single-row DataFrame with:
       - n_games_total
       - n_resolved (non-push rows, where actual_side is known)
-      - per-method: n_bets, accuracy, total_profit, avg_profit_per_bet
+      - per-method: n_bets, accuracy, total_profit, avg_profit_per_bet, avg_profit_per_day
 
     If print_report=True, prints a formatted report.
     """
@@ -255,6 +294,7 @@ def compute_ou_betting_statistics(
         clf_profit_col,
         both_profit_col,
         both_pick_col,
+        game_date_col,
     ]
     missing = [c for c in required if c not in df.columns]
     if missing:
@@ -268,16 +308,23 @@ def compute_ou_betting_statistics(
     resolved_mask = df[actual_side_col].notna()
     n_resolved = int(resolved_mask.sum())
 
+    # Calculate number of unique days
+    n_days = df[game_date_col].nunique() if game_date_col in df.columns else 0
+
     def _accuracy(mask: pd.Series, correct_col: str) -> float:
         denom = int(mask.sum())
         if denom == 0:
             return float("nan")
         return float(df.loc[mask, correct_col].mean())
 
-    def _profit_stats(mask: pd.Series, profit_col: str) -> tuple[int, float, float]:
+    def _profit_stats(
+        mask: pd.Series, profit_col: str
+    ) -> tuple[int, float, float, float, float]:
         """
-        Returns: (n_bets, total_profit, avg_profit_per_bet)
+        Returns: (n_bets, total_profit, avg_profit_per_bet, avg_profit_per_day, avg_stake_per_day)
         avg_profit_per_bet excludes zeros (0 means no-bet / push / unknown by your convention).
+        avg_profit_per_day is the average daily profit across all unique game dates.
+        avg_stake_per_day is the average amount of money bet per day (number of bets per day * 1 euro).
         """
         profits = pd.to_numeric(df.loc[mask, profit_col], errors="coerce").fillna(0.0)
 
@@ -289,7 +336,31 @@ def compute_ou_betting_statistics(
             float(profits.loc[bet_mask].mean()) if n_bets > 0 else float("nan")
         )
 
-        return n_bets, total_profit, avg_profit_per_bet
+        # Calculate average profit per day and average stake per day
+        if n_days > 0 and game_date_col in df.columns:
+            # Group by game_date, sum profits per day, then average across days
+            daily_profits = df.loc[mask].groupby(game_date_col)[profit_col].sum()
+            avg_profit_per_day = float(daily_profits.mean())
+
+            # Count bets per day (non-zero profits) and average across days
+            # Each bet is 1 euro, so avg_stake_per_day = avg number of bets per day * 1
+            daily_bets = (
+                df.loc[mask]
+                .groupby(game_date_col)[profit_col]
+                .apply(lambda x: (x != 0).sum())
+            )
+            avg_stake_per_day = float(daily_bets.mean())
+        else:
+            avg_profit_per_day = float("nan")
+            avg_stake_per_day = float("nan")
+
+        return (
+            n_bets,
+            total_profit,
+            avg_profit_per_bet,
+            avg_profit_per_day,
+            avg_stake_per_day,
+        )
 
     # Regressor and classifier: bet whenever game is resolved (non-push)
     reg_mask = resolved_mask
@@ -298,31 +369,50 @@ def compute_ou_betting_statistics(
     # Both-agree: bet only when both agree AND game resolved
     both_mask = resolved_mask & df[both_pick_col].notna()
 
-    reg_n_bets, reg_total_profit, reg_avg_profit = _profit_stats(
-        reg_mask, reg_profit_col
-    )
-    clf_n_bets, clf_total_profit, clf_avg_profit = _profit_stats(
-        clf_mask, clf_profit_col
-    )
-    both_n_bets, both_total_profit, both_avg_profit = _profit_stats(
-        both_mask, both_profit_col
-    )
+    (
+        reg_n_bets,
+        reg_total_profit,
+        reg_avg_profit,
+        reg_avg_profit_per_day,
+        reg_avg_stake_per_day,
+    ) = _profit_stats(reg_mask, reg_profit_col)
+    (
+        clf_n_bets,
+        clf_total_profit,
+        clf_avg_profit,
+        clf_avg_profit_per_day,
+        clf_avg_stake_per_day,
+    ) = _profit_stats(clf_mask, clf_profit_col)
+    (
+        both_n_bets,
+        both_total_profit,
+        both_avg_profit,
+        both_avg_profit_per_day,
+        both_avg_stake_per_day,
+    ) = _profit_stats(both_mask, both_profit_col)
 
     out = {
         "n_games_total": n_games_total,
         "n_resolved": n_resolved,
+        "n_days": n_days,
         "regressor_n_bets": reg_n_bets,
         "regressor_accuracy": _accuracy(reg_mask, reg_correct_col),
         "regressor_total_profit": reg_total_profit,
         "regressor_avg_profit_per_bet": reg_avg_profit,
+        "regressor_avg_profit_per_day": reg_avg_profit_per_day,
+        "regressor_avg_stake_per_day": reg_avg_stake_per_day,
         "classifier_n_bets": clf_n_bets,
         "classifier_accuracy": _accuracy(clf_mask, clf_correct_col),
         "classifier_total_profit": clf_total_profit,
         "classifier_avg_profit_per_bet": clf_avg_profit,
+        "classifier_avg_profit_per_day": clf_avg_profit_per_day,
+        "classifier_avg_stake_per_day": clf_avg_stake_per_day,
         "both_agree_n_bets": both_n_bets,
         "both_agree_accuracy": _accuracy(both_mask, both_correct_col),
         "both_agree_total_profit": both_total_profit,
         "both_agree_avg_profit_per_bet": both_avg_profit,
+        "both_agree_avg_profit_per_day": both_avg_profit_per_day,
+        "both_agree_avg_stake_per_day": both_avg_stake_per_day,
     }
 
     stats_df = pd.DataFrame([out])
@@ -337,11 +427,144 @@ def compute_ou_betting_statistics(
     return stats_df
 
 
+def compute_daily_accuracy(
+    df: pd.DataFrame,
+    *,
+    game_date_col: str = "game_date",
+    reg_correct_col: str = "regressor_correct",
+    clf_correct_col: str = "classifier_correct",
+    both_correct_col: str = "both_agree_correct",
+    both_pick_col: str = "both_agree_side",
+    actual_side_col: str = "actual_side",
+) -> pd.DataFrame:
+    """
+    Computes daily accuracy for each strategy.
+
+    Returns a DataFrame with columns:
+        - game_date
+        - regressor_accuracy
+        - classifier_accuracy
+        - both_agree_accuracy
+        - n_games (number of resolved games per day)
+    """
+    # Filter to resolved games only
+    resolved_df = df[df[actual_side_col].notna()].copy()
+
+    # Group by date and calculate accuracy
+    daily_stats = []
+
+    for date, group in resolved_df.groupby(game_date_col):
+        n_games = len(group)
+
+        # Regressor accuracy
+        reg_acc = group[reg_correct_col].mean() if n_games > 0 else np.nan
+
+        # Classifier accuracy
+        clf_acc = group[clf_correct_col].mean() if n_games > 0 else np.nan
+
+        # Both agree accuracy (only count games where both models agree)
+        both_games = group[group[both_pick_col].notna()]
+        both_acc = (
+            both_games[both_correct_col].mean() if len(both_games) > 0 else np.nan
+        )
+
+        daily_stats.append(
+            {
+                "game_date": date,
+                "n_games": n_games,
+                "regressor_accuracy": reg_acc,
+                "classifier_accuracy": clf_acc,
+                "both_agree_accuracy": both_acc,
+            }
+        )
+
+    return pd.DataFrame(daily_stats).sort_values("game_date")
+
+
+def plot_daily_accuracy(
+    daily_df: pd.DataFrame,
+    *,
+    save_path: str = None,
+    show_plot: bool = True,
+) -> None:
+    """
+    Plots daily accuracy for each strategy over time.
+
+    Args:
+        daily_df: DataFrame from compute_daily_accuracy
+        save_path: Optional path to save the plot
+        show_plot: Whether to display the plot
+    """
+    import matplotlib.dates as mdates
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+
+    # Convert game_date to datetime if it's not already
+    dates = pd.to_datetime(daily_df["game_date"])
+
+    # Plot each strategy
+    ax.plot(
+        dates,
+        daily_df["regressor_accuracy"] * 100,
+        marker="o",
+        label="Regressor",
+        linewidth=2,
+        markersize=6,
+    )
+    ax.plot(
+        dates,
+        daily_df["classifier_accuracy"] * 100,
+        marker="s",
+        label="Classifier",
+        linewidth=2,
+        markersize=6,
+    )
+    ax.plot(
+        dates,
+        daily_df["both_agree_accuracy"] * 100,
+        marker="^",
+        label="Both Agree",
+        linewidth=2,
+        markersize=6,
+    )
+
+    # Add 50% reference line
+    ax.axhline(y=50, color="gray", linestyle="--", alpha=0.5, label="50% (Break-even)")
+
+    # Formatting
+    ax.set_xlabel("Date", fontsize=12)
+    ax.set_ylabel("Accuracy (%)", fontsize=12)
+    ax.set_title(
+        "Daily Prediction Accuracy by Strategy", fontsize=14, fontweight="bold"
+    )
+    ax.legend(loc="best", fontsize=10)
+    ax.grid(True, alpha=0.3)
+
+    # Format x-axis dates
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
+    plt.xticks(rotation=45, ha="right")
+
+    # Set y-axis range
+    ax.set_ylim(0, 100)
+
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        print(f"Plot saved to: {save_path}")
+
+    if show_plot:
+        plt.show()
+    else:
+        plt.close()
+
+
 def _print_ou_stats_report(
     *,
     stats_df: pd.DataFrame,
     title: str,
-    float_decimals: int = 4,
+    float_decimals: int = 2,
 ) -> None:
     """Pretty-prints the single-row stats_df produced by compute_ou_betting_statistics."""
     if stats_df.empty:
@@ -352,6 +575,7 @@ def _print_ou_stats_report(
 
     n_games_total = int(row["n_games_total"])
     n_resolved = int(row["n_resolved"])
+    n_days = int(row.get("n_days", 0))
 
     def fmt_pct(x: float) -> str:
         if x is None or (isinstance(x, float) and np.isnan(x)):
@@ -369,61 +593,43 @@ def _print_ou_stats_report(
     methods = [
         ("Regressor", "regressor"),
         ("Classifier", "classifier"),
-        ("Both Agree (bet only when both pick same side)", "both_agree"),
+        ("Both Agree", "both_agree"),
     ]
 
     # Header
     print()
-    print(title)
-    print("=" * len(title))
-    print(f"Total rows:     {fmt_int(n_games_total)}")
+    print(f"{title} | Games: {n_games_total} | Resolved: {n_resolved} | Days: {n_days}")
+    print("=" * 110)
+
+    # Compact table
     print(
-        f"Resolved rows:  {fmt_int(n_resolved)} (non-push games where actual side is known)"
+        f"{'Method':<12} {'Bets':>5} {'Acc%':>6} {'Tot€':>7} {'€/Bet':>7} {'€/Day':>7} {'Stake/Day':>10}"
     )
-    print()
-
-    # Table-like section
-    col1_w = 46
-    col2_w = 10
-    col3_w = 14
-    col4_w = 18
-
-    header = (
-        f"{'Method'.ljust(col1_w)}"
-        f"{'Bets'.rjust(col2_w)}"
-        f"{'Accuracy'.rjust(col3_w)}"
-        f"{'Total Profit'.rjust(col4_w)}"
-        f"{'Avg Profit/Bet'.rjust(col4_w)}"
-    )
-    print(header)
-    print("-" * len(header))
+    print("-" * 110)
 
     for label, prefix in methods:
         n_bets = row[f"{prefix}_n_bets"]
         acc = row[f"{prefix}_accuracy"]
         total_profit = row[f"{prefix}_total_profit"]
         avg_profit = row[f"{prefix}_avg_profit_per_bet"]
+        avg_profit_per_day = row[f"{prefix}_avg_profit_per_day"]
+        avg_stake_per_day = row[f"{prefix}_avg_stake_per_day"]
+
+        acc_str = fmt_pct(acc) if not np.isnan(acc) else "n/a"
 
         line = (
-            f"{label.ljust(col1_w)}"
-            f"{fmt_int(n_bets).rjust(col2_w)}"
-            f"{fmt_pct(acc).rjust(col3_w)}"
-            f"{fmt_num(total_profit).rjust(col4_w)}"
-            f"{fmt_num(avg_profit).rjust(col4_w)}"
+            f"{label:<12} "
+            f"{fmt_int(n_bets):>5} "
+            f"{acc_str:>6} "
+            f"{fmt_num(total_profit):>7} "
+            f"{fmt_num(avg_profit):>7} "
+            f"{fmt_num(avg_profit_per_day):>7} "
+            f"{fmt_num(avg_stake_per_day):>10}"
         )
         print(line)
 
     print()
-    print("Notes")
-    print("-----")
-    print("1) Accuracy denominators:")
-    print("   - Regressor / Classifier: resolved rows (non-push).")
-    print(
-        "   - Both Agree: only rows where both models agree AND the game is resolved."
-    )
-    print(
-        "2) Avg Profit/Bet excludes 0 profits (0 indicates no bet placed, or push/unknown in your conventions)."
-    )
+    print("Note: Accuracy = correct predictions / resolved games (excl. pushes)")
     print()
 
 

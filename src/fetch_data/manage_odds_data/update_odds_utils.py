@@ -594,6 +594,11 @@ def update_and_get_odds_df(
 
     # Loop through valid dates and collect processed data
     for date in tqdm(unique_dates, desc="Processing odds per date"):
+        #if date is month 10 9 or 8, skip it
+        if pd.to_datetime(date).month in [8, 9, 10]:
+            print(f"Skipping date {date} as it is outside the NBA season.")
+            continue
+        
         df_day = process_odds_date(date, BASE_URL, HEADERS)
         if df_day.empty:
             print(f"No data for {date}")
