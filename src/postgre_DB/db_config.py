@@ -155,7 +155,14 @@ def connect_nba_db() -> psycopg.Connection:
 
     # Prefer DSN for Supabase (pooler/session mode). This also fixes IPv6 issues in GitHub runners.
     if c["env"] == "supabase":
-        dsn = os.getenv("SUPABASE_DB_URL")
+        #get it from config if not getenv
+        dsn = _get_env_or_config(
+            get_config(),
+            "DatabaseSupabase",
+            "SUPABASE_DB_URL",
+            "SUPABASE_DB_URL",
+        )
+        # dsn = os.getenv("SUPABASE_DB_URL")
         if dsn:
             return psycopg.connect(dsn)
 
