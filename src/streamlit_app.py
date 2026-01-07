@@ -15,7 +15,7 @@ from postgre_DB.update_evaluation_predictions import (
 from utils.streamlit_utils import format_upcoming_games_display, render_game_cards
 
 # Suppress pandas SQLAlchemy warnings
-warnings.filterwarnings('ignore', message='pandas only supports SQLAlchemy connectable')
+warnings.filterwarnings("ignore", message="pandas only supports SQLAlchemy connectable")
 
 # Import nba_predictor main function
 try:
@@ -205,14 +205,21 @@ def check_password():
 
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        st.text_input(
-            "Password",
-            type="password",
-            on_change=password_entered,
-            key="password",
-            label_visibility="collapsed",
-            placeholder="Enter password...",
-        )
+        # Use a small form so pressing Enter or clicking the button both submit
+        with st.form(key="login_form"):
+            pwd = st.text_input(
+                "Password",
+                type="password",
+                key="password_input",
+                label_visibility="collapsed",
+                placeholder="Enter password...",
+            )
+            submitted = st.form_submit_button("Enter")
+
+            if submitted:
+                # Mirror into the expected session key and validate
+                st.session_state["password"] = pwd
+                password_entered()
 
         if (
             "password_correct" in st.session_state
