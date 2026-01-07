@@ -1,5 +1,6 @@
 import os
 import sys
+import warnings
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
@@ -12,6 +13,9 @@ from postgre_DB.update_evaluation_predictions import (
     get_games_with_total_scored_points,
 )
 from utils.streamlit_utils import format_upcoming_games_display, render_game_cards
+
+# Suppress pandas SQLAlchemy warnings
+warnings.filterwarnings("ignore", message="pandas only supports SQLAlchemy connectable")
 
 # Import nba_predictor main function
 try:
