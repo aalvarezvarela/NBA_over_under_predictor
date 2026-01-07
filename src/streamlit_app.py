@@ -15,7 +15,7 @@ from postgre_DB.update_evaluation_predictions import (
 from utils.streamlit_utils import format_upcoming_games_display, render_game_cards
 
 # Suppress pandas SQLAlchemy warnings
-warnings.filterwarnings("ignore", message="pandas only supports SQLAlchemy connectable")
+warnings.filterwarnings('ignore', message='pandas only supports SQLAlchemy connectable')
 
 # Import nba_predictor main function
 try:
