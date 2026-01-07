@@ -6,6 +6,11 @@ import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
+
+# Suppress pandas SQLAlchemy warnings
+# Import nba_predictor main function
+# try:
+from nba_predictor import main as run_nba_predictor
 from postgre_DB.update_evaluation_predictions import (
     add_ou_betting_metrics,
     compute_daily_accuracy,
@@ -14,20 +19,18 @@ from postgre_DB.update_evaluation_predictions import (
 )
 from utils.streamlit_utils import format_upcoming_games_display, render_game_cards
 
-# Suppress pandas SQLAlchemy warnings
+# except (ImportError, KeyError, Exception):
+#     # Catch ImportError, KeyError (from import cache issues), and any other import-time errors
+#     run_nba_predictor = None
 warnings.filterwarnings("ignore", message="pandas only supports SQLAlchemy connectable")
-
-# Import nba_predictor main function
-try:
-    from nba_predictor import main as run_nba_predictor
-except ImportError:
-    run_nba_predictor = None
-
 os.environ["SUPABASE_DB_URL"] = st.secrets["DatabaseSupabase"]["SUPABASE_DB_URL"]
 os.environ["SUPABASE_DB_PASSWORD"] = st.secrets["DatabaseSupabase"][
     "SUPABASE_DB_PASSWORD"
 ]
-os.environ["ODDS_API_KEY"] = st.secrets["Odds"]["ODDS_API_KEY"]
+try:
+    os.environ["ODDS_API_KEY"] = st.secrets["Odds"]["ODDS_API_KEY"]
+except KeyError:
+    pass
 
 
 def inject_global_css() -> None:
