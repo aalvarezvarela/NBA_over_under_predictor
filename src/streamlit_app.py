@@ -314,7 +314,7 @@ def show_upcoming_predictions():
             "⚠️ NBA Predictor module not available. Please check your installation."
         )
     else:
-        if st.button("🚀 Run Predictor Now", type="primary", use_container_width=True):
+        if st.button("🚀 Run Predictor Now", type="primary", width="stretch"):
             try:
                 # Save original sys.argv
                 original_argv = sys.argv.copy()
@@ -467,7 +467,7 @@ def show_past_games_results():
         display_df = format_past_games_display(df_with_metrics)
         st.dataframe(
             display_df,
-            use_container_width=True,
+            width="stretch",
             height=600,
             hide_index=True,
         )
