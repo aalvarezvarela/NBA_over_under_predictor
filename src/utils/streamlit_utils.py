@@ -70,8 +70,16 @@ def render_game_cards(df: pd.DataFrame) -> None:
             with col:
                 home_team = row["team_name_team_home"]
                 away_team = row["team_name_team_away"]
-                game_time = pd.to_datetime(row["game_time"]).strftime("%I:%M %p")
-                game_date = pd.to_datetime(row["game_time"]).strftime("%b %d, %Y")
+                # Convert to Madrid timezone
+                game_dt = pd.to_datetime(row["game_time"])
+                if game_dt.tz is None:
+                    game_dt_madrid = game_dt.tz_localize("UTC").tz_convert(
+                        "Europe/Madrid"
+                    )
+                else:
+                    game_dt_madrid = game_dt.tz_convert("Europe/Madrid")
+                game_time = game_dt_madrid.strftime("%I:%M %p")
+                game_date = game_dt_madrid.strftime("%b %d, %Y")
 
                 # Get predictions
                 regressor_pred = row["regressor_prediction"]
@@ -199,10 +207,13 @@ def format_upcoming_games_display(df: pd.DataFrame) -> pd.DataFrame:
         df["team_name_team_home"] + " vs " + df["team_name_team_away"]
     )
 
-    # Game time
-    display_df["Game Time (UTC)"] = pd.to_datetime(df["game_time"]).dt.strftime(
-        "%Y-%m-%d %H:%M"
-    )
+    # Game time - convert to Madrid timezone
+    game_times = pd.to_datetime(df["game_time"])
+    if game_times.dt.tz is None:
+        game_times = game_times.dt.tz_localize("UTC")
+    display_df["Game Time (Madrid)"] = game_times.dt.tz_convert(
+        "Europe/Madrid"
+    ).dt.strftime("%Y-%m-%d %H:%M")
 
     # O/U Line
     display_df["O/U Line"] = df["total_over_under_line"].round(1)
@@ -231,7 +242,7 @@ def format_upcoming_games_display(df: pd.DataFrame) -> pd.DataFrame:
     display_df["Time to Game (min)"] = df["time_to_match_minutes"].astype(int)
 
     # Sort by game time
-    display_df = display_df.sort_values("Game Time (UTC)").reset_index(drop=True)
+    display_df = display_df.sort_values("Game Time (Madrid)").reset_index(drop=True)
 
     return display_df
 

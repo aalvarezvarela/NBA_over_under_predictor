@@ -155,7 +155,7 @@ def render_header() -> None:
               <div class="chip-row">
                 <span class="chip">Model: regressor + classifier</span>
                 <span class="chip">Lines: bookmaker O/U</span>
-                <span class="chip">Timezone: UTC for tipoff</span>
+                <span class="chip">Timezone: Madrid (CEST)</span>
               </div>
             </div>
           </div>
@@ -244,7 +244,6 @@ def main():
         )
 
         st.markdown("---")
- 
 
     # Main header
     render_header()
@@ -318,7 +317,7 @@ def show_upcoming_predictions():
         ### 📊 Understanding the Predictions
         
         - **🏀 Matchup**: Home team vs Away team with logos
-        - **⏰ Game Time**: When the game starts (UTC timezone)
+        - **⏰ Game Time**: When the game starts (Madrid timezone)
         - **📏 O/U Line**: The bookmaker's over/under betting line
         - **🎯 Predicted Total**: Our AI model's prediction for total points scored
         - **📈 Margin**: How far our prediction is from the bookmaker's line
