@@ -33,26 +33,6 @@ from .mapping_v3_v2 import (
     V3_TO_V2_TRADITIONAL_MAP,
 )
 
-NBA_HEADERS = {
-    "Host": "stats.nba.com",
-    "User-Agent": (
-        "Mozilla/5.0 (X11; Linux x86_64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/139.0.0.0 Safari/537.36"
-    ),
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.8",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-    "Referer": "https://www.nba.com/",
-    "Pragma": "no-cache",
-    "Cache-Control": "no-cache",
-    "Sec-Ch-Ua": '"Chromium";v="139", "Google Chrome";v="139", "Not.A/Brand";v="24"',
-    "Sec-Ch-Ua-Mobile": "?0",
-    "Sec-Ch-Ua-Platform": '"Linux"',
-    "Sec-Fetch-Dest": "empty",
-}
-
 
 def get_existing_game_ids_from_db(season_year: str, db_connection=None) -> set:
     """Query existing game IDs from PostgreSQL database for a specific season.
@@ -297,7 +277,6 @@ def fetch_nba_data(
             game_finder = LeagueGameFinder(
                 season_nullable=season_nullable,
                 league_id_nullable="00",
-                headers=NBA_HEADERS,
             )
             time.sleep(random.uniform(0.1, 0.3))  # Avoid rate limiting
             games = game_finder.get_data_frames()[0]

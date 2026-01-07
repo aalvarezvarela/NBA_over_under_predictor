@@ -1,58 +1,56 @@
-# name: Update PostgreSQL DB Games & Players
+name: Update PostgreSQL DB Games & Players (Local Runner)
 
-# on:
-#   workflow_dispatch:
-#   schedule:
-#     - cron: "10 10 * * *"
+on:
+  workflow_dispatch:
+  schedule:
+    # Every 10 minutes (GitHub cron is UTC)
+    - cron: "*/10 * * * *"
 
-# # concurrency:
-# #   group: backfill-games-players
-# #   cancel-in-progress: false
+permissions:
+  contents: read
 
-# permissions:
-#   contents: read
+jobs:
+  run:
+    # Target your local machine
+    runs-on: self-hosted
 
-# jobs:
-#   run:
-#     runs-on: ubuntu-latest
+    env:
+      PYTHONWARNINGS: "ignore::UserWarning,ignore::DeprecationWarning,ignore::FutureWarning"
 
-#     env:
-#       PYTHONWARNINGS: "ignore::UserWarning,ignore::DeprecationWarning,ignore::FutureWarning"
+      # Supabase
+      DB_ENV: supabase
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
 
-#       # Supabase
-#       DB_ENV: supabase
-#       SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-#       SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
+      # Optional but recommended on self-hosted runners
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
-#     steps:
-#       - name: Checkout
-#         uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-#       - name: Set up Python
-#         uses: actions/setup-python@v5
-#         with:
-#           python-version: "3.12"
-#           cache: "pip"
+      - name: DB sanity check
+        run: |
+          python - <<'PY'
+          import os, psycopg
+          dsn = os.environ["SUPABASE_DB_URL"]
+          with psycopg.connect(dsn) as conn:
+            with conn.cursor() as cur:
+              cur.execute("select current_database(), current_user;")
+              print(cur.fetchone())
+          PY
 
-#       - name: Install dependencies
-#         run: |
-#           python -m pip install --upgrade pip
-#           pip install -r requirements.txt
-
-#       - name: DB sanity check
-#         run: |
-#           python - <<'PY'
-#           import os, psycopg
-#           dsn = os.environ["SUPABASE_DB_URL"]
-#           with psycopg.connect(dsn) as conn:
-#             with conn.cursor() as cur:
-#               cur.execute("select current_database(), current_user;")
-#               print(cur.fetchone())
-#           PY
-
-#       - name: Run backfill script (explicit defaults)
-#         run: |
-#           python -m src.update_games_players_database \
-#             --start 2025 \
-#             --end 2025
+      - name: Run backfill script (explicit defaults)
+        run: |
+          python -m src.update_games_players_database \
+            --start 2025 \
+            --end 2025
+            

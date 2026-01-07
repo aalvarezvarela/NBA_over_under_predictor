@@ -118,30 +118,24 @@ Examples:
     print(f"🤖 Classifier Model: {settings.classifier_model_path}")
     print(f"📊 Output Folder: {settings.output_path}")
 
-    # Ensure output directory exists
-    output_dir = settings.get_absolute_path(settings.output_path)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
     data_folder = settings.get_absolute_path(settings.data_folder)
 
     try:
         # Step 1: Update the database
-        try:
-            print_step_header(1, "Updating Game Database")
-            limit = True
-            while limit:
-                limit = update_database(
-                    str(data_folder / "season_games_data/"),
-                    date=datetime.strptime(date_to_predict, "%Y-%m-%d"),
-                    save_csv=args.save_excel,
-                )
-        except Exception as e:
-            print(f"⚠️  Warning: Database update failed with error: {e}")
-            print("    Proceeding with existing data...")
+        print_step_header(1, "Updating Game Database")
+        limit = True
+        while limit:
+            limit = update_database(
+                str(data_folder / "season_games_data/"),
+                date=datetime.strptime(date_to_predict, "%Y-%m-%d"),
+                save_csv=args.save_excel,
+            )
+
         # Step 2: Update odds data
         print_step_header(2, "Fetching Betting Odds Data")
-        odds_folder = settings.get_absolute_path(settings.odds_data_folder)
-        odds_folder.mkdir(parents=True, exist_ok=True)
+        odds_folder = settings.get_absolute_path(settings.odds_data_folder) or None
+        if args.save_excel and odds_folder is not None:
+            odds_folder.mkdir(parents=True, exist_ok=True)
 
         df_odds = update_odds(
             date_to_predict=date_to_predict,
@@ -174,11 +168,12 @@ Examples:
         print_step_header(4, "Generating Predictions")
         predictions_dfs = predict_nba_games(df_to_predict)
 
-        # Step 5: Send summary prediction [0] of dataframes to DB
 
         # Step 6: Save predictions (optional)
         if args.save_excel:
             print_step_header(5, "Saving Results")
+            output_dir = settings.get_absolute_path(settings.output_path)
+            output_dir.mkdir(parents=True, exist_ok=True)
             output_file = output_dir / f"NBA_predictions_{date_to_predict}.xlsx"
             save_predictions_to_excel(predictions_dfs, str(output_file), LEGEND)
             print("\n" + "=" * 60)
@@ -193,13 +188,13 @@ Examples:
     except FileNotFoundError as e:
         print(f"\n❌ Error: Required file not found - {e}")
         print("   Please check your configuration and data files.")
-        return 1
+        raise e
     except Exception as e:
         print(f"\n❌ Error during prediction pipeline: {e}")
         import traceback
 
         traceback.print_exc()
-        return 1
+        raise e
 
 
 if __name__ == "__main__":

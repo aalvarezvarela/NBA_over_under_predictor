@@ -41,6 +41,7 @@ def create_odds_table(drop_existing: bool = True):
                     game_date TIMESTAMP WITH TIME ZONE NOT NULL,
                     team_home VARCHAR(100) NOT NULL,
                     team_away VARCHAR(100) NOT NULL,
+                    season_year INTEGER,
                     most_common_total_line NUMERIC(8, 4),
                     average_total_line NUMERIC(8, 4),
                     most_common_moneyline_home NUMERIC(10, 4),
@@ -143,6 +144,18 @@ def load_odds_data_to_db(csv_path: str, conn: psycopg.Connection | None = None) 
                     df["game_date"], errors="coerce", utc=True
                 )
 
+                # Calculate season_year based on game_date
+                def calculate_season_year(date):
+                    if pd.isna(date):
+                        return None
+                    month = date.month
+                    year = date.year
+                    # January to July → season_year = year - 1
+                    # August to December → season_year = year
+                    return year - 1 if month in [1, 2, 3, 4, 5, 6, 7] else year
+
+                df["season_year"] = df["game_date"].apply(calculate_season_year)
+
             numeric_cols = [
                 "most_common_total_line",
                 "average_total_line",
@@ -176,6 +189,7 @@ def load_odds_data_to_db(csv_path: str, conn: psycopg.Connection | None = None) 
                 INSERT INTO {{}}.{{}} ({column_names})
                 VALUES ({placeholders})
                 ON CONFLICT (game_date, team_home, team_away) DO UPDATE SET
+                    season_year = EXCLUDED.season_year,
                     most_common_total_line = EXCLUDED.most_common_total_line,
                     average_total_line = EXCLUDED.average_total_line,
                     most_common_moneyline_home = EXCLUDED.most_common_moneyline_home,
@@ -275,8 +289,6 @@ def get_recent_odds(limit: int = 10):
 
 
 if __name__ == "__main__":
-
-
     print("\nStep 2: Creating schema + nba_odds table...")
     if not create_odds_table():
         raise SystemExit(1)

@@ -39,7 +39,7 @@ def most_common(lst):
 def get_existing_odds_from_db(season_year: str = None) -> pd.DataFrame:
     """
     Query existing odds data from PostgreSQL database.
-    If season_year is provided, filters by EXTRACT(YEAR FROM game_date).
+    If season_year is provided, filters by the season_year column.
     """
     schema = get_schema_name_odds()
     table = schema  # convention: schema == table
@@ -51,7 +51,7 @@ def get_existing_odds_from_db(season_year: str = None) -> pd.DataFrame:
                 query = sql.SQL("""
                     SELECT *
                     FROM {}.{}
-                    WHERE EXTRACT(YEAR FROM game_date) = %s
+                    WHERE season_year = %s
                     ORDER BY game_date DESC
                 """).format(sql.Identifier(schema), sql.Identifier(table))
                 cur.execute(query, (int(season_year),))
@@ -95,6 +95,7 @@ def get_existing_odds_from_db(season_year: str = None) -> pd.DataFrame:
     print(f"Loaded {len(df)} odds records from database")
     return df
 
+
 def update_odds_db(df_odds: pd.DataFrame) -> bool:
     if df_odds is None or df_odds.empty:
         print("No odds data to upload to PostgreSQL.")
@@ -110,7 +111,21 @@ def update_odds_db(df_odds: pd.DataFrame) -> bool:
 
     # Convert game_date to timestamp (UTC)
     if "game_date" in df_upload.columns:
-        df_upload["game_date"] = pd.to_datetime(df_upload["game_date"], utc=True, errors="coerce")
+        df_upload["game_date"] = pd.to_datetime(
+            df_upload["game_date"], utc=True, errors="coerce"
+        )
+
+        # Calculate season_year based on game_date
+        def calculate_season_year(date):
+            if pd.isna(date):
+                return None
+            month = date.month
+            year = date.year
+            # January to July → season_year = year - 1
+            # August to December → season_year = year
+            return year - 1 if month in [1, 2, 3, 4, 5, 6, 7] else year
+
+        df_upload["season_year"] = df_upload["game_date"].apply(calculate_season_year)
 
     # Convert numeric columns
     numeric_cols = [
@@ -160,7 +175,7 @@ def update_odds_db(df_odds: pd.DataFrame) -> bool:
         with conn.cursor() as cur:
             batch_size = 1000
             for i in range(0, len(values), batch_size):
-                cur.executemany(insert_query, values[i:i + batch_size])
+                cur.executemany(insert_query, values[i : i + batch_size])
             conn.commit()
 
         print(f"✅ Successfully uploaded {len(values)} odds records to database!")
@@ -168,8 +183,6 @@ def update_odds_db(df_odds: pd.DataFrame) -> bool:
 
     finally:
         conn.close()
-
-
 
 
 def american_to_decimal(a: float) -> float:
@@ -559,7 +572,13 @@ def merge_teams_df_with_odds(df_odds, df_team):
 
 
 def update_and_get_odds_df(
-    date_to_predict, odds_folder, df_name, season_to_download, ODDS_API_KEY, BASE_URL, save_csv: bool = False
+    date_to_predict,
+    odds_folder,
+    df_name,
+    season_to_download,
+    ODDS_API_KEY,
+    BASE_URL,
+    save_csv: bool = False,
 ):
     HEADERS = {
         "x-rapidapi-key": ODDS_API_KEY,
@@ -594,11 +613,11 @@ def update_and_get_odds_df(
 
     # Loop through valid dates and collect processed data
     for date in tqdm(unique_dates, desc="Processing odds per date"):
-        #if date is month 10 9 or 8, skip it
+        # if date is month 10 9 or 8, skip it
         if pd.to_datetime(date).month in [8, 9, 10]:
             print(f"Skipping date {date} as it is outside the NBA season.")
             continue
-        
+
         df_day = process_odds_date(date, BASE_URL, HEADERS)
         if df_day.empty:
             print(f"No data for {date}")
