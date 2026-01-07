@@ -585,9 +585,6 @@ def update_and_get_odds_df(
         "x-rapidapi-host": "therundown-therundown-v1.p.rapidapi.com",
     }
 
-    # Load from CSV (kept for backward compatibility)
-    df_odds_csv = pd.read_csv(os.path.join(odds_folder, df_name))
-    df_odds_csv["game_date"] = pd.to_datetime(df_odds_csv["game_date"])
 
     # Load from database (primary source)
     season_year = season_to_download[:4]  # Extract year from season like "2024-25"
@@ -627,7 +624,7 @@ def update_and_get_odds_df(
         df_odds.sort_values(by="game_date", inplace=True, ascending=False)
         df_odds.reset_index(drop=True, inplace=True)
 
-    if save_csv:
+    if save_csv and odds_folder:
         # Save updated odds data to CSV
         odds_path = os.path.join(odds_folder, df_name)
         df_odds.to_csv(odds_path, index=False)

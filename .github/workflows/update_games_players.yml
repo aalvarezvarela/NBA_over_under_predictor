@@ -3,8 +3,9 @@ name: Update PostgreSQL DB Games & Players (Local Runner)
 on:
   workflow_dispatch:
   schedule:
-    # Every 10 minutes (GitHub cron is UTC)
-    - cron: "*/10 * * * *"
+    # Twice daily: 8am and 1pm UTC
+    - cron: "0 8 * * *"
+    - cron: "0 13 * * *"
 
 permissions:
   contents: read
@@ -21,6 +22,7 @@ jobs:
       DB_ENV: supabase
       SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
       SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
 
     steps:
       - name: Checkout
@@ -51,4 +53,4 @@ jobs:
       - name: Run backfill script
         run: |
           cd src
-          python update_games_players_database.py --start 2025 --end 2025
+          python update_games_players_database.py --start 2025 --end 2025 --update-odds

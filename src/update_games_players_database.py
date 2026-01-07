@@ -19,7 +19,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+from config import settings
 from fetch_data.manage_games_database.update_database import update_database
+from fetch_data.manage_odds_data.update_odds import update_odds
 
 
 def season_start_date(season_start_year: int) -> datetime:
@@ -34,9 +36,9 @@ def season_start_date(season_start_year: int) -> datetime:
 def backfill_seasons(
     start_season_year: int = 2006,
     end_season_year: int = 2025,
-    save_csv: bool = True,
     data_folder: str | Path = None,
     sleep_seconds_between_seasons: float = 2.0,
+    update_odds_data: bool = False,
 ) -> None:
     """
     Backfill from `start_season_year`-YY through `end_season_year`-(YY+1).
@@ -45,13 +47,12 @@ def backfill_seasons(
         data_folder: Folder where seasonal CSVs are stored (optional feature of update_database).
         start_season_year: First season start year (2005 -> 2005-06).
         end_season_year: Last season start year (2024 -> 2024-25).
-        save_csv: Whether to also persist CSV snapshots per season.
         sleep_seconds_between_seasons: Small pause to be polite with the NBA API.
+        update_odds_data: Whether to also backfill odds data for each season.
     """
-    if save_csv:
-        data_folder = Path(data_folder)
-        data_folder.mkdir(parents=True, exist_ok=True)
-
+    # Setup odds folder if needed
+    odds_folder = None
+    
     for y in range(start_season_year, end_season_year + 1):
         date_in_season = season_start_date(y)
         print(
@@ -59,9 +60,9 @@ def backfill_seasons(
         )
 
         limit_reached = update_database(
-            database_folder=str(data_folder),
+            database_folder=str(data_folder) if data_folder else None,
             date=date_in_season,
-            save_csv=save_csv,
+            save_csv=False,
         )
 
         if limit_reached:
@@ -69,7 +70,23 @@ def backfill_seasons(
                 "\n⚠️ API limit reached or throttling detected. "
                 "Stopping backfill now. Re-run this script later to continue."
             )
-            return
+            raise RuntimeError("API limit reached during backfill.")
+
+        # Update odds data if requested
+        if update_odds_data:
+            print(f"\n--- Updating odds for season {y} ---")
+            try:
+                update_odds(
+                    date_to_predict=date_in_season.strftime("%Y-%m-%d"),
+                    odds_folder=str(odds_folder) if odds_folder else None,
+                    ODDS_API_KEY=settings.odds_api_key,
+                    BASE_URL=settings.odds_base_url,
+                    save_csv=False,
+                )
+                print(f"✓ Odds data updated for season {y}")
+            except Exception as e:
+                print(f"⚠️ Warning: Failed to update odds for season {y}: {e}")
+                print("Continuing with next season...")
 
         time.sleep(sleep_seconds_between_seasons)
 
@@ -96,9 +113,9 @@ if __name__ == "__main__":
         help="Last season start year (e.g. 2025 for 2025-26)",
     )
     parser.add_argument(
-        "--save-csv",
+        "--update-odds",
         action="store_true",
-        help="If set, save CSV snapshots per season (default: False)",
+        help="If set, also backfill odds data for each season (default: False)",
     )
     parser.add_argument(
         "--data-folder",
@@ -112,6 +129,6 @@ if __name__ == "__main__":
     backfill_seasons(
         start_season_year=args.start,
         end_season_year=args.end,
-        save_csv=args.save_csv,
         data_folder=args.data_folder,
+        update_odds_data=args.update_odds,
     )
