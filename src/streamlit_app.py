@@ -874,69 +874,86 @@ def show_historical_performance():
             # Plot daily accuracy
             st.markdown("---")
             st.markdown("### 📈 Daily Accuracy Chart")
+                        
             st.markdown("")
 
-            fig, ax = plt.subplots(figsize=(14, 8))
+            # --- Prep ---
+            df = daily_accuracy.copy()
+            df["game_date"] = pd.to_datetime(df["game_date"])
+            df = df.sort_values("game_date")
 
-            # Convert game_date to datetime
-            dates = pd.to_datetime(daily_accuracy["game_date"])
+            # Optional: choose smoothing window (in days/points)
+            smooth_window = st.slider("Smoothing window (rolling average of days)", 1, 14, 1)
+            use_smoothing = smooth_window > 1
 
-            # Plot each strategy
-            ax.plot(
-                dates,
-                daily_accuracy["regressor_accuracy"] * 100,
-                marker="o",
-                label="Regressor",
-                linewidth=2,
-                markersize=6,
+            series_cols = {
+                "Regressor": "regressor_accuracy",
+                "Classifier": "classifier_accuracy",
+                "Both Agree": "both_agree_accuracy",
+            }
+
+            # --- Figure ---
+            fig, ax = plt.subplots(figsize=(14, 7), dpi=140)
+
+            # Subtle styling
+            ax.set_facecolor("white")
+            for spine in ("top", "right"):
+                ax.spines[spine].set_visible(False)
+
+            ax.grid(True, which="major", axis="both", alpha=0.18, linewidth=1)
+            ax.grid(True, which="minor", axis="y", alpha=0.08, linewidth=0.8)
+
+            dates = df["game_date"]
+
+            for label, col in series_cols.items():
+                y = df[col].astype(float) * 100.0
+
+                if use_smoothing:
+                    y_smooth = y.rolling(window=smooth_window, min_periods=1).mean()
+                    ax.plot(
+                        dates,
+                        y_smooth,
+                        label=f"{label} (smoothed)",
+                        linewidth=2.6,
+                    )
+                    # Optional: show raw points faintly for context
+                    ax.scatter(dates, y, s=18, alpha=0.25)
+
+                else:
+                    ax.plot(dates, y, label=label, linewidth=2.6)
+                    ax.scatter(dates, y, s=26, alpha=0.9)
+
+            # 50% reference line
+            ax.axhline(50, linestyle="--", alpha=0.6, linewidth=1.4)
+            ax.text(
+                dates.iloc[0],
+                50.8,
+                "50% break-even",
+                fontsize=11,
+                alpha=0.75,
+                va="bottom",
             )
-            ax.plot(
-                dates,
-                daily_accuracy["classifier_accuracy"] * 100,
-                marker="s",
-                label="Classifier",
-                linewidth=2,
-                markersize=6,
-            )
-            ax.plot(
-                dates,
-                daily_accuracy["both_agree_accuracy"] * 100,
-                marker="^",
-                label="Both Agree",
-                linewidth=2,
-                markersize=6,
-            )
 
-            # Add 50% reference line
-            ax.axhline(
-                y=50,
-                color="gray",
-                linestyle="--",
-                alpha=0.5,
-                label="50% (Break-even)",
-            )
-
-            # Formatting with larger fonts
-            ax.set_xlabel("Date", fontsize=16, fontweight="bold")
-            ax.set_ylabel("Accuracy (%)", fontsize=16, fontweight="bold")
-            ax.set_title(
-                "Daily Prediction Accuracy by Strategy",
-                fontsize=20,
-                fontweight="bold",
-            )
-            ax.legend(loc="best", fontsize=14)
-            ax.grid(True, alpha=0.3)
-            ax.tick_params(axis="both", which="major", labelsize=12)
-
-            # Format x-axis dates
-            ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
-            plt.xticks(rotation=45, ha="right")
-
-            # Set y-axis range
+            # Labels / title
+            ax.set_title("Daily Prediction Accuracy by Strategy", fontsize=18, fontweight="bold", pad=14)
+            ax.set_xlabel("Date", fontsize=13, fontweight="bold")
+            ax.set_ylabel("Accuracy (%)", fontsize=13, fontweight="bold")
             ax.set_ylim(0, 100)
 
-            plt.tight_layout()
-            st.pyplot(fig)
+            # Date axis: fewer, smarter ticks
+            ax.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=5, maxticks=9))
+            ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(ax.xaxis.get_major_locator()))
+            plt.setp(ax.get_xticklabels(), rotation=0, ha="center")
+
+            # Minor ticks on Y for nicer grid
+            ax.yaxis.set_minor_locator(plt.MultipleLocator(5))
+
+            ax.legend(frameon=False, fontsize=11, ncol=2)
+
+            fig.tight_layout()
+
+            # Streamlit rendering: responsive + crisp
+            st.pyplot(fig, width='stretch')
 
         else:
             st.warning("No daily accuracy data available for the selected range.")
