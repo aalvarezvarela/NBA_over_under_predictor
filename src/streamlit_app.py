@@ -16,93 +16,243 @@ os.environ["SUPABASE_DB_URL"] = st.secrets["DatabaseSupabase"]["SUPABASE_DB_URL"
 os.environ["SUPABASE_DB_PASSWORD"] = st.secrets["DatabaseSupabase"][
     "SUPABASE_DB_PASSWORD"
 ]
-# os.environ["ODDS_API_KEY"] = st.secrets["Odds"]["ODDS_API_KEY"]
+
+
+def inject_global_css() -> None:
+    st.markdown(
+        """
+        <style>
+          /* Page container */
+          .main .block-container {
+            padding-top: 1.6rem;
+            padding-bottom: 2.0rem;
+            max-width: 1400px;
+          }
+
+          /* Sidebar polish */
+          section[data-testid="stSidebar"] {
+            border-right: 1px solid rgba(49, 51, 63, 0.15);
+          }
+          section[data-testid="stSidebar"] .block-container {
+            padding-top: 1.25rem;
+          }
+
+          /* Sidebar text sizing */
+          section[data-testid="stSidebar"] h3 {
+            font-size: 1.75rem !important;
+            font-weight: 700 !important;
+          }
+          section[data-testid="stSidebar"] div[role="radiogroup"] label {
+            font-size: 1.5rem !important;
+            font-weight: 600 !important;
+          }
+          section[data-testid="stSidebar"] div[role="radiogroup"] label div {
+            font-size: 1.5rem !important;
+          }
+          section[data-testid="stSidebar"] .stCaption {
+            font-size: 1.15rem !important;
+          }
+
+          /* Typography */
+          h1, h2, h3 {
+            letter-spacing: -0.02em;
+          }
+          h1 {
+            font-size: 2.4rem !important;
+            font-weight: 800 !important;
+            margin-bottom: 0.2rem !important;
+          }
+          h2 {
+            font-size: 1.8rem !important;
+            font-weight: 750 !important;
+          }
+          h3 {
+            font-size: 1.35rem !important;
+            font-weight: 700 !important;
+          }
+
+          /* Metrics */
+          .stMetric label {
+            font-size: 1.05rem !important;
+            font-weight: 650 !important;
+          }
+          .stMetric [data-testid="stMetricValue"] {
+            font-size: 1.85rem !important;
+            font-weight: 800 !important;
+          }
+
+          /* DataFrame readability - keep your current style intent */
+          div[data-testid="stDataFrame"] div[role="gridcell"] {
+            padding: 0.65rem !important;
+          }
+          div[data-testid="stDataFrame"] div[role="columnheader"] {
+            font-weight: 750 !important;
+            padding: 0.85rem !important;
+          }
+
+          /* "Hero" header container */
+          .app-hero {
+            border: 1px solid rgba(49, 51, 63, 0.12);
+            border-radius: 16px;
+            padding: 18px 18px;
+            background: linear-gradient(135deg,
+              rgba(102, 126, 234, 0.15) 0%,
+              rgba(118, 75, 162, 0.12) 100%);
+            margin-bottom: 16px;
+          }
+          .app-subtitle {
+            font-size: 1.05rem;
+            opacity: 0.85;
+            margin-top: 2px;
+            margin-bottom: 10px;
+          }
+          .chip-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 6px;
+          }
+          .chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 10px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.7);
+            border: 1px solid rgba(49, 51, 63, 0.10);
+            font-size: 0.95rem;
+            font-weight: 600;
+          }
+
+          /* Reduce visual noise on separators */
+          hr {
+            margin: 1.0rem 0;
+            opacity: 0.25;
+          }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_header() -> None:
+    st.markdown(
+        """
+        <div class="app-hero">
+          <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:12px;">
+            <div style="flex: 1;">
+              <div style="font-size: 0.95rem; font-weight: 700; opacity: 0.85;">
+                NBA analytics
+              </div>
+              <div style="margin-top: 2px;">
+                <span style="font-size: 2.2rem; font-weight: 900; letter-spacing: -0.02em;">
+                  Over/Under Predictor
+                </span>
+              </div>
+              <div class="app-subtitle">
+                Predictions, results, and historical performance in one place.
+              </div>
+              <div class="chip-row">
+                <span class="chip">Model: regressor + classifier</span>
+                <span class="chip">Lines: bookmaker O/U</span>
+                <span class="chip">Timezone: UTC for tipoff</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def check_password():
+    """Returns True if the user has entered the correct password."""
+
+    def password_entered():
+        """Checks whether a password entered by the user is correct."""
+        if st.session_state["password"] == st.secrets["App"]["PASSWORD"]:
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # Don't store password
+        else:
+            st.session_state["password_correct"] = False
+
+    # Return True if the password is validated.
+    if st.session_state.get("password_correct", False):
+        return True
+
+    # Show login form
+    st.markdown(
+        """
+        <div style="text-align: center; padding: 2rem;">
+            <h1 style="font-size: 3rem; margin-bottom: 1rem;">🏀 NBA Over/Under Predictor</h1>
+            <p style="font-size: 1.2rem; opacity: 0.85;">Please enter the password to access the application</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.text_input(
+            "Password",
+            type="password",
+            on_change=password_entered,
+            key="password",
+            label_visibility="collapsed",
+            placeholder="Enter password...",
+        )
+
+        if (
+            "password_correct" in st.session_state
+            and not st.session_state["password_correct"]
+        ):
+            st.error("😕 Password incorrect. Please try again.")
+
+    return False
 
 
 def main():
     st.set_page_config(
-        page_title="NBA Over/Under Predictor", page_icon="🏀", layout="wide"
+        page_title="NBA Over/Under Predictor",
+        page_icon="🏀",
+        layout="wide",
+        initial_sidebar_state="expanded",
+        menu_items={
+            "Get help": None,
+            "Report a bug": None,
+            "About": "NBA Over/Under Predictor: upcoming predictions, past results, and historical performance.",
+        },
     )
 
-    # Custom CSS for larger fonts and better styling
-    st.markdown(
-        """
-        <style>
-        .main .block-container {
-            padding-top: 2rem;
-            padding-bottom: 2rem;
-        }
-        h1 {
-            font-size: 3.5rem !important;
-            font-weight: 800 !important;
-            margin-bottom: 0.5rem !important;
-        }
-        h2 {
-            font-size: 2.5rem !important;
-            font-weight: 700 !important;
-        }
-        h3 {
-            font-size: 2rem !important;
-            font-weight: 600 !important;
-        }
-        .stMetric label {
-            font-size: 1.3rem !important;
-            font-weight: 600 !important;
-        }
-        .stMetric [data-testid="stMetricValue"] {
-            font-size: 2.2rem !important;
-            font-weight: 700 !important;
-        }
-        div[data-testid="stDataFrame"] {
-            font-size: 1.5rem !important;
-        }
-        div[data-testid="stDataFrame"] div[role="gridcell"] {
-            font-size: 1.5rem !important;
-            padding: 0.8rem !important;
-        }
-        div[data-testid="stDataFrame"] div[role="columnheader"] {
-            font-size: 1.6rem !important;
-            font-weight: 700 !important;
-            padding: 1rem !important;
-        }
-        /* Radio buttons styling - much larger */
-        div[role="radiogroup"] label {
-            font-size: 2.8rem !important;
-            font-weight: 700 !important;
-            padding: 2rem 3rem !important;
-            margin: 1rem !important;
-        }
-        div[role="radiogroup"] {
-            gap: 3rem !important;
-        }
-        div[role="radiogroup"] label div {
-            font-size: 2.8rem !important;
-        }
-        </style>
-    """,
-        unsafe_allow_html=True,
-    )
+    inject_global_css()
 
-    st.title("🏀 NBA Over/Under Predictions")
-    st.markdown("---")
+    # Check password before showing content
+    if not check_password():
+        st.stop()
 
-    # Add navigation tabs
-    view_option = st.radio(
-        "Select View:",
-        [
-            "📅 Upcoming Predictions",
-            "🎯 Past Games Results",
-            "📊 Historical Performance",
-        ],
-        horizontal=True,
-        label_visibility="collapsed",
-    )
+    # Sidebar navigation (cleaner than huge radios across the top)
+    with st.sidebar:
+        st.markdown("### NBA Predictor Menu")
+        view_option = st.radio(
+            label="Go to",
+            options=[
+                "Upcoming Predictions",
+                "Past Games Results",
+                "Historical Performance",
+            ],
+            index=0,
+        )
 
-    st.markdown("---")
+        st.markdown("---")
+ 
 
-    if view_option == "📅 Upcoming Predictions":
+    # Main header
+    render_header()
+
+    # Route to views
+    if view_option == "Upcoming Predictions":
         show_upcoming_predictions()
-    elif view_option == "🎯 Past Games Results":
+    elif view_option == "Past Games Results":
         show_past_games_results()
     else:
         show_historical_performance()
@@ -140,7 +290,8 @@ def show_upcoming_predictions():
         st.metric("Latest Prediction", latest_pred.strftime("%Y-%m-%d %H:%M"))
 
     st.markdown("---")
-    st.markdown("## 📅 Today's Predictions")
+    st.markdown("## Today's Predictions")
+    st.caption("View upcoming games with AI-powered over/under predictions.")
     st.markdown("")
 
     # Add a toggle for display mode
@@ -186,7 +337,8 @@ def show_upcoming_predictions():
 
 def show_past_games_results():
     """Display past game predictions with actual results."""
-    st.markdown("## 🎯 Past Games Results")
+    st.markdown("## Past Games Results")
+    st.caption("Compare predictions vs actual totals for a selected date.")
     st.markdown("")
 
     # Date selector - default to yesterday
@@ -474,7 +626,8 @@ def format_past_games_display(df: pd.DataFrame) -> pd.DataFrame:
 
 def show_historical_performance():
     """Display historical betting performance analysis."""
-    st.markdown("## 📊 Historical Betting Performance")
+    st.markdown("## Historical Betting Performance")
+    st.caption("Analyze prediction accuracy and profitability over time.")
     st.markdown("")
 
     # Optional date filter in an expander
