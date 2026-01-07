@@ -48,9 +48,7 @@ jobs:
               print(cur.fetchone())
           PY
 
-      - name: Run backfill script (explicit defaults)
+      - name: Run backfill script
         run: |
-          python -m src.update_games_players_database \
-            --start 2025 \
-            --end 2025
-            
+          cd src
+          python update_games_players_database.py --start 2025 --end 2025
