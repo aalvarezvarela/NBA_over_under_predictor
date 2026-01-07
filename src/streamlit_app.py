@@ -1,3 +1,5 @@
+import os
+
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -9,6 +11,12 @@ from postgre_DB.update_evaluation_predictions import (
     get_games_with_total_scored_points,
 )
 from utils.streamlit_utils import format_upcoming_games_display, render_game_cards
+
+os.environ["SUPABASE_DB_URL"] = st.secrets["DatabaseSupabase"]["SUPABASE_DB_URL"]
+os.environ["SUPABASE_DB_PASSWORD"] = st.secrets["DatabaseSupabase"][
+    "SUPABASE_DB_PASSWORD"
+]
+# os.environ["ODDS_API_KEY"] = st.secrets["Odds"]["ODDS_API_KEY"]
 
 
 def main():
@@ -81,7 +89,11 @@ def main():
     # Add navigation tabs
     view_option = st.radio(
         "Select View:",
-        ["📅 Upcoming Predictions", "📊 Historical Performance"],
+        [
+            "📅 Upcoming Predictions",
+            "🎯 Past Games Results",
+            "📊 Historical Performance",
+        ],
         horizontal=True,
         label_visibility="collapsed",
     )
@@ -90,6 +102,8 @@ def main():
 
     if view_option == "📅 Upcoming Predictions":
         show_upcoming_predictions()
+    elif view_option == "🎯 Past Games Results":
+        show_past_games_results()
     else:
         show_historical_performance()
 
@@ -168,6 +182,294 @@ def show_upcoming_predictions():
         
         **Note**: Predictions are updated periodically. Most recent prediction time shown above.
         """)
+
+
+def show_past_games_results():
+    """Display past game predictions with actual results."""
+    st.markdown("## 🎯 Past Games Results")
+    st.markdown("")
+
+    # Date selector - default to yesterday
+    from datetime import datetime, timedelta
+
+    yesterday = datetime.now() - timedelta(days=1)
+
+    selected_date = st.date_input(
+        "Select Date:",
+        value=yesterday,
+        help="Choose a date to see predictions and actual results",
+    )
+
+    st.markdown("---")
+
+    # Load data for selected date
+    with st.spinner("Loading games for selected date..."):
+        date_str = selected_date.strftime("%Y-%m-%d")
+        df_games = get_games_with_total_scored_points(
+            only_null=False,
+            date=date_str,
+        )
+
+    if df_games.empty:
+        st.warning(f"No completed games found for {date_str}.")
+        return
+
+    # Keep only the most recent prediction for each game
+    df_games = (
+        df_games.sort_values("prediction_date")
+        .groupby("game_id", as_index=False)
+        .tail(1)
+    )
+
+    # Add betting metrics to get correctness
+    df_with_metrics = add_ou_betting_metrics(df_games)
+
+    # Display summary metrics
+    n_games = len(df_with_metrics)
+    reg_correct = df_with_metrics["regressor_correct"].sum()
+    clf_correct = df_with_metrics["classifier_correct"].sum()
+    both_correct = df_with_metrics["both_agree_correct"].sum()
+    both_agree_count = df_with_metrics["both_agree"].sum()
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("🎮 Games Played", n_games)
+    with col2:
+        st.metric("🤖 Regressor Correct", f"{reg_correct}/{n_games}")
+    with col3:
+        st.metric("🧠 Classifier Correct", f"{clf_correct}/{n_games}")
+    with col4:
+        st.metric("✅ Both Agree Correct", f"{both_correct}/{both_agree_count}")
+
+    st.markdown("---")
+    st.markdown(f"### 🏀 Games on {date_str}")
+    st.markdown("")
+
+    # Add toggle for card/table view
+    use_cards = st.toggle("Use Card View", value=True, key="past_games_toggle")
+
+    if use_cards:
+        # Render games as cards with results
+        render_past_game_cards(df_with_metrics)
+    else:
+        # Fallback to table view
+        display_df = format_past_games_display(df_with_metrics)
+        st.dataframe(
+            display_df,
+            use_container_width=True,
+            height=600,
+            hide_index=True,
+        )
+
+
+def render_past_game_cards(df: pd.DataFrame):
+    """Render past games as cards showing predictions vs actual results."""
+    # Sort by game time
+    df = df.sort_values("game_time").reset_index(drop=True)
+
+    # Create two-column layout
+    cols_per_row = 2
+
+    for idx in range(0, len(df), cols_per_row):
+        cols = st.columns(cols_per_row)
+
+        for col_idx, col in enumerate(cols):
+            row_idx = idx + col_idx
+            if row_idx >= len(df):
+                break
+
+            row = df.iloc[row_idx]
+
+            with col:
+                home_team = row["team_name_team_home"]
+                away_team = row["team_name_team_away"]
+                game_time = pd.to_datetime(row["game_time"]).strftime("%I:%M %p")
+                game_date = pd.to_datetime(row["game_time"]).strftime("%b %d, %Y")
+
+                # Get predictions and actual
+                regressor_pred = row["regressor_prediction"]
+                classifier_pred = row["classifier_prediction_model2"]
+                both_agree = row["both_agree"]
+
+                regressor_correct = row["regressor_correct"]
+                classifier_correct = row["classifier_correct"]
+
+                # Actual results
+                actual_total = row["total_scored_points"]
+                ou_line = row["total_over_under_line"]
+                actual_side = row["actual_side"]
+
+                predicted_total = row["predicted_total_score"]
+                margin = row["margin_difference_prediction_vs_over_under"]
+                over_odds = row["average_total_over_money"]
+                under_odds = row["average_total_under_money"]
+
+                # Determine styling based on correctness
+                if regressor_correct and classifier_correct:
+                    border_color = "#4CAF50"  # Green - both correct
+                elif regressor_correct or classifier_correct:
+                    border_color = "#FFA500"  # Orange - one correct
+                else:
+                    border_color = "#F44336"  # Red - both wrong
+
+                # Create card header
+                header_html = f"""
+                <div style="
+                    border: 2px solid {border_color};
+                    border-radius: 12px 12px 0 0;
+                    overflow: hidden;
+                    box-shadow: 0 3px 6px rgba(0,0,0,0.15);
+                ">
+                    <div style="
+                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                        padding: 20px;
+                        color: white;
+                    ">
+                        <div style="display: flex; align-items: center; justify-content: space-between;">
+                            <div style="flex: 1; text-align: center;">
+                                <img src="{st.session_state.get('logo_' + home_team, f'https://a.espncdn.com/i/teamlogos/nba/500/1.png')}" width="100" style="margin-bottom: 8px;" onerror="this.style.display='none'">
+                                <div style="font-size: 1.1rem; font-weight: 700;">{home_team}</div>
+                            </div>
+                            
+                            <div style="flex: 0.4; text-align: center;">
+                                <div style="font-size: 2rem; font-weight: 900; margin-bottom: 5px;">VS</div>
+                                <div style="font-size: 0.95rem; font-weight: 600;">{game_date}</div>
+                                <div style="font-size: 1.1rem; font-weight: 700; margin-top: 3px;">🕐 {game_time}</div>
+                            </div>
+                            
+                            <div style="flex: 1; text-align: center;">
+                                <img src="{st.session_state.get('logo_' + away_team, f'https://a.espncdn.com/i/teamlogos/nba/500/1.png')}" width="100" style="margin-bottom: 8px;" onerror="this.style.display='none'">
+                                <div style="font-size: 1.1rem; font-weight: 700;">{away_team}</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                """
+
+                from utils.streamlit_utils import get_team_logo_url
+
+                header_html = f"""
+                <div style="
+                    border: 2px solid {border_color};
+                    border-radius: 12px 12px 0 0;
+                    overflow: hidden;
+                    box-shadow: 0 3px 6px rgba(0,0,0,0.15);
+                ">
+                    <div style="
+                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                        padding: 20px;
+                        color: white;
+                    ">
+                        <div style="display: flex; align-items: center; justify-content: space-between;">
+                            <div style="flex: 1; text-align: center;">
+                                <img src="{get_team_logo_url(home_team)}" width="100" style="margin-bottom: 8px;">
+                                <div style="font-size: 1.1rem; font-weight: 700;">{home_team}</div>
+                            </div>
+                            
+                            <div style="flex: 0.4; text-align: center;">
+                                <div style="font-size: 2rem; font-weight: 900; margin-bottom: 5px;">VS</div>
+                                <div style="font-size: 0.95rem; font-weight: 600;">{game_date}</div>
+                                <div style="font-size: 1.1rem; font-weight: 700; margin-top: 3px;">🕐 {game_time}</div>
+                            </div>
+                            
+                            <div style="flex: 1; text-align: center;">
+                                <img src="{get_team_logo_url(away_team)}" width="100" style="margin-bottom: 8px;">
+                                <div style="font-size: 1.1rem; font-weight: 700;">{away_team}</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                """
+
+                st.components.v1.html(header_html, height=200)
+
+                # Stats section
+                with st.container():
+                    st.markdown(
+                        f"""
+                        <div style="border: 2px solid {border_color}; border-top: none; 
+                             border-radius: 0 0 12px 12px; padding: 15px; margin-top: -5px; 
+                             background: white;">
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                    # Actual result indicator
+                    actual_color = "#2196F3" if actual_side == "under" else "#FF5722"
+                    st.markdown(
+                        f"""
+                        <div style="text-align: center; margin-bottom: 10px; padding: 10px; 
+                             background: {actual_color}; color: white; border-radius: 8px;">
+                            <span style="font-size: 1.3rem; font-weight: 700;">
+                                ⚡ ACTUAL: {actual_side.upper() if actual_side else 'N/A'} ({actual_total:.1f} points)
+                            </span>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                    # Predictions row
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("O/U Line", f"{ou_line:.1f}")
+                    with col2:
+                        st.metric("Predicted", f"{predicted_total:.1f}")
+                    with col3:
+                        st.metric("Margin", f"{margin:+.1f}")
+
+                    # Model predictions with correctness
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        reg_icon = "🔵" if regressor_pred == "Under" else "🔴"
+                        reg_status = "✅" if regressor_correct else "❌"
+                        st.metric(
+                            "🤖 Regressor", f"{reg_icon} {regressor_pred} {reg_status}"
+                        )
+                    with col2:
+                        clf_icon = "🔵" if classifier_pred == "Under" else "🔴"
+                        clf_status = "✅" if classifier_correct else "❌"
+                        st.metric(
+                            "🧠 Classifier",
+                            f"{clf_icon} {classifier_pred} {clf_status}",
+                        )
+
+                    # Odds
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric("Over Odds", f"{over_odds:.2f}")
+                    with col2:
+                        st.metric("Under Odds", f"{under_odds:.2f}")
+
+                    # Close div
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def format_past_games_display(df: pd.DataFrame) -> pd.DataFrame:
+    """Format past games dataframe for table display."""
+    display_df = pd.DataFrame()
+
+    display_df["Matchup"] = (
+        df["team_name_team_home"] + " vs " + df["team_name_team_away"]
+    )
+    display_df["Game Time"] = pd.to_datetime(df["game_time"]).dt.strftime("%H:%M")
+    display_df["O/U Line"] = df["total_over_under_line"].round(1)
+    display_df["Predicted"] = df["predicted_total_score"].round(1)
+    display_df["Actual"] = df["total_scored_points"].round(1)
+    display_df["Actual Side"] = df["actual_side"].str.upper()
+    display_df["Regressor"] = (
+        df["regressor_prediction"]
+        + " "
+        + df["regressor_correct"].map({True: "✅", False: "❌"})
+    )
+    display_df["Classifier"] = (
+        df["classifier_prediction_model2"]
+        + " "
+        + df["classifier_correct"].map({True: "✅", False: "❌"})
+    )
+    display_df["Over Odds"] = df["average_total_over_money"].round(2)
+    display_df["Under Odds"] = df["average_total_under_money"].round(2)
+
+    return display_df
 
 
 def show_historical_performance():
