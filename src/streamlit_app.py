@@ -1,4 +1,5 @@
 import os
+import sys
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
@@ -12,10 +13,17 @@ from postgre_DB.update_evaluation_predictions import (
 )
 from utils.streamlit_utils import format_upcoming_games_display, render_game_cards
 
+# Import nba_predictor main function
+try:
+    from nba_predictor import main as run_nba_predictor
+except ImportError:
+    run_nba_predictor = None
+
 os.environ["SUPABASE_DB_URL"] = st.secrets["DatabaseSupabase"]["SUPABASE_DB_URL"]
 os.environ["SUPABASE_DB_PASSWORD"] = st.secrets["DatabaseSupabase"][
     "SUPABASE_DB_PASSWORD"
 ]
+os.environ["ODDS_API_KEY"] = st.secrets["Odds"]["ODDS_API_KEY"]
 
 
 def inject_global_css() -> None:
@@ -286,7 +294,59 @@ def show_upcoming_predictions():
         st.metric("Models Agree", f"{n_agree}/{len(df_upcoming)}")
     with col3:
         latest_pred = pd.to_datetime(df_upcoming["prediction_date"]).max()
-        st.metric("Latest Prediction", latest_pred.strftime("%Y-%m-%d %H:%M"))
+        # Convert to Madrid timezone
+        if latest_pred.tz is None:
+            latest_pred = latest_pred.tz_localize("UTC")
+        latest_pred_madrid = latest_pred.tz_convert("Europe/Madrid")
+        st.metric("Latest Prediction", latest_pred_madrid.strftime("%Y-%m-%d %H:%M"))
+
+    st.markdown("---")
+
+    # Add button to run predictor
+    st.markdown("### 🔄 Update Predictions")
+    st.caption(
+        "Run the prediction model to generate fresh predictions for today's games."
+    )
+    st.markdown("")
+
+    if run_nba_predictor is None:
+        st.warning(
+            "⚠️ NBA Predictor module not available. Please check your installation."
+        )
+    else:
+        if st.button("🚀 Run Predictor Now", type="primary", use_container_width=True):
+            try:
+                # Save original sys.argv
+                original_argv = sys.argv.copy()
+
+                # Set sys.argv to simulate command-line call without saving Excel
+                sys.argv = ["streamlit_app.py"]
+
+                with st.spinner(
+                    "🔄 Running NBA predictor... This may take a few minutes."
+                ):
+                    # Run the predictor
+                    result = run_nba_predictor()
+
+                # Restore original sys.argv
+                sys.argv = original_argv
+
+                if result == 0:
+                    st.success("✅ Predictions updated successfully! Reloading page...")
+                    import time
+
+                    time.sleep(2)  # Brief pause to show success message
+                    st.rerun()
+                else:
+                    st.error(
+                        "❌ Predictor completed with errors. Please check the logs."
+                    )
+
+            except Exception as e:
+                # Restore original sys.argv in case of error
+                sys.argv = original_argv
+                st.error(f"❌ Error running predictor: {str(e)}")
+                st.exception(e)
 
     st.markdown("---")
     st.markdown("## Today's Predictions")
@@ -434,8 +494,13 @@ def render_past_game_cards(df: pd.DataFrame):
             with col:
                 home_team = row["team_name_team_home"]
                 away_team = row["team_name_team_away"]
-                game_time = pd.to_datetime(row["game_time"]).strftime("%I:%M %p")
-                game_date = pd.to_datetime(row["game_time"]).strftime("%b %d, %Y")
+                # Convert to Madrid timezone
+                game_dt = pd.to_datetime(row["game_time"])
+                if game_dt.tz is None:
+                    game_dt = game_dt.tz_localize("UTC")
+                game_dt_madrid = game_dt.tz_convert("Europe/Madrid")
+                game_time = game_dt_madrid.strftime("%I:%M %p")
+                game_date = game_dt_madrid.strftime("%b %d, %Y")
 
                 # Get predictions and actual
                 regressor_pred = row["regressor_prediction"]
@@ -602,7 +667,13 @@ def format_past_games_display(df: pd.DataFrame) -> pd.DataFrame:
     display_df["Matchup"] = (
         df["team_name_team_home"] + " vs " + df["team_name_team_away"]
     )
-    display_df["Game Time"] = pd.to_datetime(df["game_time"]).dt.strftime("%H:%M")
+    # Convert to Madrid timezone
+    game_times = pd.to_datetime(df["game_time"])
+    if game_times.dt.tz is None:
+        game_times = game_times.dt.tz_localize("UTC")
+    display_df["Game Time"] = game_times.dt.tz_convert("Europe/Madrid").dt.strftime(
+        "%H:%M"
+    )
     display_df["O/U Line"] = df["total_over_under_line"].round(1)
     display_df["Predicted"] = df["predicted_total_score"].round(1)
     display_df["Actual"] = df["total_scored_points"].round(1)
