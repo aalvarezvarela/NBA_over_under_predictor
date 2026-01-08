@@ -14,6 +14,7 @@ from nba_predictor import main as run_nba_predictor
 from postgre_DB.update_evaluation_predictions import (
     add_ou_betting_metrics,
     compute_daily_accuracy,
+    compute_daily_prediction_errors,
     compute_ou_betting_statistics,
     get_games_with_total_scored_points,
 )
@@ -439,12 +440,53 @@ def show_past_games_results():
         st.warning(f"No completed games found for {date_str}.")
         return
 
-    # Keep only the most recent prediction for each game
-    df_games = (
-        df_games.sort_values("prediction_date")
-        .groupby("game_id", as_index=False)
-        .tail(1)
+    # Get unique prediction times available for this date
+    df_games["prediction_datetime"] = pd.to_datetime(df_games["prediction_date"])
+
+    # Normalize to UTC for consistent comparison
+    if df_games["prediction_datetime"].dt.tz is None:
+        df_games["prediction_datetime"] = df_games[
+            "prediction_datetime"
+        ].dt.tz_localize("UTC")
+    else:
+        df_games["prediction_datetime"] = df_games["prediction_datetime"].dt.tz_convert(
+            "UTC"
+        )
+
+    unique_prediction_times = sorted(
+        df_games["prediction_datetime"].unique(), reverse=True
     )
+
+    if len(unique_prediction_times) == 0:
+        st.warning(f"No predictions found for {date_str}.")
+        return
+
+    # Add prediction time selector
+    st.markdown("### ⏰ Select Prediction Time")
+    st.caption("Choose which prediction time to analyze (most recent is default).")
+
+    # Format prediction times for display and create mapping
+    prediction_time_mapping = {}
+    prediction_time_options = []
+
+    for pred_time in unique_prediction_times:
+        pred_time_madrid = pred_time.tz_convert("Europe/Madrid")
+        display_str = pred_time_madrid.strftime("%Y-%m-%d %H:%M:%S")
+        prediction_time_options.append(display_str)
+        prediction_time_mapping[display_str] = pred_time
+
+    selected_prediction_time = st.selectbox(
+        "Prediction Time:",
+        options=prediction_time_options,
+        index=0,  # Default to most recent (first in list since sorted reverse=True)
+        help="Select which prediction to analyze. The most recent prediction is selected by default.",
+    )
+
+    # Get the actual UTC timestamp for filtering
+    selected_pred_dt = prediction_time_mapping[selected_prediction_time]
+
+    # Filter to keep only predictions from the selected prediction time
+    df_games = df_games[df_games["prediction_datetime"] == selected_pred_dt].copy()
 
     # Add betting metrics to get correctness
     df_with_metrics = add_ou_betting_metrics(df_games)
@@ -533,6 +575,9 @@ def render_past_game_cards(df: pd.DataFrame):
                 margin = row["margin_difference_prediction_vs_over_under"]
                 over_odds = row["average_total_over_money"]
                 under_odds = row["average_total_under_money"]
+
+                # Calculate prediction error (actual - predicted)
+                prediction_error = actual_total - predicted_total
 
                 # Determine styling based on correctness
                 if regressor_correct and classifier_correct:
@@ -639,13 +684,23 @@ def render_past_game_cards(df: pd.DataFrame):
                     )
 
                     # Predictions row
-                    col1, col2, col3 = st.columns(3)
+                    col1, col2, col3, col4 = st.columns(4)
                     with col1:
                         st.metric("O/U Line", f"{ou_line:.1f}")
                     with col2:
                         st.metric("Predicted", f"{predicted_total:.1f}")
                     with col3:
-                        st.metric("Margin", f"{margin:+.1f}")
+                        st.metric("Actual", f"{actual_total:.1f}")
+                    with col4:
+                        error_color = (
+                            "normal" if abs(prediction_error) <= 5 else "inverse"
+                        )
+                        st.metric(
+                            "Pred. Error",
+                            f"{prediction_error:+.1f}",
+                            delta=None,
+                            delta_color=error_color,
+                        )
 
                     # Model predictions with correctness
                     col1, col2 = st.columns(2)
@@ -691,6 +746,9 @@ def format_past_games_display(df: pd.DataFrame) -> pd.DataFrame:
     display_df["O/U Line"] = df["total_over_under_line"].round(1)
     display_df["Predicted"] = df["predicted_total_score"].round(1)
     display_df["Actual"] = df["total_scored_points"].round(1)
+    display_df["Pred. Error"] = (
+        df["total_scored_points"] - df["predicted_total_score"]
+    ).round(1)
     display_df["Actual Side"] = df["actual_side"].str.upper()
     display_df["Regressor"] = (
         df["regressor_prediction"]
@@ -772,15 +830,27 @@ def show_historical_performance():
         n_games = int(row["n_games_total"])
         n_resolved = int(row["n_resolved"])
         n_days = int(row["n_days"])
+        mean_error = row["mean_prediction_error"]
+        mean_abs_error = row["mean_abs_prediction_error"]
 
         # Display summary metrics
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4, col5 = st.columns(5)
         with col1:
             st.metric("📊 Total Games", n_games)
         with col2:
             st.metric("✅ Resolved Games", n_resolved)
         with col3:
             st.metric("📅 Days Analyzed", n_days)
+        with col4:
+            st.metric(
+                "📏 Mean Error (pts)",
+                f"{mean_error:+.2f}" if not pd.isna(mean_error) else "N/A",
+            )
+        with col5:
+            st.metric(
+                "📐 Mean Abs Error (pts)",
+                f"{mean_abs_error:.2f}" if not pd.isna(mean_abs_error) else "N/A",
+            )
 
         st.markdown("")
 
@@ -874,7 +944,7 @@ def show_historical_performance():
             # Plot daily accuracy
             st.markdown("---")
             st.markdown("### 📈 Daily Accuracy Chart")
-                        
+
             st.markdown("")
 
             # --- Prep ---
@@ -883,7 +953,9 @@ def show_historical_performance():
             df = df.sort_values("game_date")
 
             # Optional: choose smoothing window (in days/points)
-            smooth_window = st.slider("Smoothing window (rolling average of days)", 1, 14, 1)
+            smooth_window = st.slider(
+                "Smoothing window (rolling average of days)", 1, 14, 1
+            )
             use_smoothing = smooth_window > 1
 
             series_cols = {
@@ -935,14 +1007,21 @@ def show_historical_performance():
             )
 
             # Labels / title
-            ax.set_title("Daily Prediction Accuracy by Strategy", fontsize=18, fontweight="bold", pad=14)
+            ax.set_title(
+                "Daily Prediction Accuracy by Strategy",
+                fontsize=18,
+                fontweight="bold",
+                pad=14,
+            )
             ax.set_xlabel("Date", fontsize=13, fontweight="bold")
             ax.set_ylabel("Accuracy (%)", fontsize=13, fontweight="bold")
             ax.set_ylim(0, 100)
 
             # Date axis: fewer, smarter ticks
             ax.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=5, maxticks=9))
-            ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(ax.xaxis.get_major_locator()))
+            ax.xaxis.set_major_formatter(
+                mdates.ConciseDateFormatter(ax.xaxis.get_major_locator())
+            )
             plt.setp(ax.get_xticklabels(), rotation=0, ha="center")
 
             # Minor ticks on Y for nicer grid
@@ -953,10 +1032,159 @@ def show_historical_performance():
             fig.tight_layout()
 
             # Streamlit rendering: responsive + crisp
-            st.pyplot(fig, width='stretch')
+            st.pyplot(fig, width="stretch")
 
         else:
             st.warning("No daily accuracy data available for the selected range.")
+
+        # Prediction Error Analysis
+        st.markdown("---")
+        st.markdown("### 📉 Daily Prediction Error Analysis")
+        st.markdown("")
+        st.caption(
+            "Analyze how far off our predictions were from actual game totals over time."
+        )
+        st.markdown("")
+
+        daily_errors = compute_daily_prediction_errors(df_with_metrics)
+
+        if not daily_errors.empty:
+            # Display error statistics
+            col1, col2 = st.columns(2)
+            with col1:
+                overall_mean_error = daily_errors["mean_error"].mean()
+                st.metric("Overall Mean Error", f"{overall_mean_error:+.2f} pts")
+            with col2:
+                overall_mean_abs_error = daily_errors["mean_abs_error"].mean()
+                st.metric("Overall Mean Abs Error", f"{overall_mean_abs_error:.2f} pts")
+
+            st.markdown("")
+            st.info(
+                "💡 **Mean Error**: Average difference (predicted - actual). Positive = predicting too high, Negative = predicting too low.\\n\\n"
+                "**Mean Absolute Error**: Average magnitude of errors regardless of direction."
+            )
+
+            # Smoothing option
+            st.markdown("")
+            smooth_window_errors = st.slider(
+                "Smoothing window for error chart (rolling average of days)",
+                2,
+                14,
+                1,
+                key="error_smooth_slider",
+            )
+            use_smoothing_errors = smooth_window_errors > 1
+
+            # --- Figure ---
+            fig_errors, ax_errors = plt.subplots(figsize=(14, 7), dpi=140)
+
+            # Styling
+            ax_errors.set_facecolor("white")
+            for spine in ("top", "right"):
+                ax_errors.spines[spine].set_visible(False)
+
+            ax_errors.grid(True, which="major", axis="both", alpha=0.18, linewidth=1)
+            ax_errors.grid(True, which="minor", axis="y", alpha=0.08, linewidth=0.8)
+
+            dates = pd.to_datetime(daily_errors["game_date"])
+            daily_errors = daily_errors.sort_values("game_date")
+
+            # Plot mean error (can be positive or negative)
+            if use_smoothing_errors:
+                mean_error_smooth = (
+                    daily_errors["mean_error"]
+                    .rolling(window=smooth_window_errors, min_periods=1)
+                    .mean()
+                )
+                ax_errors.plot(
+                    dates,
+                    mean_error_smooth,
+                    color="#667eea",
+                    linewidth=2.5,
+                    label=f"Mean Error ({smooth_window_errors}-day avg)",
+                    alpha=0.9,
+                )
+            else:
+                ax_errors.plot(
+                    dates,
+                    daily_errors["mean_error"],
+                    color="#667eea",
+                    linewidth=2,
+                    marker="o",
+                    markersize=5,
+                    label="Mean Error",
+                    alpha=0.8,
+                )
+
+            # Plot mean absolute error (always positive)
+            if use_smoothing_errors:
+                mean_abs_error_smooth = (
+                    daily_errors["mean_abs_error"]
+                    .rolling(window=smooth_window_errors, min_periods=1)
+                    .mean()
+                )
+                ax_errors.plot(
+                    dates,
+                    mean_abs_error_smooth,
+                    color="#FF6B6B",
+                    linewidth=2.5,
+                    label=f"Mean Abs Error ({smooth_window_errors}-day avg)",
+                    alpha=0.9,
+                )
+            else:
+                ax_errors.plot(
+                    dates,
+                    daily_errors["mean_abs_error"],
+                    color="#FF6B6B",
+                    linewidth=2,
+                    marker="s",
+                    markersize=5,
+                    label="Mean Abs Error",
+                    alpha=0.8,
+                )
+
+            # Zero reference line
+            ax_errors.axhline(0, linestyle="--", alpha=0.6, linewidth=1.4, color="gray")
+            ax_errors.text(
+                dates.iloc[0],
+                0.5,
+                "Perfect prediction",
+                fontsize=11,
+                alpha=0.75,
+                va="bottom",
+            )
+
+            # Labels / title
+            ax_errors.set_title(
+                "Daily Prediction Error (Predicted - Actual Points)",
+                fontsize=18,
+                fontweight="bold",
+                pad=14,
+            )
+            ax_errors.set_xlabel("Date", fontsize=13, fontweight="bold")
+            ax_errors.set_ylabel("Error (points)", fontsize=13, fontweight="bold")
+
+            # Date axis formatting
+            ax_errors.xaxis.set_major_locator(
+                mdates.AutoDateLocator(minticks=5, maxticks=9)
+            )
+            ax_errors.xaxis.set_major_formatter(
+                mdates.ConciseDateFormatter(ax_errors.xaxis.get_major_locator())
+            )
+            plt.setp(ax_errors.get_xticklabels(), rotation=0, ha="center")
+
+            # Minor ticks on Y for nicer grid
+            ax_errors.yaxis.set_minor_locator(plt.MultipleLocator(1))
+
+            ax_errors.legend(frameon=False, fontsize=11, ncol=2)
+
+            fig_errors.tight_layout()
+
+            # Streamlit rendering
+            st.pyplot(fig_errors, width="stretch")
+
+        else:
+            st.warning("No prediction error data available for the selected range.")
 
 
 if __name__ == "__main__":

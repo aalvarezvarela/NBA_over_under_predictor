@@ -311,6 +311,31 @@ def compute_ou_betting_statistics(
     # Calculate number of unique days
     n_days = df[game_date_col].nunique() if game_date_col in df.columns else 0
 
+    # Calculate mean prediction error (predicted - actual)
+    # Only for resolved games where both predicted_total_score and total_scored_points exist
+    pred_total_col = "predicted_total_score"
+    actual_total_col = "total_scored_points"
+
+    if pred_total_col in df.columns and actual_total_col in df.columns:
+        pred_total = pd.to_numeric(df[pred_total_col], errors="coerce")
+        actual_total = pd.to_numeric(df[actual_total_col], errors="coerce")
+        valid_mask = pred_total.notna() & actual_total.notna()
+
+        prediction_errors = pred_total - actual_total
+        mean_prediction_error = (
+            float(prediction_errors[valid_mask].mean())
+            if valid_mask.sum() > 0
+            else float("nan")
+        )
+        mean_abs_prediction_error = (
+            float(prediction_errors[valid_mask].abs().mean())
+            if valid_mask.sum() > 0
+            else float("nan")
+        )
+    else:
+        mean_prediction_error = float("nan")
+        mean_abs_prediction_error = float("nan")
+
     def _accuracy(mask: pd.Series, correct_col: str) -> float:
         denom = int(mask.sum())
         if denom == 0:
@@ -395,6 +420,8 @@ def compute_ou_betting_statistics(
         "n_games_total": n_games_total,
         "n_resolved": n_resolved,
         "n_days": n_days,
+        "mean_prediction_error": mean_prediction_error,
+        "mean_abs_prediction_error": mean_abs_prediction_error,
         "regressor_n_bets": reg_n_bets,
         "regressor_accuracy": _accuracy(reg_mask, reg_correct_col),
         "regressor_total_profit": reg_total_profit,
@@ -425,6 +452,51 @@ def compute_ou_betting_statistics(
         )
 
     return stats_df
+
+
+def compute_daily_prediction_errors(
+    df: pd.DataFrame,
+    *,
+    game_date_col: str = "game_date",
+    pred_total_col: str = "predicted_total_score",
+    actual_total_col: str = "total_scored_points",
+) -> pd.DataFrame:
+    """
+    Computes daily prediction errors (predicted - actual).
+
+    Returns a DataFrame with columns:
+        - game_date
+        - n_games (number of games per day)
+        - mean_error (average prediction error per day)
+        - mean_abs_error (average absolute prediction error per day)
+    """
+    # Filter to games with valid predicted and actual totals
+    pred_total = pd.to_numeric(df[pred_total_col], errors="coerce")
+    actual_total = pd.to_numeric(df[actual_total_col], errors="coerce")
+    valid_mask = pred_total.notna() & actual_total.notna()
+
+    valid_df = df[valid_mask].copy()
+    valid_df["prediction_error"] = pred_total[valid_mask] - actual_total[valid_mask]
+    valid_df["abs_prediction_error"] = valid_df["prediction_error"].abs()
+
+    # Group by date and calculate errors
+    daily_errors = []
+
+    for date, group in valid_df.groupby(game_date_col):
+        n_games = len(group)
+        mean_error = group["prediction_error"].mean()
+        mean_abs_error = group["abs_prediction_error"].mean()
+
+        daily_errors.append(
+            {
+                "game_date": date,
+                "n_games": n_games,
+                "mean_error": mean_error,
+                "mean_abs_error": mean_abs_error,
+            }
+        )
+
+    return pd.DataFrame(daily_errors).sort_values("game_date")
 
 
 def compute_daily_accuracy(
@@ -548,7 +620,6 @@ def plot_daily_accuracy(
     ax.set_ylim(0, 100)
 
     plt.tight_layout()
-
 
     if show_plot:
         plt.show()
