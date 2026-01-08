@@ -152,8 +152,8 @@ Examples:
             data_path=str(data_folder),
             date_to_predict=date_to_predict,
             nba_injury_reports_url=settings.nba_injury_reports_url,
-            reports_path=str(settings.get_absolute_path(settings.report_path)),
             df_odds=df_odds,
+            reports_path=str(settings.get_absolute_path(settings.report_path)),
             filter_for_date_to_predict=True,
         )
 

@@ -502,10 +502,10 @@ def create_df_players_new_game(games_original, df_players_original):
 
 def create_df_to_predict(
     data_path: str,
-    date_to_predict: Union[str, datetime],
+    date_to_predict: str | datetime,
     nba_injury_reports_url: str,
+    df_odds,
     reports_path: str = None,
-    df_odds=None,
     filter_for_date_to_predict: bool = True,
 ):
     """
@@ -591,11 +591,10 @@ def create_df_to_predict(
 
     df.sort_values(by="GAME_DATE", ascending=False, inplace=True)
 
-    if df_odds is not None:
-        df = merge_teams_df_with_odds(df_odds=df_odds, df_team=df)
-        df["TOTAL_POINTS"] = df.groupby("GAME_ID")["PTS"].transform("sum")
-        df["DIFF_FROM_LINE"] = df["TOTAL_POINTS"] - df["TOTAL_OVER_UNDER_LINE"]
-        df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], format="%Y-%m-%d")
+    df = merge_teams_df_with_odds(df_odds=df_odds, df_team=df)
+    df["TOTAL_POINTS"] = df.groupby("GAME_ID")["PTS"].transform("sum")
+    df["DIFF_FROM_LINE"] = df["TOTAL_POINTS"] - df["TOTAL_OVER_UNDER_LINE"]
+    df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], format="%Y-%m-%d")
 
     valid_games = df["GAME_ID"].value_counts()
     valid_games = valid_games[

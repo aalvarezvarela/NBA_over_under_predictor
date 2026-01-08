@@ -1068,9 +1068,9 @@ def show_historical_performance():
             st.markdown("")
             smooth_window_errors = st.slider(
                 "Smoothing window for error chart (rolling average of days)",
-                2,
-                14,
                 1,
+                14,
+                2,
                 key="error_smooth_slider",
             )
             use_smoothing_errors = smooth_window_errors > 1
