@@ -55,7 +55,6 @@ def get_schedule_games(date):
     return games
 
 
-
 def get_last_two_nba_seasons(d: str | datetime) -> list[str]:
     """
     Return the current NBA season (for the given date) and the immediately previous season.
@@ -78,6 +77,7 @@ def get_last_two_nba_seasons(d: str | datetime) -> list[str]:
     previous_season = f"{start_year - 1}-{str(start_year)[-2:]}"
 
     return [season, previous_season]
+
 
 def load_all_nba_data(data_path, seasons=None):
     """
@@ -500,49 +500,26 @@ def create_df_players_new_game(games_original, df_players_original):
     return df_next_game
 
 
-def create_df_to_predict(
-    data_path: str,
-    date_to_predict: str | datetime,
-    nba_injury_reports_url: str,
-    df_odds,
-    reports_path: str = None,
-    filter_for_date_to_predict: bool = True,
-):
+def process_team_and_player_statistics(df, df_players, games, df_odds):
     """
-    Process all NBA data for the last two seasons and return a DataFrame with the processed data.
+    Process and compute team statistics, rolling averages, and player data.
+
+    This function handles:
+    - Data cleaning and overtime adjustments
+    - Merging game and odds data
+    - Computing team records, win/loss statistics
+    - Calculating rolling statistics and trends
+    - Processing player minutes and game data
+
     Args:
-        data_path (str): Path to the directory containing NBA season CSV files.
-        date_to_predict (str): The date in 'YYYY-MM-DD' format.
-        filter_for_date_to_predict (bool): If True, filter the output DataFrame to only include games for the specified date.
+        df (pd.DataFrame): Team game statistics DataFrame
+        df_players (pd.DataFrame): Player statistics DataFrame
+        games (pd.DataFrame): Schedule games DataFrame
+        df_odds (pd.DataFrame): Betting odds DataFrame
+
     Returns:
-        pd.DataFrame: A DataFrame containing the processed NBA data.
+        tuple: (df, df_players) - Processed team and player DataFrames
     """
-    games = get_schedule_games(date_to_predict)
-    if games.empty:
-        print("No games found for the specified date.")
-        raise ValueError(
-            "No games found for the specified date."
-        )  # Return empty DataFrame if no games found
-
-    # Extract just the date portion (first 10 chars: YYYY-MM-DD) and combine with time
-    games["GAME_TIME"] = pd.to_datetime(
-        games["GAME_DATE_EST"].astype(str).str[:10] + " " + games["GAME_STATUS_TEXT"],
-        format="%Y-%m-%d %I:%M %p ET",
-        errors="coerce",
-    )
-    # Make it timezone-aware (Eastern Time)
-    games["GAME_TIME"] = games["GAME_TIME"].dt.tz_localize(
-        "US/Eastern", ambiguous="infer", nonexistent="shift_forward"
-    )
-
-    seasons = get_last_two_nba_seasons(date_to_predict)
-
-    # df_2, df_players_2 = load_all_nba_data(
-    #     data_path + "/" + "season_games_data", seasons=seasons
-    # )
-
-    df, df_players = load_all_nba_data_from_db(seasons=seasons)
-
     df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], format="%Y-%m-%d")
 
     df.sort_values(by="GAME_DATE", ascending=False, inplace=True)
@@ -587,7 +564,8 @@ def create_df_to_predict(
 
     df.sort_values(by="GAME_DATE", ascending=False, inplace=True)
 
-    df = standardize_and_merge_nba_data(df, games)
+    if games is not None and not games.empty:
+        df = standardize_and_merge_nba_data(df, games)
 
     df.sort_values(by="GAME_DATE", ascending=False, inplace=True)
 
@@ -721,40 +699,32 @@ def create_df_to_predict(
     df_players = df_players.drop_duplicates()
     df = df.drop_duplicates()
 
-    ##### here add PLAYER INJURIES and STATS
+    return df, df_players
 
-    rows_new_game = create_df_players_new_game(games, df_players)
 
-    df_players = pd.concat([df_players, rows_new_game], ignore_index=True)
+def merge_home_away_and_prepare_features(
+    df, date_to_predict, filter_for_date_to_predict, games_not_updated
+):
+    """
+    Merge home and away team data and prepare final prediction features.
 
-    df_players.sort_values(by="GAME_DATE", ascending=False, inplace=True)
+    This function handles:
+    - Renaming and standardizing player/injury columns
+    - Computing star player impact metrics
+    - Merging home and away team stats into a single row per game
+    - Computing matchup history statistics
+    - Calculating trend slopes and derived features
+    - Filtering and formatting the final prediction DataFrame
 
-    injury_report_df = retrieve_injury_report_as_df(
-        nba_injury_reports_url, reports_path=reports_path
-    )
+    Args:
+        df (pd.DataFrame): Team statistics DataFrame with injury data attached
+        date_to_predict (str | datetime): Date to filter predictions for
+        filter_for_date_to_predict (bool): Whether to filter for specific date
+        games_not_updated (list): List of game IDs with missing injury reports
 
-    injury_dict, games_not_updated = process_injury_data(games, injury_report_df)
-
-    stats = ["PTS", "PACE_PER40", "DEF_RATING", "OFF_RATING", "TS_PCT"]
-    # Add a row of the new game for players
-
-    df = attach_top3_stats(
-        df, df_players, injury_dict, stats, game_date_limit=date_to_predict
-    )
-
-    # Sum injured players' points into a new column
-    df["TOTAL_INJURED_PLAYER_PTS_BEFORE"] = (
-        df[
-            [
-                "TOP1_INJURED_PLAYER_PTS",
-                "TOP2_INJURED_PLAYER_PTS",
-                "TOP3_INJURED_PLAYER_PTS",
-            ]
-        ]
-        .sum(axis=1, skipna=True)
-        .fillna(0)
-    )
-
+    Returns:
+        pd.DataFrame: Final prediction-ready DataFrame
+    """
     # Rename columns that start with 'TOP' by adding '_BEFORE' at the end
     df.rename(
         columns=lambda x: f"{x}_BEFORE" if x.startswith("TOP") else x, inplace=True
@@ -959,7 +929,7 @@ def create_df_to_predict(
             df_to_predict["TOTAL_POINTS"] == 0
         ).all(), "Error: TOTAL_POINTS contains non-zero values!"
         df_to_predict.drop(columns=["TOTAL_POINTS"], inplace=True)
-    
+
     df_to_predict.drop(columns=["IS_OVERTIME"], inplace=True)
 
     # df_to_predict['TOTAL_OVER_UNDER_LINE'] = None
@@ -968,6 +938,92 @@ def create_df_to_predict(
         [first_col] + [col for col in df_to_predict.columns if col != first_col]
     ]
 
+
+    return df_to_predict
+
+
+def create_df_to_predict(
+    data_path: str,
+    date_to_predict: str | datetime,
+    nba_injury_reports_url: str,
+    df_odds,
+    reports_path: str = None,
+    filter_for_date_to_predict: bool = True,
+):
+    """
+    Process all NBA data for the last two seasons and return a DataFrame with the processed data.
+    Args:
+        data_path (str): Path to the directory containing NBA season CSV files.
+        date_to_predict (str): The date in 'YYYY-MM-DD' format.
+        filter_for_date_to_predict (bool): If True, filter the output DataFrame to only include games for the specified date.
+    Returns:
+        pd.DataFrame: A DataFrame containing the processed NBA data.
+    """
+    games = get_schedule_games(date_to_predict)
+    if games.empty:
+        print("No games found for the specified date.")
+        raise ValueError(
+            "No games found for the specified date."
+        )  # Return empty DataFrame if no games found
+
+    # Extract just the date portion (first 10 chars: YYYY-MM-DD) and combine with time
+    games["GAME_TIME"] = pd.to_datetime(
+        games["GAME_DATE_EST"].astype(str).str[:10] + " " + games["GAME_STATUS_TEXT"],
+        format="%Y-%m-%d %I:%M %p ET",
+        errors="coerce",
+    )
+    # Make it timezone-aware (Eastern Time)
+    games["GAME_TIME"] = games["GAME_TIME"].dt.tz_localize(
+        "US/Eastern", ambiguous="infer", nonexistent="shift_forward"
+    )
+
+    seasons = get_last_two_nba_seasons(date_to_predict)
+
+    # df_2, df_players_2 = load_all_nba_data(
+    #     data_path + "/" + "season_games_data", seasons=seasons
+    # )
+
+    df, df_players = load_all_nba_data_from_db(seasons=seasons)
+
+    df, df_players = process_team_and_player_statistics(df, df_players, games, df_odds)
+
+    ##### here add PLAYER INJURIES and STATS
+
+    rows_new_game = create_df_players_new_game(games, df_players)
+
+    df_players = pd.concat([df_players, rows_new_game], ignore_index=True)
+
+    df_players.sort_values(by="GAME_DATE", ascending=False, inplace=True)
+
+    injury_report_df = retrieve_injury_report_as_df(
+        nba_injury_reports_url, reports_path=reports_path
+    )
+
+    injury_dict, games_not_updated = process_injury_data(games, injury_report_df)
+
+    stats = ["PTS", "PACE_PER40", "DEF_RATING", "OFF_RATING", "TS_PCT"]
+    # Add a row of the new game for players
+
+    df = attach_top3_stats(
+        df, df_players, injury_dict, stats, game_date_limit=date_to_predict
+    )
+
+    # Sum injured players' points into a new column
+    df["TOTAL_INJURED_PLAYER_PTS_BEFORE"] = (
+        df[
+            [
+                "TOP1_INJURED_PLAYER_PTS",
+                "TOP2_INJURED_PLAYER_PTS",
+                "TOP3_INJURED_PLAYER_PTS",
+            ]
+        ]
+        .sum(axis=1, skipna=True)
+        .fillna(0)
+    )
+
+    df_to_predict = merge_home_away_and_prepare_features(
+        df, date_to_predict, filter_for_date_to_predict, games_not_updated
+    )
     # add INJURIES NOT YET SUBMITTED to games games_not_updated in TOTAL_OVER_UNDER_LINE
     if games_not_updated is not None:
         for game_id in games_not_updated:
@@ -977,7 +1033,7 @@ def create_df_to_predict(
 
     print()
     print("--" * 20)
-    print(f"Processed data for {date_to_predict.date()}")
+    print(f"Processed data for {date_to_predict}")
     print(f"Number of games: {df_to_predict.shape[0]}")
     print("--" * 20)
     print()
