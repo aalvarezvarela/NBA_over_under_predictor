@@ -413,7 +413,7 @@ def process_odds_df(df_odds, use_metric: str = "most_common"):
     return df_odds_processed
 
 
-def merge_teams_df_with_odds(df_odds, df_team, use_metric: str = "average"):
+def merge_teams_df_with_odds(df_odds, df_team, use_metric: str = "most_common"):
     """
     Merge team dataframe with odds data.
 
