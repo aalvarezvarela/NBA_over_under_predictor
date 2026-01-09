@@ -340,7 +340,14 @@ def process_odds_date(
     return pd.DataFrame(match_data)
 
 
-def process_odds_df(df_odds):
+def process_odds_df(df_odds, use_metric: str = "most_common"):
+    """
+    Process odds dataframe with option to use 'average' or 'most_common' metrics.
+
+    Args:
+        df_odds: DataFrame with odds data
+        use_metric: Either "average" or "most_common" (default: "average")
+    """
     # Ensure game_date is datetime (handle both timezone-aware and naive datetimes)
     if not pd.api.types.is_datetime64_any_dtype(df_odds["game_date"]):
         df_odds["game_date"] = pd.to_datetime(df_odds["game_date"], utc=True)
@@ -367,6 +374,9 @@ def process_odds_df(df_odds):
     df_odds["team_home"] = df_odds["team_home"].map(TEAM_NAME_EQUIVALENT_DICT)
     df_odds["team_away"] = df_odds["team_away"].map(TEAM_NAME_EQUIVALENT_DICT)
 
+    # Determine which columns to use based on use_metric parameter
+    prefix = use_metric if use_metric in ["average", "most_common"] else "average"
+
     # Step 2: Rename df_new columns to match
     df_odds_renamed = df_odds.rename(
         columns={
@@ -374,10 +384,10 @@ def process_odds_df(df_odds):
             "game_date_adjusted": "GAME_DATE",
             "team_home": "TEAM_NAME_TEAM_HOME",
             "team_away": "TEAM_NAME_TEAM_AWAY",
-            "average_total_line": "TOTAL_OVER_UNDER_LINE",  # if you prefer average over most_common, use this instead
-            "average_moneyline_home": "MONEYLINE_HOME",
-            "average_moneyline_away": "MONEYLINE_AWAY",
-            "average_spread_home": "SPREAD_HOME",
+            f"{prefix}_total_line": "TOTAL_OVER_UNDER_LINE",
+            f"{prefix}_moneyline_home": "MONEYLINE_HOME",
+            f"{prefix}_moneyline_away": "MONEYLINE_AWAY",
+            f"{prefix}_spread_home": "SPREAD_HOME",
         }
     )
 
@@ -403,8 +413,16 @@ def process_odds_df(df_odds):
     return df_odds_processed
 
 
-def merge_teams_df_with_odds(df_odds, df_team):
-    df_odds = process_odds_df(df_odds)
+def merge_teams_df_with_odds(df_odds, df_team, use_metric: str = "average"):
+    """
+    Merge team dataframe with odds data.
+
+    Args:
+        df_odds: Odds dataframe
+        df_team: Team dataframe
+        use_metric: Either "average" or "most_common" (default: "average")
+    """
+    df_odds = process_odds_df(df_odds, use_metric=use_metric)
 
     df_team["GAME_DATE"] = pd.to_datetime(df_team["GAME_DATE"], format="%Y-%m-%d")
 
@@ -584,7 +602,6 @@ def update_and_get_odds_df(
         "x-rapidapi-key": ODDS_API_KEY,
         "x-rapidapi-host": "therundown-therundown-v1.p.rapidapi.com",
     }
-
 
     # Load from database (primary source)
     season_year = season_to_download[:4]  # Extract year from season like "2024-25"
