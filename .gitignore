@@ -214,3 +214,5 @@ secrets.ini
 config.secrets.ini
 .streamlit/secrets.toml
 src/.streamlit/secrets.toml
+data/ref_data
+data/injury_data

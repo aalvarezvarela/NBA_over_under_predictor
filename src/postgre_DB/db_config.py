@@ -127,6 +127,14 @@ def get_schema_name_predictions() -> str:
     return get_config().get("Database", "SCHEMA_NAME_PREDICTIONS")
 
 
+def get_schema_name_injuries() -> str:
+    return get_config().get("Database", "SCHEMA_NAME_INJURIES")
+
+
+def get_schema_name_refs() -> str:
+    return get_config().get("Database", "SCHEMA_NAME_REFS")
+
+
 def connect_postgres_db() -> psycopg.Connection:
     """
     Connect to the 'postgres' database for admin tasks.
@@ -149,13 +157,14 @@ def connect_postgres_db() -> psycopg.Connection:
 
     return psycopg.connect(**kwargs)
 
+
 def connect_nba_db() -> psycopg.Connection:
     """Connect to the configured database (local or Supabase)."""
     c = get_db_credentials()
 
     # Prefer DSN for Supabase (pooler/session mode). This also fixes IPv6 issues in GitHub runners.
     if c["env"] == "supabase":
-        #get it from config if not getenv
+        # get it from config if not getenv
         dsn = _get_env_or_config(
             get_config(),
             "DatabaseSupabase",
@@ -204,3 +213,11 @@ def connect_odds_db() -> psycopg.Connection:
 
 def connect_predictions_db() -> psycopg.Connection:
     return connect_schema_db(get_schema_name_predictions())
+
+
+def connect_injuries_db() -> psycopg.Connection:
+    return connect_schema_db(get_schema_name_injuries())
+
+
+def connect_refs_db() -> psycopg.Connection:
+    return connect_schema_db(get_schema_name_refs())
