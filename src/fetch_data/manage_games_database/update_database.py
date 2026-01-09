@@ -140,12 +140,12 @@ def update_database(database_folder: str, date=None, save_csv: bool = True):
     # Query existing player game IDs from database
     existing_player_game_ids = get_existing_player_game_ids_from_db(season_year)
 
-    # Use the union of both sets to avoid fetching games we already have in either DB
+    # Use the intersection - only skip games that exist in BOTH databases
     # This ensures we only fetch truly new games
-    all_existing_game_ids = existing_game_ids.union(existing_player_game_ids)
+    all_existing_game_ids = existing_game_ids.intersection(existing_player_game_ids)
 
     print(
-        f"Total existing game IDs across both databases: {len(all_existing_game_ids)}"
+        f"Total existing game IDs in both databases: {len(all_existing_game_ids)}"
     )
 
     # Fetch new data using existing game IDs from database

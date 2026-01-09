@@ -3,11 +3,18 @@ from pathlib import Path
 
 import pandas as pd
 import psycopg
-from db_config import (
-    connect_nba_db,
-    get_schema_name_refs,
-)
 from psycopg import sql
+
+try:
+    from .db_config import (
+        connect_nba_db,
+        get_schema_name_refs,
+    )
+except ImportError:
+    from db_config import (
+        connect_nba_db,
+        get_schema_name_refs,
+    )
 
 
 def create_schema_if_not_exists(conn: psycopg.Connection, schema: str) -> None:
@@ -199,17 +206,7 @@ def load_refs_to_db(df: pd.DataFrame, if_exists: str = "append") -> bool:
         # Load to database
         table_name = f"{schema}.nba_refs"
 
-        # Use psycopg's copy_from for better performance
         with conn.cursor() as cur:
-            # Create temporary CSV in memory
-            from io import StringIO
-
-            buffer = StringIO()
-            df_load.to_csv(buffer, index=False, header=False)
-            buffer.seek(0)
-
-            columns = ", ".join(required_columns)
-
             if if_exists == "replace":
                 # Clear table first
                 cur.execute(
@@ -218,14 +215,22 @@ def load_refs_to_db(df: pd.DataFrame, if_exists: str = "append") -> bool:
                     )
                 )
 
-            # Use COPY for bulk insert (much faster than individual inserts)
-            copy_sql = sql.SQL("COPY {}.{} ({}) FROM STDIN WITH (FORMAT CSV)").format(
-                sql.Identifier(schema), sql.Identifier("nba_refs"), sql.SQL(columns)
+            # Use INSERT with ON CONFLICT DO NOTHING to skip duplicates
+            columns = ", ".join(required_columns)
+            placeholders = ", ".join(["%s"] * len(required_columns))
+
+            insert_sql = sql.SQL(
+                "INSERT INTO {}.{} ({}) VALUES ({}) ON CONFLICT (official_id, game_id) DO NOTHING"
+            ).format(
+                sql.Identifier(schema),
+                sql.Identifier("nba_refs"),
+                sql.SQL(columns),
+                sql.SQL(placeholders),
             )
 
-            with cur.copy(copy_sql.as_string(conn)) as copy:
-                while data := buffer.read(8192):
-                    copy.write(data)
+            # Execute batch insert
+            data_tuples = [tuple(row) for row in df_load.values]
+            cur.executemany(insert_sql.as_string(conn), data_tuples)
 
         conn.commit()
         conn.close()
@@ -281,12 +286,12 @@ def load_all_refs_from_csv_folder(
         all_dfs = []
         for csv_file in csv_files:
             print(f"Reading {csv_file.name}...")
-            df = pd.read_csv(csv_file)
+            # Load all columns as strings to avoid parsing issues
+            df = pd.read_csv(csv_file, dtype=str)
 
             # Strip whitespace from all string columns
             for col in df.columns:
-                if df[col].dtype == "object":
-                    df[col] = df[col].str.strip()
+                df[col] = df[col].str.strip()
 
             all_dfs.append(df)
 
