@@ -36,6 +36,20 @@ def most_common(lst):
     return Counter(lst).most_common(1)[0][0] if lst else None
 
 
+def load_odds_data(season_year: str = None) -> pd.DataFrame:
+    """
+    Load odds data from PostgreSQL database.
+    Alias for get_existing_odds_from_db for convenience.
+
+    Args:
+        season_year (str, optional): Season year to filter by (e.g., "2024")
+
+    Returns:
+        pd.DataFrame: Odds data from database
+    """
+    return get_existing_odds_from_db(season_year=season_year)
+
+
 def get_existing_odds_from_db(season_year: str = None) -> pd.DataFrame:
     """
     Query existing odds data from PostgreSQL database.

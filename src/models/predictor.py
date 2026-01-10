@@ -143,8 +143,35 @@ def predict_nba_games(
     df_summary["PREDICTION_DATE"] = datetime.now(ZoneInfo("Europe/Madrid"))
 
     # Calculate time to match in minutes
+    # Ensure GAME_TIME is timezone-aware before subtraction
+    # Handle mixed timezone-aware and naive values
+    def ensure_timezone_aware(dt_value):
+        """Convert datetime to timezone-aware (US/Eastern) if naive."""
+        if pd.isna(dt_value):
+            return pd.NaT
+
+        # Convert to datetime if it's not already
+        if not isinstance(dt_value, (pd.Timestamp, datetime)):
+            try:
+                dt_value = pd.to_datetime(dt_value)
+            except:
+                return pd.NaT
+
+        # Check if timezone-aware
+        if hasattr(dt_value, "tzinfo") and dt_value.tzinfo is None:
+            # Naive datetime, localize to US/Eastern
+            return dt_value.tz_localize("US/Eastern")
+        elif hasattr(dt_value, "tzinfo") and dt_value.tzinfo is not None:
+            # Already timezone-aware
+            return dt_value
+        else:
+            # Fallback: try to convert and localize
+            return pd.to_datetime(dt_value).tz_localize("US/Eastern")
+
+    game_time_aware = df_summary["GAME_TIME"].apply(ensure_timezone_aware)
+
     df_summary["TIME_TO_MATCH_MINUTES"] = (
-        pd.to_datetime(df_summary["GAME_TIME"]) - df_summary["PREDICTION_DATE"]
+        game_time_aware - df_summary["PREDICTION_DATE"]
     ).dt.total_seconds() / 60
     df_summary["TIME_TO_MATCH_MINUTES"] = (
         df_summary["TIME_TO_MATCH_MINUTES"].round(0).astype(int)
