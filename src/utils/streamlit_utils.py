@@ -70,16 +70,39 @@ def render_game_cards(df: pd.DataFrame) -> None:
             with col:
                 home_team = row["team_name_team_home"]
                 away_team = row["team_name_team_away"]
-                # Convert to Madrid timezone
-                game_dt = pd.to_datetime(row["game_time"])
-                if game_dt.tz is None:
-                    game_dt_madrid = game_dt.tz_localize("UTC").tz_convert(
-                        "Europe/Madrid"
-                    )
-                else:
-                    game_dt_madrid = game_dt.tz_convert("Europe/Madrid")
-                game_time = game_dt_madrid.strftime("%I:%M %p")
-                game_date = game_dt_madrid.strftime("%b %d, %Y")
+
+                # Convert to Madrid timezone - handle various input types
+                try:
+                    game_time_value = row["game_time"]
+
+                    # Handle None/NaN
+                    if pd.isna(game_time_value):
+                        game_time = "TBD"
+                        game_date = "TBD"
+                    else:
+                        # Convert to datetime if not already
+                        if not isinstance(
+                            game_time_value, (pd.Timestamp, pd.DatetimeIndex)
+                        ):
+                            game_dt = pd.to_datetime(game_time_value)
+                        else:
+                            game_dt = game_time_value
+
+                        # Handle timezone
+                        if game_dt.tz is None:
+                            game_dt_madrid = game_dt.tz_localize("UTC").tz_convert(
+                                "Europe/Madrid"
+                            )
+                        else:
+                            game_dt_madrid = game_dt.tz_convert("Europe/Madrid")
+
+                        game_time = game_dt_madrid.strftime("%I:%M %p")
+                        game_date = game_dt_madrid.strftime("%b %d, %Y")
+                except Exception as e:
+                    # Fallback if conversion fails
+                    game_time = "TBD"
+                    game_date = "TBD"
+                    st.warning(f"Could not parse game time: {e}")
 
                 # Get predictions
                 regressor_pred = row["regressor_prediction"]

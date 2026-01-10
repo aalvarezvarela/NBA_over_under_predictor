@@ -9,7 +9,6 @@ import streamlit as st
 
 # Suppress pandas SQLAlchemy warnings
 # Import nba_predictor main function
-# try:
 from nba_predictor import main as run_nba_predictor
 from postgre_DB.update_evaluation_predictions import (
     add_ou_betting_metrics,
@@ -20,9 +19,6 @@ from postgre_DB.update_evaluation_predictions import (
 )
 from utils.streamlit_utils import format_upcoming_games_display, render_game_cards
 
-# except (ImportError, KeyError, Exception):
-#     # Catch ImportError, KeyError (from import cache issues), and any other import-time errors
-#     run_nba_predictor = None
 warnings.filterwarnings("ignore", message="pandas only supports SQLAlchemy connectable")
 os.environ["SUPABASE_DB_URL"] = st.secrets["DatabaseSupabase"]["SUPABASE_DB_URL"]
 os.environ["SUPABASE_DB_PASSWORD"] = st.secrets["DatabaseSupabase"][
