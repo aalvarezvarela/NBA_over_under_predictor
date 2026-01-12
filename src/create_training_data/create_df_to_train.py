@@ -9,8 +9,6 @@ and statistics needed for model training, including injury data processing.
 import sys
 import warnings
 from datetime import datetime
-
-# Appemnd to path the one level up folder
 from pathlib import Path
 
 import pandas as pd
@@ -23,7 +21,9 @@ from data_processing.process_data_with_injuries import (
     compute_home_points_conceded_avg,
     compute_trend_slope,
     get_last_5_matchup_excluding_current,
-    get_last_two_nba_seasons,
+)
+from data_processing.process_referee_data import (
+    add_referee_features_to_training_data,
 )
 from data_processing.statistics import (
     classify_season_type,
@@ -31,7 +31,11 @@ from data_processing.statistics import (
     compute_rolling_weighted_stats,
     compute_season_std,
 )
-from fetch_data.manage_odds_data.update_odds_utils import merge_teams_df_with_odds
+from data_processing.travel_processing import compute_travel_features
+from fetch_data.manage_odds_data.update_odds_utils import (
+    load_odds_data,
+    merge_teams_df_with_odds,
+)
 from postgre_DB import load_all_nba_data_from_db
 from tqdm import tqdm
 
@@ -755,6 +759,78 @@ def merge_home_away_and_prepare_training_features(df):
     return df_training
 
 
+def get_all_seasons_from_2006(date_to_train_until):
+    """
+    Get all NBA seasons from 2006-07 until the season containing date_to_train_until.
+
+    Args:
+        date_to_train_until (datetime): The target date
+
+    Returns:
+        list: List of season strings in format "YYYY-YY" (e.g., ["2006-07", "2007-08", ...])
+    """
+    if isinstance(date_to_train_until, str):
+        date_to_train_until = pd.to_datetime(date_to_train_until)
+
+    # Determine the season year for the target date
+    # NBA season runs from October (month 10) to June
+    # If date is Jan-Jun, it's part of season that started previous year
+    # If date is Jul-Dec, it's part of season that will start this year (or just ended)
+    target_year = date_to_train_until.year
+    target_month = date_to_train_until.month
+
+    if target_month <= 6:
+        # Jan-Jun: season started previous year
+        end_season_year = target_year - 1
+    else:
+        # Jul-Dec: season starts this year
+        end_season_year = target_year
+
+    # Generate all seasons from 2006 to end_season_year
+    seasons = []
+    for year in range(2006, end_season_year + 1):
+        season_str = f"{year}-{str(year + 1)[-2:]}"
+        seasons.append(season_str)
+
+    return seasons
+
+
+def get_seasons_between_dates(date_from, date_to):
+    """
+    Get all NBA seasons between two dates (inclusive).
+
+    Args:
+        date_from (datetime or str): The start date
+        date_to (datetime or str): The end date
+
+    Returns:
+        list: List of season strings in format "YYYY-YY" (e.g., ["2006-07", "2007-08", ...])
+    """
+    if isinstance(date_from, str):
+        date_from = pd.to_datetime(date_from)
+    if isinstance(date_to, str):
+        date_to = pd.to_datetime(date_to)
+
+    # Helper function to determine season year from a date
+    def get_season_year(date):
+        year = date.year
+        month = date.month
+        # If date is Jan-Jun, season started previous year
+        # If date is Jul-Dec, season starts this year
+        return year - 1 if month <= 6 else year
+
+    start_season_year = get_season_year(date_from)
+    end_season_year = get_season_year(date_to)
+
+    # Generate all seasons between start and end
+    seasons = []
+    for year in range(start_season_year, end_season_year + 1):
+        season_str = f"{year}-{str(year + 1)[-2:]}"
+        seasons.append(season_str)
+
+    return seasons
+
+
 def load_injury_data_from_db(seasons):
     """
     Load injury data from database for the specified seasons.
@@ -816,13 +892,13 @@ def load_injury_data_from_db(seasons):
 
 def create_df_to_train(
     date_to_train_until: str | datetime,
-    df_odds,
+    date_from: str | datetime = None,
 ):
     """
     Create training dataset for NBA over/under prediction models.
 
     This function:
-    - Loads data from database for the last two seasons relative to date_to_train_until
+    - Loads data from database for seasons from date_from (or 2006-07) to date_to_train_until
     - Processes injuries from database (not from live reports)
     - Computes all team and player statistics
     - Calculates rolling averages and trends
@@ -831,16 +907,27 @@ def create_df_to_train(
     Args:
         date_to_train_until (str | datetime): Latest date to include in training data (YYYY-MM-DD)
         df_odds (pd.DataFrame): Betting odds data
+        date_from (str | datetime, optional): Starting date for training data. If None, starts from 2006-07
 
     Returns:
         pd.DataFrame: Complete training dataset with all features
     """
+    df_odds = load_odds_data()
+
     if isinstance(date_to_train_until, str):
         date_to_train_until = pd.to_datetime(date_to_train_until, format="%Y-%m-%d")
     else:
         date_to_train_until = pd.to_datetime(date_to_train_until)
 
-    seasons = get_last_two_nba_seasons(date_to_train_until)
+    # Determine which seasons to load
+    if date_from is not None:
+        if isinstance(date_from, str):
+            date_from = pd.to_datetime(date_from, format="%Y-%m-%d")
+        else:
+            date_from = pd.to_datetime(date_from)
+        seasons = get_seasons_between_dates(date_from, date_to_train_until)
+    else:
+        seasons = get_all_seasons_from_2006(date_to_train_until)
 
     print(f"Loading data for seasons: {seasons}")
 
@@ -850,8 +937,13 @@ def create_df_to_train(
     # Ensure GAME_DATE column is pandas Timestamp for df (df_players doesn't have it yet)
     df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
 
-    # Filter df up to the training date (df_players will be filtered after processing)
-    df = df[df["GAME_DATE"] <= date_to_train_until]
+    # Filter df by date range
+    if date_from is not None:
+        df = df[
+            (df["GAME_DATE"] >= date_from) & (df["GAME_DATE"] <= date_to_train_until)
+        ]
+    else:
+        df = df[df["GAME_DATE"] <= date_to_train_until]
 
     print(f"Loaded {len(df)} team game records and {len(df_players)} player records")
 
@@ -860,8 +952,14 @@ def create_df_to_train(
         df, df_players, df_odds
     )
 
-    # Now filter df_players by date (after GAME_DATE has been added via merge)
-    df_players = df_players[df_players["GAME_DATE"] <= date_to_train_until]
+    # Now filter df_players by date range (after GAME_DATE has been added via merge)
+    if date_from is not None:
+        df_players = df_players[
+            (df_players["GAME_DATE"] >= date_from)
+            & (df_players["GAME_DATE"] <= date_to_train_until)
+        ]
+    else:
+        df_players = df_players[df_players["GAME_DATE"] <= date_to_train_until]
 
     # Load injury data from database
     df_injuries = load_injury_data_from_db(seasons)
@@ -903,17 +1001,32 @@ def create_df_to_train(
 
 if __name__ == "__main__":
     # Example usage
-    from fetch_data.manage_odds_data.update_odds_utils import load_odds_data
-
-    # Load odds data
-    df_odds = load_odds_data()
 
     # Create training data up to a specific date
-    date_to_train = "2024-12-31"
+    date_to_train = "2025-01-10"
+    date_from = "2006-11-01"  # Optional: specify start date
 
-    df_train = create_df_to_train(date_to_train_until=date_to_train, df_odds=df_odds)
+    df_train = create_df_to_train(
+        date_to_train_until=date_to_train, date_from=date_from
+    )
 
-    # Save to file
-    output_path = "data/training_data.csv"
-    df_train.to_csv(output_path, index=False)
-    print(f"Training data saved to {output_path}")
+    # Load referee data from database
+    if date_from is not None:
+        seasons = get_seasons_between_dates(date_from, date_to_train)
+    else:
+        seasons = get_all_seasons_from_2006(date_to_train)
+
+    df_train = add_referee_features_to_training_data(seasons, df_train)
+
+    # Compute travel features (distance traveled in last 7 and 14 days)
+    df_train = compute_travel_features(df_train)
+
+    # Save to file with seasons in filename
+    date_from_dt = (
+        pd.to_datetime(date_from) if date_from else pd.to_datetime("2006-01-01")
+    )
+    date_to_train_dt = pd.to_datetime(date_to_train)
+    output_path = "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/train_data"
+    output_name = f"{output_path}/training_data_{date_from_dt.strftime('%Y%m%d')}_to_{date_to_train_dt.strftime('%Y%m%d')}.csv"
+    df_train.to_csv(output_name, index=False)
+    print(f"Training data saved to {output_name}")

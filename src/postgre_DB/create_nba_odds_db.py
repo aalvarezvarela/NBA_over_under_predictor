@@ -4,10 +4,16 @@ import pandas as pd
 import psycopg
 from psycopg import sql
 
-from .db_config import (
-    connect_nba_db,
-    get_schema_name_odds,
-)
+try:
+    from .db_config import (
+        connect_nba_db,
+        get_schema_name_odds,
+    )
+except ImportError:
+    from db_config import (
+        connect_nba_db,
+        get_schema_name_odds,
+    )
 
 
 def create_odds_schema_if_not_exists(conn: psycopg.Connection, schema: str) -> None:
@@ -18,7 +24,7 @@ def create_odds_schema_if_not_exists(conn: psycopg.Connection, schema: str) -> N
     conn.commit()
 
 
-def create_odds_table(drop_existing: bool = True):
+def create_odds_table(drop_existing: bool = False):
     """Create the nba_odds table inside schema SCHEMA_NAME_ODDS."""
     try:
         schema = get_schema_name_odds()
@@ -41,9 +47,9 @@ def create_odds_table(drop_existing: bool = True):
                     game_date TIMESTAMP WITH TIME ZONE NOT NULL,
                     team_home VARCHAR(100) NOT NULL,
                     team_away VARCHAR(100) NOT NULL,
-                    season_year INTEGER,
-                    most_common_total_line NUMERIC(8, 4),
-                    average_total_line NUMERIC(8, 4),
+                    season_year INTEGER NOT NULL,
+                    most_common_total_line NUMERIC(8, 4) NOT NULL,
+                    average_total_line NUMERIC(8, 4) NOT NULL,
                     most_common_moneyline_home NUMERIC(10, 4),
                     average_moneyline_home NUMERIC(10, 4),
                     most_common_moneyline_away NUMERIC(10, 4),

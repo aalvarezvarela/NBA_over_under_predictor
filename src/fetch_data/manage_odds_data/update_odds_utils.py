@@ -123,6 +123,21 @@ def update_odds_db(df_odds: pd.DataFrame) -> bool:
     # Optional but recommended: normalize to lowercase to match DB column names
     df_upload.columns = [c.lower() for c in df_upload.columns]
 
+    # Drop rows where most_common_total_line or average_total_line is null/NaN
+    initial_count = len(df_upload)
+    df_upload = df_upload.dropna(
+        subset=["most_common_total_line", "average_total_line"], how="any"
+    )
+    dropped_count = initial_count - len(df_upload)
+    if dropped_count > 0:
+        print(
+            f"Dropped {dropped_count} rows with null most_common_total_line or average_total_line"
+        )
+
+    if df_upload.empty:
+        print("No valid odds data to upload after filtering null values.")
+        return False
+
     # Convert game_date to timestamp (UTC)
     if "game_date" in df_upload.columns:
         df_upload["game_date"] = pd.to_datetime(
@@ -385,11 +400,15 @@ def process_odds_df(df_odds, use_metric: str = "most_common"):
         df_odds["game_date_adjusted"]
     ).dt.strftime("%Y-%m-%d")
 
-    df_odds["team_home"] = df_odds["team_home"].map(TEAM_NAME_EQUIVALENT_DICT)
-    df_odds["team_away"] = df_odds["team_away"].map(TEAM_NAME_EQUIVALENT_DICT)
+    df_odds["team_home"] = df_odds["team_home"].map(
+        lambda x: TEAM_NAME_EQUIVALENT_DICT.get(x, x)
+    )
+    df_odds["team_away"] = df_odds["team_away"].map(
+        lambda x: TEAM_NAME_EQUIVALENT_DICT.get(x, x)
+    )
 
     # Determine which columns to use based on use_metric parameter
-    prefix = use_metric if use_metric in ["average", "most_common"] else "average"
+    prefix = use_metric if use_metric in ["average", "most_common"] else "most_common"
 
     # Step 2: Rename df_new columns to match
     df_odds_renamed = df_odds.rename(

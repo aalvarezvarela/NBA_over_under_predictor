@@ -217,3 +217,5 @@ src/.streamlit/secrets.toml
 data/ref_data
 data/injury_data
 data/training_data.csv
+*.csv#
+data/train_data

@@ -238,3 +238,77 @@ NBA_SPORT_ID = 4
 TEAM_CONVERSION_DICT = TEAM_ID_MAP  # Legacy name
 TEAM_NAME_EQUIVALENT_DICT = TEAM_NAME_STANDARDIZATION  # Legacy name
 SEASON_TYPE_MAPPING = SEASON_TYPE_MAP  # Legacy name
+
+
+
+CITY_TO_LATLON = {
+    # NBA / US & Canada (team "cities" as in your dataframe)
+    "Atlanta": (33.7490, -84.3880),
+    "Boston": (42.3601, -71.0589),
+    "Brooklyn": (40.6782, -73.9442),
+    "Charlotte": (35.2271, -80.8431),
+    "Chicago": (41.8781, -87.6298),
+    "Cleveland": (41.4993, -81.6944),
+    "Dallas": (32.7767, -96.7970),
+    "Denver": (39.7392, -104.9903),
+    "Detroit": (42.3314, -83.0458),
+    "Golden State": (37.7680, -122.3877),  # San Francisco area
+    "Houston": (29.7604, -95.3698),
+    "Indiana": (39.7684, -86.1581),        # Indianapolis
+    "LA": (34.0522, -118.2437),
+    "Los Angeles": (34.0522, -118.2437),
+    "Memphis": (35.1495, -90.0490),
+    "Miami": (25.7617, -80.1918),
+    "Milwaukee": (43.0389, -87.9065),
+    "Minnesota": (44.9778, -93.2650),      # Minneapolis
+    "New Orleans": (29.9511, -90.0715),
+    "New York": (40.7128, -74.0060),
+    "Oklahoma City": (35.4676, -97.5164),
+    "Orlando": (28.5383, -81.3792),
+    "Philadelphia": (39.9526, -75.1652),
+    "Phoenix": (33.4484, -112.0740),
+    "Portland": (45.5152, -122.6784),
+    "Sacramento": (38.5816, -121.4944),
+    "San Antonio": (29.4241, -98.4936),
+    "Toronto": (43.6532, -79.3832),
+    "Utah": (40.7608, -111.8910),          # Salt Lake City
+    "Washington": (38.9072, -77.0369),
+    "Seattle": (47.6062, -122.3321),
+    "New Jersey": (40.7357, -74.1724),      # Newark approximation
+
+    "New Orleans/Oklahoma City": (35.4676, -97.5164),
+
+    # International cities (preseason/exhibitions/etc.)
+    "Adelaide": (-34.9285, 138.6007),
+    "Athens": (37.9838, 23.7275),
+    "Barcelona": (41.3851, 2.1734),
+    "Beijing": (39.9042, 116.4074),
+    "Berlin": (52.5200, 13.4050),
+    "Buenos Aires": (-34.6037, -58.3816),
+    "Brisbane": (-27.4698, 153.0251),
+    "Cairns": (-16.9186, 145.7781),
+    "Guangzhou": (23.1290, 113.2533),       # :contentReference[oaicite:0]{index=0}
+    "Haifa": (32.7940, 34.9896),
+    "Istanbul": (41.0082, 28.9784),
+    "Madrid": (40.4168, -3.7038),
+    "Melbourne": (-37.8136, 144.9631),
+    "Milano": (45.4642, 9.1900),
+    "Moscow": (55.7558, 37.6173),
+    "Perth": (-31.9523, 115.8613),
+    "Shanghai": (31.2304, 121.4737),
+    "Sydney": (-33.8688, 151.2093),
+    "Tel Aviv": (32.0853, 34.7818),
+    "Vitoria": (42.8500, -2.6833),          # Vitoria-Gasteiz :contentReference[oaicite:1]{index=1}
+    "Zalgiris Kaunas": (54.8985, 23.9036),  # Kaunas :contentReference[oaicite:2]{index=2}
+    "Beijing": (39.9042, 116.4074),
+
+    # Team/club labels -> map to their home cities
+    "Panathinaikos": (37.9838, 23.7275),    # Athens
+    "Flamengo": (-22.9083, -43.1964),       # Rio de Janeiro :contentReference[oaicite:3]{index=3}
+    "SESI/Franca": (-20.5393, -47.4013),    # Franca (SP), Brazil :contentReference[oaicite:4]{index=4}
+    "Ratiopharm": (48.4000, 9.9833),        # Ulm :contentReference[oaicite:5]{index=5}
+
+    # Ra'anana (Israel) as listed with punctuation variant too
+    "Ra'anana": (32.1844, 34.8708),         # :contentReference[oaicite:6]{index=6}
+    "Ra’anana": (32.1844, 34.8708),         # common apostrophe variant
+}
