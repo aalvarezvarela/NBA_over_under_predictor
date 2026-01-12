@@ -217,9 +217,11 @@ def check_password():
             submitted = st.form_submit_button("Enter")
 
             if submitted:
-                # Mirror into the expected session key and validate
                 st.session_state["password"] = pwd
                 password_entered()
+
+                if st.session_state.get("password_correct"):
+                    st.rerun()
 
         if (
             "password_correct" in st.session_state
