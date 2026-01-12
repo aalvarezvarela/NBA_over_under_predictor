@@ -320,6 +320,6 @@ def add_referee_features_to_training_data(seasons, df_train):
         # Merge with df_train based on GAME_ID
         df_train = df_train.merge(df_refs_features, on="GAME_ID", how="left")
         
-        print(f"\nReferee features successfully merged into training data!")
+        print("\nReferee features successfully merged into training data!")
         print(f"Training data shape after merge: {df_train.shape}")
     return df_train

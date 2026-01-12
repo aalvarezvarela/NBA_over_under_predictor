@@ -329,8 +329,8 @@ def attach_top3_stats(df_team, df_players, df_injuries, stat_cols=["PTS"]):
 
         for stat_col in stat_cols:
             # Top-n for each
-            n_players_noninj = 6
-            n_players_inj = 3
+            n_players_noninj = 8
+            n_players_inj = 6
 
             topn_non_inj = get_top_n_averages_with_names(
                 df_non_inj,
@@ -1000,11 +1000,11 @@ def create_df_to_train(
 
 
 if __name__ == "__main__":
-    # Example usage
-
+    output_path = "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/train_data"
     # Create training data up to a specific date
-    date_to_train = "2025-01-10"
+    date_to_train = "2026-01-10"
     date_from = "2006-11-01"  # Optional: specify start date
+    # date_from = "2023-11-01"  # Optional: specify start date
 
     df_train = create_df_to_train(
         date_to_train_until=date_to_train, date_from=date_from
@@ -1016,6 +1016,10 @@ if __name__ == "__main__":
     else:
         seasons = get_all_seasons_from_2006(date_to_train)
 
+    output_name_before_referee = f"{output_path}/training_data_before_adding_referee_{pd.to_datetime(date_to_train).strftime('%Y%m%d')}.csv"
+    df_train.to_csv(output_name_before_referee, index=False)
+    print(f"Training data before adding referee features saved to {output_name_before_referee}")
+    
     df_train = add_referee_features_to_training_data(seasons, df_train)
 
     # Compute travel features (distance traveled in last 7 and 14 days)
@@ -1026,7 +1030,7 @@ if __name__ == "__main__":
         pd.to_datetime(date_from) if date_from else pd.to_datetime("2006-01-01")
     )
     date_to_train_dt = pd.to_datetime(date_to_train)
-    output_path = "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/train_data"
+    
     output_name = f"{output_path}/training_data_{date_from_dt.strftime('%Y%m%d')}_to_{date_to_train_dt.strftime('%Y%m%d')}.csv"
     df_train.to_csv(output_name, index=False)
     print(f"Training data saved to {output_name}")
