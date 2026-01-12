@@ -938,7 +938,6 @@ def merge_home_away_and_prepare_features(
         [first_col] + [col for col in df_to_predict.columns if col != first_col]
     ]
 
-
     return df_to_predict
 
 
@@ -972,10 +971,32 @@ def create_df_to_predict(
         format="%Y-%m-%d %I:%M %p ET",
         errors="coerce",
     )
+
+        # Filter out games with invalid GAME_TIME
+    invalid_game_time = games[games["GAME_TIME"].isna()]
+    if not invalid_game_time.empty:
+        print("\n" + "==" * 30)
+        print("WARNING: Dropping games with invalid GAME_TIME:")
+        print("==" * 30)
+        print(
+            invalid_game_time[
+                [
+                    "GAME_ID",
+                    "GAME_DATE_EST",
+                    "GAME_STATUS_TEXT",
+                    "HOME_TEAM_ID",
+                    "VISITOR_TEAM_ID",
+                ]
+            ]
+        )
+        print("==" * 30 + "\n")
+        games = games[games["GAME_TIME"].notna()].copy()
+
     # Make it timezone-aware (Eastern Time)
     games["GAME_TIME"] = games["GAME_TIME"].dt.tz_localize(
         "US/Eastern", ambiguous="infer", nonexistent="shift_forward"
     )
+
 
     seasons = get_last_two_nba_seasons(date_to_predict)
 

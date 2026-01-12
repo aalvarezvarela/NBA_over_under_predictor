@@ -481,8 +481,16 @@ def show_past_games_results():
     # Get the actual UTC timestamp for filtering
     selected_pred_dt = prediction_time_mapping[selected_prediction_time]
 
-    # Filter to keep only predictions from the selected prediction time
-    df_games = df_games[df_games["prediction_datetime"] == selected_pred_dt].copy()
+    # Filter to keep predictions at or before the selected time
+    # For each game, use the selected time if available, otherwise use the closest earlier prediction
+    df_games = df_games[df_games["prediction_datetime"] <= selected_pred_dt].copy()
+
+    # For each game, keep only the most recent prediction (at or before selected time)
+    df_games = (
+        df_games.sort_values("prediction_datetime", ascending=False)
+        .groupby("game_id", as_index=False)
+        .first()
+    )
 
     # Add betting metrics to get correctness
     df_with_metrics = add_ou_betting_metrics(df_games)
