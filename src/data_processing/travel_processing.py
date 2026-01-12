@@ -191,7 +191,7 @@ def add_rolling_distances(team_log):
     return team_log.reset_index()
 
 
-def merge_travel_features(df, team_log):
+def merge_travel_features(df, team_log, log_scale=True):
     """
     Merge travel features back to original game-level dataframe.
 
@@ -256,11 +256,14 @@ def merge_travel_features(df, team_log):
     for col in travel_columns:
         if col in df.columns:
             df[col] = df[col].fillna(0)
+            # Apply logarithmic transformation (log1p handles zeros gracefully)
+            if log_scale:
+                df[col] = np.log1p(df[col])
 
     return df
 
 
-def compute_travel_features(df):
+def compute_travel_features(df, log_scale=True):
     """
     Main function to compute all travel-related features for training data.
 
@@ -298,7 +301,7 @@ def compute_travel_features(df):
     team_log = add_rolling_distances(team_log)
 
     # Step 4: Merge back to original dataframe
-    df = merge_travel_features(df, team_log)
+    df = merge_travel_features(df, team_log, log_scale=True)
 
     print("Travel features computed successfully.")
 

@@ -1003,7 +1003,7 @@ if __name__ == "__main__":
     output_path = "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/train_data"
     # Create training data up to a specific date
     date_to_train = "2026-01-10"
-    date_from = "2006-11-01"  # Optional: specify start date
+    date_from = "2025-11-01"  # Optional: specify start date
     # date_from = "2023-11-01"  # Optional: specify start date
 
     df_train = create_df_to_train(
@@ -1023,7 +1023,7 @@ if __name__ == "__main__":
     df_train = add_referee_features_to_training_data(seasons, df_train)
 
     # Compute travel features (distance traveled in last 7 and 14 days)
-    df_train = compute_travel_features(df_train)
+    df_train = compute_travel_features(df_train, log_scale=True)
 
     # Save to file with seasons in filename
     date_from_dt = (
