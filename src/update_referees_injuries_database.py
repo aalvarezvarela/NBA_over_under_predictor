@@ -12,10 +12,6 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]  # if script is inside src/
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
 from fetch_data.manage_refs_injury_database.update_refs_injuries_database import (
     update_refs_injuries_database,
 )

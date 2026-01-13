@@ -1,4 +1,4 @@
-name: Update PostgreSQL DB Games & Players (Local Runner)
+name: Update PostgreSQL DB - Games, Players, Refs & Injuries (Local Runner)
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  run:
+  update-database:
     # Target your local machine
     runs-on: self-hosted
 
@@ -52,3 +52,8 @@ jobs:
         run: |
           cd src
           python update_games_players_database.py --start 2025 --end 2025 --update-odds
+
+      - name: Update referees and injuries
+        run: |
+          cd src
+          python update_referees_injuries_database.py --start 2025 --end 2025
