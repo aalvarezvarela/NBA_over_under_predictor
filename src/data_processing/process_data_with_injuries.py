@@ -354,7 +354,7 @@ def compute_home_points_conceded_avg(df):
     return df
 
 
-def compute_differences_in_points_conceeded_anotated(df):
+def compute_differences_in_points_conceeded_annotated(df):
     """
     Computes the average points conceded by the home team when playing at home,
     in all games prior to the current one, within the same season.
@@ -812,7 +812,7 @@ def merge_home_away_and_prepare_features(
         - df_merged["AVG_POINTS_CONCEDED_AWAY_BEFORE_GAME"]
     )
 
-    df_merged = compute_differences_in_points_conceeded_anotated(df_merged)
+    df_merged = compute_differences_in_points_conceeded_annotated(df_merged)
     df_merged["TEAMS_DIFFERENCE_OVER_UNDER_LINE_BEFORE"] = (
         df_merged["TOTAL_OVER_UNDER_LINE_SEASON_BEFORE_AVG_TEAM_HOME"]
         - df_merged["TOTAL_OVER_UNDER_LINE_SEASON_BEFORE_AVG_TEAM_AWAY"]

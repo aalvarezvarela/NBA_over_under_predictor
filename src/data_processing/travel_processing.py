@@ -150,9 +150,12 @@ def add_travel_distance(team_log, city_coords=None):
 
 def add_rolling_distances(team_log):
     """
-    Add rolling 7-day and 14-day travel distance sums.
+    Add rolling travel distance sums for multiple time windows.
 
     For each game, computes:
+    - Total kilometers traveled in last 1 day
+    - Total kilometers traveled in last 2 days
+    - Total kilometers traveled in last 5 days
     - Total kilometers traveled in last 7 days
     - Total kilometers traveled in last 14 days
 
@@ -160,7 +163,7 @@ def add_rolling_distances(team_log):
         team_log (pd.DataFrame): Team log with GAME_DATE, TEAM_ID, and TRAVEL_KM
 
     Returns:
-        pd.DataFrame: Team log with KM_LAST_7_DAYS and KM_LAST_14_DAYS columns
+        pd.DataFrame: Team log with KM_LAST_*_DAYS columns for windows: 1, 2, 5, 7, 14
     """
     team_log = team_log.copy()
 
@@ -168,25 +171,19 @@ def add_rolling_distances(team_log):
     team_log = team_log.sort_values(["TEAM_ID", "GAME_DATE"])
     team_log = team_log.set_index("GAME_DATE")
 
-    # Rolling sum over 7-day window
-    team_log["KM_LAST_7_DAYS"] = (
-        team_log.groupby("TEAM_ID")["TRAVEL_KM"]
-        .rolling("7D", closed="left")
-        .sum()
-        .reset_index(level=0, drop=True)
-    )
+    # Define rolling windows
+    windows = [1, 2, 5, 7, 14]
 
-    # Rolling sum over 14-day window
-    team_log["KM_LAST_14_DAYS"] = (
-        team_log.groupby("TEAM_ID")["TRAVEL_KM"]
-        .rolling("14D", closed="left")
-        .sum()
-        .reset_index(level=0, drop=True)
-    )
-
-    # Fill NaN values (first games with no history) with 0
-    team_log["KM_LAST_7_DAYS"] = team_log["KM_LAST_7_DAYS"].fillna(0)
-    team_log["KM_LAST_14_DAYS"] = team_log["KM_LAST_14_DAYS"].fillna(0)
+    for window in windows:
+        col_name = f"KM_LAST_{window}_DAYS"
+        team_log[col_name] = (
+            team_log.groupby("TEAM_ID")["TRAVEL_KM"]
+            .rolling(f"{window}D", closed="left")
+            .sum()
+            .reset_index(level=0, drop=True)
+        )
+        # Fill NaN values (first games with no history) with 0
+        team_log[col_name] = team_log[col_name].fillna(0)
 
     return team_log.reset_index()
 
@@ -195,50 +192,39 @@ def merge_travel_features(df, team_log, log_scale=True):
     """
     Merge travel features back to original game-level dataframe.
 
-    Creates four columns:
-    - TOTAL_KM_IN_LAST_WEEK_HOME_TEAM
-    - TOTAL_KM_IN_LAST_2_WEEKS_HOME_TEAM
-    - TOTAL_KM_IN_LAST_WEEK_AWAY_TEAM
-    - TOTAL_KM_IN_LAST_2_WEEKS_AWAY_TEAM
+    Creates columns for multiple rolling windows (1, 2, 5, 7, 14 days) for both home and away teams.
 
     Args:
         df (pd.DataFrame): Original game-level dataframe
         team_log (pd.DataFrame): Team log with travel features
+        log_scale (bool): Whether to apply log transformation to travel features
 
     Returns:
         pd.DataFrame: Game-level dataframe with travel features added
     """
+    # Define rolling windows
+    windows = [1, 2, 5, 7, 14]
+
+    # Build column lists dynamically
+    km_cols = ["GAME_ID", "TEAM_ID"] + [f"KM_LAST_{w}_DAYS" for w in windows]
+
     # Filter team_log for home teams only and select relevant columns
-    home_feats = team_log[team_log["IS_HOME"] == True][
-        [
-            "GAME_ID",
-            "TEAM_ID",
-            "KM_LAST_7_DAYS",
-            "KM_LAST_14_DAYS",
-        ]
-    ].rename(
-        columns={
-            "TEAM_ID": "TEAM_ID_TEAM_HOME",
-            "KM_LAST_7_DAYS": "TOTAL_KM_IN_LAST_WEEK_HOME_TEAM",
-            "KM_LAST_14_DAYS": "TOTAL_KM_IN_LAST_2_WEEKS_HOME_TEAM",
-        }
-    )
+    home_feats = team_log[team_log["IS_HOME"] == True][km_cols].copy()
+
+    # Rename columns for home team
+    rename_dict_home = {"TEAM_ID": "TEAM_ID_TEAM_HOME"}
+    for w in windows:
+        rename_dict_home[f"KM_LAST_{w}_DAYS"] = f"TOTAL_KM_IN_LAST_{w}_DAYS_HOME_TEAM"
+    home_feats.rename(columns=rename_dict_home, inplace=True)
 
     # Filter team_log for away teams only and select relevant columns
-    away_feats = team_log[team_log["IS_HOME"] == False][
-        [
-            "GAME_ID",
-            "TEAM_ID",
-            "KM_LAST_7_DAYS",
-            "KM_LAST_14_DAYS",
-        ]
-    ].rename(
-        columns={
-            "TEAM_ID": "TEAM_ID_TEAM_AWAY",
-            "KM_LAST_7_DAYS": "TOTAL_KM_IN_LAST_WEEK_AWAY_TEAM",
-            "KM_LAST_14_DAYS": "TOTAL_KM_IN_LAST_2_WEEKS_AWAY_TEAM",
-        }
-    )
+    away_feats = team_log[team_log["IS_HOME"] == False][km_cols].copy()
+
+    # Rename columns for away team
+    rename_dict_away = {"TEAM_ID": "TEAM_ID_TEAM_AWAY"}
+    for w in windows:
+        rename_dict_away[f"KM_LAST_{w}_DAYS"] = f"TOTAL_KM_IN_LAST_{w}_DAYS_AWAY_TEAM"
+    away_feats.rename(columns=rename_dict_away, inplace=True)
 
     # Merge home features
     df = df.merge(home_feats, on=["GAME_ID", "TEAM_ID_TEAM_HOME"], how="left")
@@ -246,13 +232,13 @@ def merge_travel_features(df, team_log, log_scale=True):
     # Merge away features
     df = df.merge(away_feats, on=["GAME_ID", "TEAM_ID_TEAM_AWAY"], how="left")
 
-    # Fill any remaining NaN values with 0
-    travel_columns = [
-        "TOTAL_KM_IN_LAST_WEEK_HOME_TEAM",
-        "TOTAL_KM_IN_LAST_2_WEEKS_HOME_TEAM",
-        "TOTAL_KM_IN_LAST_WEEK_AWAY_TEAM",
-        "TOTAL_KM_IN_LAST_2_WEEKS_AWAY_TEAM",
-    ]
+    # Build list of all travel columns
+    travel_columns = []
+    for w in windows:
+        travel_columns.append(f"TOTAL_KM_IN_LAST_{w}_DAYS_HOME_TEAM")
+        travel_columns.append(f"TOTAL_KM_IN_LAST_{w}_DAYS_AWAY_TEAM")
+
+    # Fill any remaining NaN values with 0 and optionally apply log transformation
     for col in travel_columns:
         if col in df.columns:
             df[col] = df[col].fillna(0)
@@ -270,8 +256,9 @@ def compute_travel_features(df, log_scale=True):
     This is the main entry point that orchestrates:
     1. Building team-centric game log
     2. Computing travel distances between consecutive games
-    3. Calculating rolling 7-day and 14-day sums
+    3. Calculating rolling sums for 1, 2, 5, 7, and 14 day windows
     4. Merging features back to original dataframe
+    5. Optionally applying log transformation
 
     Args:
         df (pd.DataFrame): Game-level dataframe with required columns:
@@ -281,13 +268,12 @@ def compute_travel_features(df, log_scale=True):
             - TEAM_CITY_TEAM_HOME
             - TEAM_ID_TEAM_AWAY
             - TEAM_CITY_TEAM_AWAY
+        log_scale (bool): Whether to apply log1p transformation to travel distances
 
     Returns:
-        pd.DataFrame: Original dataframe with added travel features:
-            - TOTAL_KM_IN_LAST_WEEK_HOME_TEAM
-            - TOTAL_KM_IN_LAST_2_WEEKS_HOME_TEAM
-            - TOTAL_KM_IN_LAST_WEEK_AWAY_TEAM
-            - TOTAL_KM_IN_LAST_2_WEEKS_AWAY_TEAM
+        pd.DataFrame: Original dataframe with added travel features for both home and away teams:
+            - TOTAL_KM_IN_LAST_{1,2,5,7,14}_DAYS_HOME_TEAM
+            - TOTAL_KM_IN_LAST_{1,2,5,7,14}_DAYS_AWAY_TEAM
     """
     print("Computing travel features...")
 
@@ -301,7 +287,7 @@ def compute_travel_features(df, log_scale=True):
     team_log = add_rolling_distances(team_log)
 
     # Step 4: Merge back to original dataframe
-    df = merge_travel_features(df, team_log, log_scale=True)
+    df = merge_travel_features(df, team_log, log_scale=log_scale)
 
     print("Travel features computed successfully.")
 

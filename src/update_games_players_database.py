@@ -103,7 +103,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--start",
         type=int,
-        default=2023,
+        default=2025,
         help="First season start year (e.g. 2023 for 2023-24)",
     )
     parser.add_argument(

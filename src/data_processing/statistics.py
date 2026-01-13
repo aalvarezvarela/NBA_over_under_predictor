@@ -183,7 +183,7 @@ def compute_rolling_weighted_stats(df, param="PTS"):
     # ----------------------------------------------------------------
     def weighted_moving_average(series):
         if len(series) < len(weights):  # If fewer than 10 games, adjust weights
-            temp_weights = weights[-len(series) :]  # Take last N weights
+            temp_weights = weights[:len(series)]
             return (series * temp_weights).sum() / temp_weights.sum()
         return (series * weights).sum() / weight_sum  # Normal WMA
 

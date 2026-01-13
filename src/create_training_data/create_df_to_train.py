@@ -11,13 +11,17 @@ import warnings
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 current_dir = Path(__file__).parent.parent
 sys.path.append(str(current_dir))
+from data_processing.differences_team_home_away import (
+    add_high_value_features_for_team_points,
+)
 from data_processing.process_data_with_injuries import (
     add_last_season_playoff_games,
-    compute_differences_in_points_conceeded_anotated,
+    compute_differences_in_points_conceeded_annotated,
     compute_home_points_conceded_avg,
     compute_trend_slope,
     get_last_5_matchup_excluding_current,
@@ -644,7 +648,7 @@ def merge_home_away_and_prepare_training_features(df):
         - df_merged["AVG_POINTS_CONCEDED_AWAY_BEFORE_GAME"]
     )
 
-    df_merged = compute_differences_in_points_conceeded_anotated(df_merged)
+    df_merged = compute_differences_in_points_conceeded_annotated(df_merged)
     df_merged["TEAMS_DIFFERENCE_OVER_UNDER_LINE_BEFORE"] = (
         df_merged["TOTAL_OVER_UNDER_LINE_SEASON_BEFORE_AVG_TEAM_HOME"]
         - df_merged["TOTAL_OVER_UNDER_LINE_SEASON_BEFORE_AVG_TEAM_AWAY"]
@@ -951,6 +955,8 @@ def create_df_to_train(
     df, df_players = process_team_and_player_statistics_for_training(
         df, df_players, df_odds
     )
+    # Change matches with 0 in TOTAL_OVER_UNDER_LINE to NaN
+    df.loc[df["TOTAL_OVER_UNDER_LINE"] == 0, "TOTAL_OVER_UNDER_LINE"] = np.nan
 
     # Now filter df_players by date range (after GAME_DATE has been added via merge)
     if date_from is not None:
@@ -1000,11 +1006,13 @@ def create_df_to_train(
 
 
 if __name__ == "__main__":
-    output_path = "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/train_data"
+    output_path = (
+        "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/train_data"
+    )
     # Create training data up to a specific date
     date_to_train = "2026-01-10"
-    date_from = "2025-11-01"  # Optional: specify start date
-    # date_from = "2023-11-01"  # Optional: specify start date
+    # date_from = "2025-11-01"  # Optional: specify start date
+    date_from = "2005-12-01"  # Optional: specify start date
 
     df_train = create_df_to_train(
         date_to_train_until=date_to_train, date_from=date_from
@@ -1018,19 +1026,23 @@ if __name__ == "__main__":
 
     output_name_before_referee = f"{output_path}/training_data_before_adding_referee_{pd.to_datetime(date_to_train).strftime('%Y%m%d')}.csv"
     df_train.to_csv(output_name_before_referee, index=False)
-    print(f"Training data before adding referee features saved to {output_name_before_referee}")
-    
+    print(
+        f"Training data before adding referee features saved to {output_name_before_referee}"
+    )
+
     df_train = add_referee_features_to_training_data(seasons, df_train)
 
     # Compute travel features (distance traveled in last 7 and 14 days)
     df_train = compute_travel_features(df_train, log_scale=True)
+
+    df_train = add_high_value_features_for_team_points(df_train)
 
     # Save to file with seasons in filename
     date_from_dt = (
         pd.to_datetime(date_from) if date_from else pd.to_datetime("2006-01-01")
     )
     date_to_train_dt = pd.to_datetime(date_to_train)
-    
+
     output_name = f"{output_path}/training_data_{date_from_dt.strftime('%Y%m%d')}_to_{date_to_train_dt.strftime('%Y%m%d')}.csv"
     df_train.to_csv(output_name, index=False)
     print(f"Training data saved to {output_name}")
