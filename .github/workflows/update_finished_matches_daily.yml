@@ -4,8 +4,9 @@ on:
     workflow_dispatch:
     schedule:
         # Daily at 7am, 8am, and 10am UTC
-        - cron: "23 7 * * *"
-        - cron: "25 8 * * *"
+        - cron: "23 6 * * *"
+        - cron: "2 7 * * *"
+        - cron: "2 8 * * *"
         - cron: "27 11 * * *"
 
 permissions:
