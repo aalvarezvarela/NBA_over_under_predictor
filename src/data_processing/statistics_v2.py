@@ -143,7 +143,7 @@ def compute_season_std(df, param="PTS"):
     # Compute expanding standard deviation after shifting by 1 to exclude the current game.
     df[season_std_col] = df.groupby(["TEAM_ID", "SEASON_YEAR", "HOME"])[
         param
-    ].transform(lambda s: s.shift(1).expanding(min_periods=1).std())
+    ].transform(lambda s: s.shift(1).expanding(min_periods=1).std(ddof=0))
 
     # Optionally, sort the DataFrame back by GAME_DATE descending.
     df = df.sort_values(["GAME_DATE"], ascending=False).reset_index(drop=True)
@@ -392,12 +392,11 @@ def precompute_cumulative_avg_stat(df_players, stat_col="PTS"):
     )
 
     # 7) Compute cumulative average
-    df_players[f"{stat_col}_CUM_AVG"] = (
-        df_players[f"CUMSUM_{stat_col}"] / df_players["GAME_COUNT"]
+    df_players[f"{stat_col}_CUM_AVG"] = np.where(
+        df_players["GAME_COUNT"] > 0,
+        df_players[f"CUMSUM_{stat_col}"] / df_players["GAME_COUNT"],
+        0.0,
     )
-
-    # Replace averages with 0 where GAME_COUNT is 0 (player had no previous games)
-    df_players.loc[df_players["GAME_COUNT"] == 0, f"{stat_col}_CUM_AVG"] = 0
 
     # 8) (Optional) Drop helper columns
     df_players.drop(
@@ -437,7 +436,7 @@ def _get_players_for_team_in_season(
     if df_season.empty:
         raise ValueError(f"No players found for {season_id}. Skipping...")
     # Only games BEFORE this date
-    if date_to_filter:
+    if date_to_filter is not None:
         df_season = df_season[df_season["GAME_DATE"] < date_to_filter]
 
     # Only consider players who played for this team at least once
@@ -464,6 +463,9 @@ def _get_players_for_team_in_season(
         & (df_players["TEAM_ID"] == team_id)
         & (df_players["PLAYER_ID"].isin(final_player_ids))
     ].copy()
+    
+    if date_to_filter is not None:
+        df_result = df_result[df_result["GAME_DATE"] <= date_to_filter] 
 
     return df_result
 
@@ -590,7 +592,6 @@ def attach_top3_stats(
         else:
             print(f"Processing game {game_id} for team {team_id} on {game_date}...")
         
-        # If no players are found, try filtering by SEASON_YEAR
         df_active = _get_players_for_team_in_season(
             df_players=df_players,
             season_id=season_year,
@@ -599,10 +600,13 @@ def attach_top3_stats(
             filter_by_season_year=True,
         )
 
-
         if df_active.empty:
             print(f"No active players found for {team_id} on {game_date}. Skipping...")
             continue
+        
+        if not df_active.empty and (df_active["GAME_DATE"].max() > game_date):
+            raise AssertionError("Leakage risk: df_active contains rows after game_date")
+
 
         # Who is injured for this game/team?
         game_injured_map = injured_dict.get(game_id, {})
