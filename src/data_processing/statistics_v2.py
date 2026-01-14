@@ -150,9 +150,12 @@ def compute_season_std(df, param="PTS"):
 
     return df
 
+
 def compute_rolling_weighted_stats(df, param="PTS"):
     window = 10
-    weights_recent_high = np.array([20, 15, 10, 8, 6, 5, 4, 3, 2, 1])[::-1]  # newest highest
+    weights_recent_high = np.array([20, 15, 10, 8, 6, 5, 4, 3, 2, 1])[
+        ::-1
+    ]  # newest highest
     # Now: [1,2,3,4,5,6,8,10,15,20]
 
     last_n_wma_col = f"{param}_LAST_{window}_WMA_BEFORE"
@@ -167,17 +170,21 @@ def compute_rolling_weighted_stats(df, param="PTS"):
 
     df[last_n_wma_col] = (
         df.groupby("TEAM_ID")[param]
-          .apply(lambda s: s.shift(1).rolling(window, min_periods=1).apply(weighted_moving_average, raw=False))
-          .reset_index(level=0, drop=True)
+        .apply(
+            lambda s: s.shift(1)
+            .rolling(window, min_periods=1)
+            .apply(weighted_moving_average, raw=False)
+        )
+        .reset_index(level=0, drop=True)
     )
 
-    df[last_n_split_col] = (
-        df.groupby(["TEAM_ID", "HOME"])[param]
-          .transform(lambda s: s.shift(1).rolling(window, min_periods=1).apply(weighted_moving_average, raw=False))
+    df[last_n_split_col] = df.groupby(["TEAM_ID", "HOME"])[param].transform(
+        lambda s: s.shift(1)
+        .rolling(window, min_periods=1)
+        .apply(weighted_moving_average, raw=False)
     )
 
     return df.sort_values("GAME_DATE", ascending=False).reset_index(drop=True)
-
 
 
 def get_team_param_value(row, team_id, param):
@@ -463,9 +470,9 @@ def _get_players_for_team_in_season(
         & (df_players["TEAM_ID"] == team_id)
         & (df_players["PLAYER_ID"].isin(final_player_ids))
     ].copy()
-    
+
     if date_to_filter is not None:
-        df_result = df_result[df_result["GAME_DATE"] <= date_to_filter] 
+        df_result = df_result[df_result["GAME_DATE"] < date_to_filter]
 
     return df_result
 
@@ -585,13 +592,13 @@ def attach_top3_stats(
         team_id = row["TEAM_ID"]
         game_date = row["GAME_DATE"]
         season_year = row["SEASON_YEAR"]
-        
+
         if game_date_limit and game_date.strftime("%Y-%m-%d") != game_date_limit:
             continue
-        
+
         else:
             print(f"Processing game {game_id} for team {team_id} on {game_date}...")
-        
+
         df_active = _get_players_for_team_in_season(
             df_players=df_players,
             season_id=season_year,
@@ -603,10 +610,11 @@ def attach_top3_stats(
         if df_active.empty:
             print(f"No active players found for {team_id} on {game_date}. Skipping...")
             continue
-        
-        if not df_active.empty and (df_active["GAME_DATE"].max() > game_date):
-            raise AssertionError("Leakage risk: df_active contains rows after game_date")
 
+        if not df_active.empty and (df_active["GAME_DATE"].max() >= game_date):
+            raise AssertionError(
+                "Leakage risk: df_active contains rows on or after game_date"
+            )
 
         # Who is injured for this game/team?
         game_injured_map = injured_dict.get(game_id, {})
