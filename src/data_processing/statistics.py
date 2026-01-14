@@ -183,7 +183,7 @@ def compute_rolling_weighted_stats(df, param="PTS"):
     # ----------------------------------------------------------------
     def weighted_moving_average(series):
         if len(series) < len(weights):  # If fewer than 10 games, adjust weights
-            temp_weights = weights[:len(series)]
+            temp_weights = weights[-len(series) :]  # Take last N weights
             return (series * temp_weights).sum() / temp_weights.sum()
         return (series * weights).sum() / weight_sum  # Normal WMA
 
@@ -605,7 +605,7 @@ def attach_top3_stats(
 
     for stat_col in stat_cols:
         # 1) Precompute cumulative averages for the chosen stat
-        df_players[stat_col] = pd.to_numeric(df_players[stat_col], errors='coerce')
+        df_players[stat_col] = pd.to_numeric(df_players[stat_col], errors="coerce")
         df_players = precompute_cumulative_avg_stat(df_players, stat_col=stat_col)
 
     # 4) Iterate over each row in df_team
@@ -694,5 +694,4 @@ def attach_top3_stats(
             # Single assignment for all columns in row_update
             df_team.loc[idx, row_update.keys()] = row_update.values()
 
-    return df_team
     return df_team
