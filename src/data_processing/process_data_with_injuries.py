@@ -1000,10 +1000,6 @@ def create_df_to_predict(
 
     seasons = get_last_two_nba_seasons(date_to_predict)
 
-    # df_2, df_players_2 = load_all_nba_data(
-    #     data_path + "/" + "season_games_data", seasons=seasons
-    # )
-
     df, df_players = load_all_nba_data_from_db(seasons=seasons)
 
     df, df_players = process_team_and_player_statistics(df, df_players, games, df_odds)
