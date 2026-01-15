@@ -13,35 +13,46 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
-current_dir = Path(__file__).parent.parent
-sys.path.append(str(current_dir))
-from data_processing.differences_team_home_away import (
-    add_high_value_features_for_team_points,
+###HERE NEW
+print("new")
+from nba_ou.data_preparation.team.cleaning_teams import adjust_overtime, clean_team_data
+from nba_ou.data_preparation.team.filters import filter_valid_games
+from nba_ou.data_preparation.team.merge_teams_df_with_odds import (
+    merge_teams_df_with_odds,
 )
-from data_processing.process_data_with_injuries import (
+from nba_ou.data_preparation.team.records import (
+    add_last_season_playoff_games,
+    add_team_record_before_game,
+    compute_rest_days_before_match,
+)
+from nba_ou.data_preparation.team.rolling import compute_all_rolling_statistics
+from nba_ou.data_preparation.team.totals import compute_total_points_features
+
+#### HERE OLD
+print("old")
+
+
+from nba_ou.data_processing.dataframe_to_predict import (
     add_last_season_playoff_games,
     compute_differences_in_points_conceeded_annotated,
     compute_home_points_conceded_avg,
     compute_trend_slope,
     get_last_5_matchup_excluding_current,
 )
-from data_processing.process_referee_data import (
+from nba_ou.data_processing.differences_team_home_away import (
+    add_high_value_features_for_team_points,
+)
+from nba_ou.data_processing.process_referee_data import (
     add_referee_features_to_training_data,
 )
-from data_processing.statistics import (
-    classify_season_type,
-    compute_rolling_stats,
-    compute_rolling_weighted_stats,
-    compute_season_std,
-)
-from data_processing.travel_processing import compute_travel_features
-from fetch_data.manage_odds_data.update_odds_utils import (
+from nba_ou.data_processing.travel_processing import compute_travel_features
+from nba_ou.fetch_data.manage_odds_data.update_odds_utils import (
     load_odds_data,
     merge_teams_df_with_odds,
 )
-from postgre_DB import load_all_nba_data_from_db
-from tqdm import tqdm
+from nba_ou.postgre_DB import load_all_nba_data_from_db
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
@@ -397,142 +408,22 @@ def process_team_and_player_statistics_for_training(df, df_players, df_odds):
     Returns:
         tuple: (df, df_players) - Processed team and player DataFrames
     """
-    df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], format="%Y-%m-%d")
-    df.sort_values(by="GAME_DATE", ascending=False, inplace=True)
-    df.dropna(subset=["PTS"], inplace=True)
-
-    # Convert to string TEAM_ID
-    df["TEAM_ID"] = df["TEAM_ID"].astype(str)
-
-    # Handle overtime adjustments
-    df["IS_OVERTIME"] = df["MIN"].apply(lambda x: 1 if x >= 259 else 0)
-    mask_overtime = df["MIN"] >= 260
-
-    numeric_cols = df.select_dtypes(include=["number"]).columns
-    cols_to_adjust = [
-        col
-        for col in numeric_cols
-        if col
-        not in ["MIN", "PACE_PER40", "SEASON_ID", "TEAM_ID", "GAME_ID", "IS_OVERTIME"]
-    ]
-    int_cols = df[cols_to_adjust].select_dtypes(include=["int64"]).columns.tolist()
-
-    df[int_cols] = df[int_cols].astype(float)
-
-    df.loc[mask_overtime, cols_to_adjust] = (
-        df.loc[mask_overtime, cols_to_adjust]
-        .astype(float)
-        .apply(lambda x: x * (240 / df.loc[mask_overtime, "MIN"]), axis=0)
-    )
-    for col in cols_to_adjust:
-        if df[col].dtype == "float64" and col in int_cols:
-            df[col] = df[col].round().astype(int)
-
-    df[int_cols] = df[int_cols].round().astype(int)
-    print("Overtime adjustments completed.")
-
-    # Remove duplicates and clean dataset
-    df.drop_duplicates(subset=["GAME_ID", "TEAM_ID"], keep="first", inplace=True)
-    df.dropna(subset=["PTS"], inplace=True)
-    df = df[df["MIN"] != 0]
-    df = df[df["PTS"] > 10]
-
-    df.sort_values(by="GAME_DATE", ascending=False, inplace=True)
+    df = clean_team_data(df)
+    df = adjust_overtime(df)
 
     df = merge_teams_df_with_odds(df_odds=df_odds, df_team=df)
-    df["TOTAL_POINTS"] = df.groupby("GAME_ID")["PTS"].transform("sum")
-    df["DIFF_FROM_LINE"] = df["TOTAL_POINTS"] - df["TOTAL_OVER_UNDER_LINE"]
-    df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], format="%Y-%m-%d")
-
-    valid_games = df["GAME_ID"].value_counts()
-    valid_games = valid_games[valid_games == 2].index
-
-    df = df[df["GAME_ID"].isin(valid_games)]
-
-    df.loc[:, "SEASON_TYPE"] = df["GAME_ID"].apply(classify_season_type)
-    df.loc[:, "SEASON_YEAR"] = df["SEASON_ID"].astype(str).str[-4:].astype(int)
+    df = compute_total_points_features(df)
+    df = filter_valid_games(df)
 
     df = add_last_season_playoff_games(df)
 
-    df.sort_values(by="GAME_DATE", ascending=True, inplace=True)
+    df = add_team_record_before_game(df)
+    df = compute_rest_days_before_match(df)
 
-    group_cols = ["SEASON_TYPE", "SEASON_ID", "TEAM_ID"]
+    # Compute all rolling statistics
+    df = compute_all_rolling_statistics(df)
 
-    df["GAME_NUMBER"] = df.groupby(group_cols).cumcount() + 1
-
-    def compute_wins_losses(df, team_id, season_id, date):
-        filtered_df = df[
-            (df["TEAM_ID"] == team_id)
-            & (df["GAME_DATE"] < date)
-            & (df["SEASON_ID"] == season_id)
-        ]
-        wins = (filtered_df["WL"] == "W").sum()
-        losses = (filtered_df["WL"] == "L").sum()
-        return wins, losses
-
-    tqdm.pandas()
-    df["WINS_BEFORE_THIS_GAME"], df["LOSSES_BEFORE_THIS_GAME"] = zip(
-        *df.progress_apply(
-            lambda x: compute_wins_losses(
-                df, x["TEAM_ID"], x["SEASON_ID"], x["GAME_DATE"]
-            ),
-            axis=1,
-        )
-    )
-
-    df["TEAM_RECORD_BEFORE_GAME"] = df["WINS_BEFORE_THIS_GAME"] / (
-        df["WINS_BEFORE_THIS_GAME"] + df["LOSSES_BEFORE_THIS_GAME"]
-    )
-    df["TEAM_RECORD_BEFORE_GAME"].fillna(0, inplace=True)
-
-    # Compute rest days between matches
-    df = df.sort_values(["TEAM_ID", "GAME_DATE"])
-    df["REST_DAYS_BEFORE_MATCH"] = (
-        df.groupby("TEAM_ID")["GAME_DATE"].diff().dt.days.fillna(0).astype(int)
-    )
-    df.sort_values(by="GAME_DATE", ascending=False, inplace=True)
-
-    # Compute rolling statistics
-    cols_to_average = [
-        "PTS",
-        "OFF_RATING",
-        "DEF_RATING",
-        "NET_RATING",
-        "EFG_PCT",
-        "PACE_PER40",
-        "FG3A",
-        "FG3M",
-        "FGM",
-        "FGA",
-        "FG_PCT",
-        "FG3_PCT",
-        "FTA",
-        "FTM",
-        "EFG_PCT",
-        "TS_PCT",
-        "POSS",
-        "PIE",
-    ]
-
-    cols_to_average_odds = [
-        "TOTAL_OVER_UNDER_LINE",
-        "DIFF_FROM_LINE",
-        "TOTAL_POINTS",
-        "MONEYLINE",
-        "SPREAD",
-    ]
-
-    for col in tqdm(
-        cols_to_average + cols_to_average_odds, desc="Computing rolling stats"
-    ):
-        df = compute_rolling_stats(df, col, window=5, season_avg=True)
-        if col == "PTS" or col == "TOTAL_POINTS" or col == "TOTAL_OVER_UNDER_LINE":
-            df = compute_rolling_weighted_stats(df, col)
-
-    df = compute_season_std(df, param="PTS")
-    df = compute_season_std(df, param="TOTAL_POINTS")
-    df = compute_season_std(df, param="TOTAL_OVER_UNDER_LINE")
-    df = compute_season_std(df, param="DIFF_FROM_LINE")
+    # Here players processing
 
     df_players = df_players.merge(
         df[["GAME_ID", "GAME_DATE", "SEASON_ID"]],
@@ -1010,9 +901,9 @@ if __name__ == "__main__":
         "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/train_data"
     )
     # Create training data up to a specific date
-    date_to_train = "2026-01-10"
+    date_to_train = "2024-01-10"
     # date_from = "2025-11-01"  # Optional: specify start date
-    date_from = "2005-12-01"  # Optional: specify start date
+    date_from = "2022-12-01"  # Optional: specify start date
 
     df_train = create_df_to_train(
         date_to_train_until=date_to_train, date_from=date_from

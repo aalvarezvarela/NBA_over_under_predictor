@@ -312,6 +312,7 @@ def add_last_season_playoff_games(df):
         columns={"GAME_ID": "PLAYOFF_GAMES_LAST_SEASON"}, inplace=True
     )
     df = df.merge(playoff_counts, on="TEAM_ID", how="left").fillna(0)
+    
     return df
 
 

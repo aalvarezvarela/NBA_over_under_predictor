@@ -18,6 +18,7 @@ def get_predictions_schema_and_table() -> tuple[str, str]:
 
 
 def get_game_ids_with_null_total_scored_points() -> pd.DataFrame:
+    # TODO: Get also games which have total_scored_points < 140 
     schema, table = get_predictions_schema_and_table()
 
     conn = connect_nba_db()

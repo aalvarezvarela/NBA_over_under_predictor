@@ -3,7 +3,8 @@ name = "nba_over_under_predictor"
 version = "0.1.0"
 description = "NBA over/under prediction project."
 authors = ["Adrian Alvarez"]
-package-mode = false
+packages = [{ include = "nba_ou", from = "src" }]
+
 
 [tool.poetry.dependencies]
 python = "^3.11"
@@ -29,9 +30,8 @@ kiwisolver = "1.4.8"
 matplotlib = "3.10.0"
 matplotlib-inline = "0.1.7"
 mypy-extensions = "1.0.0"
-nba-api = "1.7.0"
+nba-api = "1.11.3"
 nest-asyncio = "1.6.0"
-numpy = "1.26.4"
 packaging = "24.2"
 pandas = "2.2.3"
 parso = "0.8.4"
