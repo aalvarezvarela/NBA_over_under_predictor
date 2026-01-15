@@ -1,5 +1,5 @@
 import pandas as pd
-from nba_ou.postgre_DB.config.db_config import (
+from nba_ou.postgre_db.config.db_config import (
     connect_nba_db,
     get_schema_name_injuries,
 )

@@ -15,7 +15,7 @@ from nba_api.stats.endpoints import LeagueGameFinder
 from psycopg import sql
 from tqdm import tqdm
 
-from nba_ou.postgre_DB.odds.load_update_odds_db import (
+from nba_ou.postgre_db.odds.load_update_odds_db import (
     get_existing_odds_from_db,
     update_odds_db,
 )
