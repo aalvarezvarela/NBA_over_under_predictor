@@ -124,14 +124,16 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
     new_cols_df = pd.DataFrame(None, index=df_team.index, columns=all_new_cols)
     df_team = pd.concat([df_team, new_cols_df], axis=1)
 
+
     # 3) Iterate over each row in df_team
-    for idx, row in tqdm(
-        df_team.iterrows(), total=df_team.shape[0], desc="Adding players data"
+    for row in tqdm(
+        df_team.itertuples(index=True), total=len(df_team), desc="Adding players data"
     ):
-        game_id = row["GAME_ID"]
-        team_id = row["TEAM_ID"]
-        season_id = row["SEASON_ID"]
-        game_date = row["GAME_DATE"]
+        idx = row.Index
+        game_id = row.GAME_ID
+        team_id = row.TEAM_ID
+        season_id = row.SEASON_ID
+        game_date = row.GAME_DATE
 
         # Identify active players
         df_active = _get_players_for_team_in_season(
@@ -196,6 +198,7 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
 
             # Single assignment for all columns in row_update
             df_team.loc[idx, row_update.keys()] = row_update.values()
+ 
 
     df_team["TOTAL_INJURED_PLAYER_PTS_BEFORE"] = (
         df_team[
@@ -209,4 +212,4 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
         .fillna(0)
     )
 
-    return df_team
+    return df_team, injured_dict

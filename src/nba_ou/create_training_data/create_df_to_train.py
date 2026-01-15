@@ -15,6 +15,9 @@ import pandas as pd
 from nba_ou.data_preparation.merge_home_away.merge_home_away import (
     merge_home_away_and_prepare_training_features,
 )
+from nba_ou.data_preparation.past_injuries.injury_effects import (
+    add_top3_absence_effect_features_for_columns,
+)
 from nba_ou.data_preparation.players.attach_player_features import (
     add_player_history_features,
     clear_player_statistics,
@@ -104,9 +107,9 @@ def process_player_statistics_for_training(
     stats = ["PTS", "PACE_PER40", "DEF_RATING", "OFF_RATING", "TS_PCT"]
 
     # Attach top player statistics including injury data
-    df = add_player_history_features(df_team, df_players, df_injuries, stats)
+    df, injured_dict = add_player_history_features(df_team, df_players, df_injuries, stats)
 
-    return df
+    return df, injured_dict
 
 
 def create_df_to_train(
@@ -166,11 +169,43 @@ def create_df_to_train(
     df_injuries = load_injury_data_from_db(seasons)
 
     # Add Players Statistics
-    df = process_player_statistics_for_training(
+    df, injured_dict = process_player_statistics_for_training(
         df_players, df, df_injuries, date_from, date_to_train_until
     )
 
     df_training = merge_home_away_and_prepare_training_features(df)
+
+    df_training = add_top3_absence_effect_features_for_columns(
+        df_training,
+        injured_dict,
+        home_player_cols=(
+            "TOP1_PLAYER_ID_PTS_BEFORE_TEAM_HOME",
+            "TOP2_PLAYER_ID_PTS_BEFORE_TEAM_HOME",
+            "TOP3_PLAYER_ID_PTS_BEFORE_TEAM_HOME",
+        ),
+        away_player_cols=(
+            "TOP1_PLAYER_ID_PTS_BEFORE_TEAM_AWAY",
+            "TOP2_PLAYER_ID_PTS_BEFORE_TEAM_AWAY",
+            "TOP3_PLAYER_ID_PTS_BEFORE_TEAM_AWAY",
+        ),
+        out_prefix="TOP3_ABSENCE_EFFECT",
+    )
+
+    df_training = add_top3_absence_effect_features_for_columns(
+        df_training,
+        injured_dict,
+        home_player_cols=(
+            "TOP1_INJURED_PLAYER_ID_PTS_BEFORE_TEAM_HOME",
+            "TOP2_INJURED_PLAYER_ID_PTS_BEFORE_TEAM_HOME",
+            "TOP3_INJURED_PLAYER_ID_PTS_BEFORE_TEAM_HOME",
+        ),
+        away_player_cols=(
+            "TOP1_INJURED_PLAYER_ID_PTS_BEFORE_TEAM_AWAY",
+            "TOP2_INJURED_PLAYER_ID_PTS_BEFORE_TEAM_AWAY",
+            "TOP3_INJURED_PLAYER_ID_PTS_BEFORE_TEAM_AWAY",
+        ),
+        out_prefix="TOP3_INJURED_ABSENCE_EFFECT",
+    )
 
     print()
     print("--" * 20)
@@ -196,17 +231,16 @@ if __name__ == "__main__":
         date_to_train_until=date_to_train, date_from=date_from
     )
 
-
     output_name_before_referee = f"{output_path}/training_data_before_adding_referee_{pd.to_datetime(date_to_train).strftime('%Y%m%d')}.csv"
     df_train.to_csv(output_name_before_referee, index=False)
     print(
         f"Training data before adding referee features saved to {output_name_before_referee}"
     )
-        # Load referee data from database
-    if date_from is not None:
-        seasons = get_seasons_between_dates(date_from, date_to_train)
-    else:
-        seasons = get_all_seasons_from_2006(date_to_train)
+    # Load referee data from database
+    # if date_from is not None:
+    #     seasons = get_seasons_between_dates(date_from, date_to_train)
+    # else:
+    #     seasons = get_all_seasons_from_2006(date_to_train)
 
     # df_train = add_referee_features_to_training_data(seasons, df_train)
 
@@ -216,11 +250,11 @@ if __name__ == "__main__":
     # df_train = add_high_value_features_for_team_points(df_train)
 
     # Save to file with seasons in filename
-    date_from_dt = (
-        pd.to_datetime(date_from) if date_from else pd.to_datetime("2006-01-01")
-    )
-    date_to_train_dt = pd.to_datetime(date_to_train)
+    # date_from_dt = (
+    #     pd.to_datetime(date_from) if date_from else pd.to_datetime("2006-01-01")
+    # )
+    # date_to_train_dt = pd.to_datetime(date_to_train)
 
-    output_name = f"{output_path}/training_data_{date_from_dt.strftime('%Y%m%d')}_to_{date_to_train_dt.strftime('%Y%m%d')}.csv"
-    df_train.to_csv(output_name, index=False)
-    print(f"Training data saved to {output_name}")
+    # output_name = f"{output_path}/training_data_{date_from_dt.strftime('%Y%m%d')}_to_{date_to_train_dt.strftime('%Y%m%d')}.csv"
+    # df_train.to_csv(output_name, index=False)
+    # print(f"Training data saved to {output_name}")
