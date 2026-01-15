@@ -3,7 +3,7 @@ from nba_api.stats.endpoints import LeagueGameFinder
 from psycopg import sql
 from utils.general_utils import get_nba_season_nullable
 
-from .db_config import connect_nba_db, get_schema_name_predictions
+from .config.db_config import connect_nba_db, get_schema_name_predictions
 
 
 def get_predictions_schema_and_table() -> tuple[str, str]:

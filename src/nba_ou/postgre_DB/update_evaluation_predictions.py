@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 from psycopg import sql
 
-from .db_config import connect_nba_db, get_schema_name_predictions
+from .config.db_config import connect_nba_db, get_schema_name_predictions
 
 
 def get_games_with_total_scored_points(

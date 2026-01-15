@@ -1,6 +1,6 @@
 import pandas as pd
 
-from nba_ou.data_preparation.statistics.statistics import classify_season_type
+from nba_ou.utils.seasons import classify_season_type
 
 
 def compute_total_points_features(df):

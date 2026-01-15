@@ -3,7 +3,7 @@ import pandas as pd
 import psycopg
 from psycopg import sql
 
-from .db_config import (
+from .config.db_config import (
     connect_nba_db,
     connect_postgres_db,
     get_db_credentials,

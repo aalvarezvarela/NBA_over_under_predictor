@@ -65,6 +65,7 @@ xgboost = "2.1.4"
 xlsxwriter = "3.2.2"
 pymupdf = "^1.26.6"
 beautifulsoup4 = "^4.14.2"
+psycopg = "^3.3.2"
 
 [tool.poetry.group.dev.dependencies]
 black = "^24.0.0"

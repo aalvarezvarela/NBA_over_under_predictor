@@ -326,42 +326,34 @@ def compute_home_points_conceded_avg(df):
     return df
 
 
-def compute_differences_in_points_conceeded_annotated(df):
-    """
-    Computes the average points conceded by the home team when playing at home,
-    in all games prior to the current one, within the same season.
+def compute_differences_in_points_conceeded_annotated(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
 
-    Args:
-        df (pd.DataFrame): Must contain columns:
-            - TEAM_ID_TEAM_HOME, SEASON_ID, GAME_DATE, DIFERENCE_POINTS_CONCEDED_VS_EXPECTED_BEFORE_HOME_GAME, DIFERENCE_POINTS_CONCEDED_VS_EXPECTED_BEFORE_AWAY_GAME
+    sort_home = ["TEAM_ID_TEAM_HOME", "SEASON_YEAR", "GAME_DATE"]
+    sort_away = ["TEAM_ID_TEAM_AWAY", "SEASON_YEAR", "GAME_DATE"]
+    if "GAME_ID" in out.columns:
+        sort_home.append("GAME_ID")
+        sort_away.append("GAME_ID")
 
-    Returns:
-        pd.DataFrame: The modified DataFrame with a new column.
-    """
+    home_col = "AVG_DIFFERENCE_CONCEDED_VS_ANNOTATED_BEFORE_GAME_TEAM_HOME"
+    away_col = "AVG_DIFFERENCE_CONCEDED_VS_ANNOTATED_BEFORE_GAME_TEAM_AWAY"
 
-    # Sort DataFrame so previous games come first
-    df = df.sort_values(["TEAM_ID_TEAM_HOME", "GAME_DATE"], ascending=True)
+    out.sort_values(sort_home, ascending=True, inplace=True)
+    out[home_col] = (
+        out.groupby(["TEAM_ID_TEAM_HOME", "SEASON_YEAR"])[
+            "DIFERENCE_POINTS_CONCEDED_VS_EXPECTED_BEFORE_HOME_GAME"
+        ].transform(lambda s: s.shift(1).expanding(min_periods=1).mean())
+    ).fillna(0)
 
-    # Define the new column name
-    col_name = "AVG_DIFFERENCE_CONCEDED_VS_ANNOTATED_BEFORE_GAME_TEAM_HOME"
+    out.sort_values(sort_away, ascending=True, inplace=True)
+    out[away_col] = (
+        out.groupby(["TEAM_ID_TEAM_AWAY", "SEASON_YEAR"])[
+            "DIFERENCE_POINTS_CONCEDED_VS_EXPECTED_BEFORE_AWAY_GAME"
+        ].transform(lambda s: s.shift(1).expanding(min_periods=1).mean())
+    ).fillna(0)
 
-    # Compute rolling average of points conceded at home (excluding current game)
-    df[col_name] = df.groupby(["TEAM_ID_TEAM_HOME", "SEASON_YEAR"])[
-        "DIFERENCE_POINTS_CONCEDED_VS_EXPECTED_BEFORE_HOME_GAME"
-    ].transform(lambda s: s.shift(1).expanding(min_periods=1).mean())
-    df[col_name] = df[col_name].fillna(0)
-    # Sort again for away calculations
-    df = df.sort_values(["TEAM_ID_TEAM_AWAY", "GAME_DATE"], ascending=True)
-
-    col_name = "AVG_DIFFERENCE_CONCEDED_VS_ANNOTATED_BEFORE_GAME_TEAM_AWAY"
-    # Compute rolling average of points conceded away by the away team
-    df[col_name] = df.groupby(["TEAM_ID_TEAM_AWAY", "SEASON_YEAR"])[
-        "DIFERENCE_POINTS_CONCEDED_VS_EXPECTED_BEFORE_AWAY_GAME"
-    ].transform(lambda s: s.shift(1).expanding(min_periods=1).mean())
-    df = df.sort_values("GAME_DATE", ascending=False)
-    df[col_name] = df[col_name].fillna(0)
-
-    return df
+    out.sort_values("GAME_DATE", ascending=False, inplace=True)
+    return out
 
 
 def compute_trend_slope(df, parameter="PTS", window=10):
@@ -675,7 +667,7 @@ def process_team_and_player_statistics(df, df_players, games, df_odds):
 
 
 def merge_home_away_and_prepare_features(
-    df, date_to_predict, filter_for_date_to_predict, games_not_updated
+    df, date_to_predict, filter_for_date_to_predict
 ):
     """
     Merge home and away team data and prepare final prediction features.
@@ -692,15 +684,13 @@ def merge_home_away_and_prepare_features(
         df (pd.DataFrame): Team statistics DataFrame with injury data attached
         date_to_predict (str | datetime): Date to filter predictions for
         filter_for_date_to_predict (bool): Whether to filter for specific date
-        games_not_updated (list): List of game IDs with missing injury reports
 
     Returns:
         pd.DataFrame: Final prediction-ready DataFrame
     """
     # Rename columns that start with 'TOP' by adding '_BEFORE' at the end
-    df.rename(
-        columns=lambda x: f"{x}_BEFORE" if x.startswith("TOP") else x, inplace=True
-    )
+    df.rename(columns=lambda x: f"{x}_BEFORE" if x.startswith("TOP") and not x.endswith("_BEFORE") else x, inplace=True)
+
 
     # Add '_BEFORE' suffix to specified AVG_INJURED_* columns
     avg_injured_cols = [
@@ -723,16 +713,6 @@ def merge_home_away_and_prepare_features(
     injured_player_cols = [col for col in df.columns if "INJURED_PLAYER" in col]
     df[injured_player_cols] = df[injured_player_cols].fillna(0)
 
-    # Append '_BEFORE' to renamed columns if starting with 'TOP' (already done)
-    # (Your original columns already include "_BEFORE", if required to add more explicitly, adjust as below)
-    df.rename(
-        columns={
-            col: f"{col}_BEFORE"
-            for col in df.columns
-            if col.startswith("TOP") and not col.endswith("_BEFORE")
-        },
-        inplace=True,
-    )
 
     # Merge home and away stats
     static_columns = [
@@ -801,7 +781,7 @@ def merge_home_away_and_prepare_features(
 
     # Finally, concatenate the new columns onto df_merged
     df_merged = pd.concat([df_merged, results_df], axis=1)
-    df_merged.sort_values(["TEAM_ID_TEAM_HOME", "GAME_DATE"], ascending=True)
+    df_merged.sort_values(["TEAM_ID_TEAM_HOME", "GAME_DATE"], ascending=True, inplace=True)
 
     # Compute trends using linear regression
     df_merged = compute_trend_slope(df_merged, parameter="PTS", window=5)
@@ -868,8 +848,8 @@ def merge_home_away_and_prepare_features(
     )
 
     df_to_predict["BACK_TO_BACK"] = (
-        df_to_predict["REST_DAYS_BEFORE_MATCH_TEAM_AWAY"] == 1
-    ) & (df_to_predict["REST_DAYS_BEFORE_MATCH_TEAM_HOME"] == 1)
+        df_to_predict["REST_DAYS_BEFORE_MATCH_TEAM_AWAY"] <= 1
+    ) & (df_to_predict["REST_DAYS_BEFORE_MATCH_TEAM_HOME"] <= 1)
 
     df_to_predict["DIFERENCE_HOME_OFF_AWAY_DEF_BEFORE_MATCH"] = (
         df_to_predict["OFF_RATING_LAST_HOME_AWAY_5_MATCHES_BEFORE_TEAM_HOME"]

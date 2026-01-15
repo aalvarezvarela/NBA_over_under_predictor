@@ -11,8 +11,8 @@ from pathlib import Path
 
 # Locate the config.ini file (assumes it's in the project root)
 PROJECT_ROOT = Path(__file__).parent.parent.parent
-CONFIG_FILE = PROJECT_ROOT / "config.ini"
-SECRETS_FILE = PROJECT_ROOT / "config.secrets.ini"
+CONFIG_FILE = PROJECT_ROOT / "nba_ou/config.ini"
+SECRETS_FILE = PROJECT_ROOT / "nba_ou/config.secrets.ini"
 
 
 class Settings:
