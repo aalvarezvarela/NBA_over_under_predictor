@@ -93,12 +93,20 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
         # 2) Dynamically name new columns based on `stat_col`
         new_cols = [
             *[
+                f"TOP{i}_PLAYER_ID_{stat_col}"
+                for i in range(1, N_TOP_PLAYERS_NON_INJURED + 1)
+            ],
+            *[
                 f"TOP{i}_PLAYER_NAME_{stat_col}"
                 for i in range(1, N_TOP_PLAYERS_NON_INJURED + 1)
             ],
             *[
                 f"TOP{i}_PLAYER_{stat_col}"
                 for i in range(1, N_TOP_PLAYERS_NON_INJURED + 1)
+            ],
+            *[
+                f"TOP{i}_INJURED_PLAYER_ID_{stat_col}"
+                for i in range(1, N_TOP_PLAYERS_INJURED + 1)
             ],
             *[
                 f"TOP{i}_INJURED_PLAYER_NAME_{stat_col}"
@@ -163,23 +171,25 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
                 injured=True,
             )
 
-            # Pad to required length with None for names, 0 for stats
+            # Pad to required length with None for IDs/names, 0 for stats
             while len(topn_non_inj) < n_players_noninj:
-                topn_non_inj.append((None, 0))
+                topn_non_inj.append((None, None, 0))
             while len(top3_inj) < n_players_inj:
-                top3_inj.append((None, 0))
+                top3_inj.append((None, None, 0))
 
             row_update = {}
 
             for i in range(n_players_noninj):
-                row_update[f"TOP{i+1}_PLAYER_NAME_{stat_col}"] = topn_non_inj[i][0]
-                row_update[f"TOP{i+1}_PLAYER_{stat_col}"] = topn_non_inj[i][1]
+                row_update[f"TOP{i+1}_PLAYER_ID_{stat_col}"] = topn_non_inj[i][0]
+                row_update[f"TOP{i+1}_PLAYER_NAME_{stat_col}"] = topn_non_inj[i][1]
+                row_update[f"TOP{i+1}_PLAYER_{stat_col}"] = topn_non_inj[i][2]
 
             for i in range(n_players_inj):
-                row_update[f"TOP{i+1}_INJURED_PLAYER_NAME_{stat_col}"] = top3_inj[i][0]
-                row_update[f"TOP{i+1}_INJURED_PLAYER_{stat_col}"] = top3_inj[i][1]
+                row_update[f"TOP{i+1}_INJURED_PLAYER_ID_{stat_col}"] = top3_inj[i][0]
+                row_update[f"TOP{i+1}_INJURED_PLAYER_NAME_{stat_col}"] = top3_inj[i][1]
+                row_update[f"TOP{i+1}_INJURED_PLAYER_{stat_col}"] = top3_inj[i][2]
 
-            inj_values = [val for (_, val) in top3_inj if val != 0]
+            inj_values = [val for (_, _, val) in top3_inj if val != 0]
             row_update[f"AVG_INJURED_{stat_col}"] = (
                 sum(inj_values) / len(inj_values) if inj_values else 0
             )

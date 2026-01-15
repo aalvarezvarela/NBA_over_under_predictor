@@ -196,17 +196,17 @@ if __name__ == "__main__":
         date_to_train_until=date_to_train, date_from=date_from
     )
 
-    # Load referee data from database
-    if date_from is not None:
-        seasons = get_seasons_between_dates(date_from, date_to_train)
-    else:
-        seasons = get_all_seasons_from_2006(date_to_train)
 
     output_name_before_referee = f"{output_path}/training_data_before_adding_referee_{pd.to_datetime(date_to_train).strftime('%Y%m%d')}.csv"
     df_train.to_csv(output_name_before_referee, index=False)
     print(
         f"Training data before adding referee features saved to {output_name_before_referee}"
     )
+        # Load referee data from database
+    if date_from is not None:
+        seasons = get_seasons_between_dates(date_from, date_to_train)
+    else:
+        seasons = get_all_seasons_from_2006(date_to_train)
 
     # df_train = add_referee_features_to_training_data(seasons, df_train)
 

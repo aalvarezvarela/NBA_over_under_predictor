@@ -72,7 +72,7 @@ def _get_players_for_team_in_season(df_players, season_id, team_id, date_to_filt
 
     # Filter out players who have not played
     df_result = df_result[df_result["MIN"] > 0]
-    df_result = df_result[df_result["GAME_DATE"] < date_to_filter]
+    df_result = df_result[df_result["GAME_DATE"] <= date_to_filter]
 
     # Drop rows with NaN points
     df_result = df_result.dropna(subset=["PTS"])

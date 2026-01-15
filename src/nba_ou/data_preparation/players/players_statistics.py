@@ -21,7 +21,7 @@ def get_top_n_averages_with_names(
         min_minutes (int): Minimum average minutes threshold
 
     Returns:
-        list: List of tuples (player_name, cumulative_average)
+        list: List of tuples (player_id, player_name, cumulative_average)
     """
     if stat_col == "DEF_RATING":
         lowest = True
@@ -69,7 +69,9 @@ def get_top_n_averages_with_names(
     # Extract the top n (or bottom n) players
     chosen = df_sorted.head(n_players)
 
-    top_or_bottom_n = list(zip(chosen["PLAYER_NAME"], chosen[cum_col]))
+    top_or_bottom_n = list(
+        zip(chosen["PLAYER_ID"], chosen["PLAYER_NAME"], chosen[cum_col])
+    )
 
     return top_or_bottom_n
 
@@ -137,75 +139,3 @@ def precompute_cumulative_avg_stat(
     out.drop(columns=["VALID_GAME"], inplace=True)
 
     return out
-
-
-def get_top_n_averages_with_names(
-    df, date, stat_col="PTS", injured=False, lowest=False, n_players=3, min_minutes=15
-):
-    """
-    Returns a list of tuples (Player Name, <CUM_AVG>) for the top 3 (or bottom 3) players
-    by {stat_col}_CUM_AVG.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        DataFrame containing at least: PLAYER_ID, GAME_DATE, PLAYER_NAME, {stat_col}_CUM_AVG
-    date : datetime or str
-        The target date (usually the current game date).
-    stat_col : str
-        The stat column (e.g., "PTS") for which we're looking up the cumulative average.
-    injured : bool
-        If False, we only consider players who played on `date`.
-        If True, we instead consider the last game prior to `date`.
-    lowest : bool
-        If False (default), we return the highest three averages (descending).
-        If True, we return the lowest three averages (ascending).
-    """
-    if stat_col == "DEF_RATING":
-        lowest = True
-
-    if injured:
-        min_minutes = min_minutes * 0.8
-
-    if df.empty:
-        return []
-
-    # Ensure df is sorted by date so tail(1) is truly the last prior game
-    df = df.sort_values(["PLAYER_ID", "GAME_DATE"], ascending=True).copy()
-
-    if injured:
-        # For injured players: last game *before* `date`
-        df_inj = df[df["GAME_DATE"] < date]
-        df_last = df_inj.groupby("PLAYER_ID", as_index=False).tail(1)
-    else:
-        # For non-injured: look at the game exactly on `date`
-        df_last = df[df["GAME_DATE"] == date]
-
-    if df_last.empty:
-        return []
-
-    df_cum_min = (
-        df[df["GAME_DATE"] < date]
-        .groupby("PLAYER_ID", as_index=False)["MIN"]
-        .mean()
-        .rename(columns={"MIN": "MIN_CUM_AVG"})
-    )
-
-    # Merge the cumulative average minutes into the selected game rows.
-    df_last = df_last.merge(df_cum_min, on="PLAYER_ID", how="left")
-
-    cum_col = f"{stat_col}_CUM_AVG"
-
-    # cREATE EXTRA VARIABLE to check if player meets the minimum threshold
-    df_last["MEETS_MIN_THRESHOLD"] = (df_last["MIN_CUM_AVG"] >= min_minutes).astype(int)
-    # Sort by the cumulative average column
-    df_sorted = df_last.sort_values(
-        by=["MEETS_MIN_THRESHOLD", cum_col], ascending=[False, lowest]
-    )
-
-    # Extract the top n (or bottom n) players
-    chosen = df_sorted.head(n_players)
-
-    top_or_bottom_n = list(zip(chosen["PLAYER_NAME"], chosen[cum_col]))
-
-    return top_or_bottom_n
