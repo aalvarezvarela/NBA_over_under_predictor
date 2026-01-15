@@ -248,8 +248,8 @@ def main():
     inject_global_css()
 
     # Check password before showing content
-    if not check_password():
-        st.stop()
+    # if not check_password():
+    #     st.stop()
 
     # Sidebar navigation (cleaner than huge radios across the top)
     with st.sidebar:
