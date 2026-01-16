@@ -253,9 +253,9 @@ if __name__ == "__main__":
         "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/train_data"
     )
     # Create training data up to a specific date
-    date_to_train = "2024-01-10"
+    date_to_train = "2026-01-10"
     # date_from = "2025-11-01"  # Optional: specify start date
-    date_from = "2022-12-01"  # Optional: specify start date
+    date_from = "2005-12-01"  # Optional: specify start date
 
     df_train = create_df_to_train(
         date_to_train_until=date_to_train, date_from=date_from
