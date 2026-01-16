@@ -255,7 +255,7 @@ if __name__ == "__main__":
     # Create training data up to a specific date
     date_to_train = "2024-01-10"
     # date_from = "2025-11-01"  # Optional: specify start date
-    date_from = "2023-12-01"  # Optional: specify start date
+    date_from = "2022-12-01"  # Optional: specify start date
 
     df_train = create_df_to_train(
         date_to_train_until=date_to_train, date_from=date_from

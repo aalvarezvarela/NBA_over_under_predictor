@@ -23,7 +23,7 @@ def get_injured_players_dict(df_injuries):
     return injured_dict
 
 
-def _get_players_for_team_in_season(df_players, season_id, team_id, date_to_filter):
+def get_players_for_team_in_season(df_players, season_id, team_id, date_to_filter):
     """
     Returns rows from df_players belonging to (season_id, team_id),
     only for players who had not left by date_to_filter (based on last game).

@@ -32,8 +32,6 @@ def get_top_n_averages_with_names(
     if df.empty:
         return []
 
-    # Ensure df is sorted by date so tail(1) is truly the last prior game
-    df = df.sort_values(["PLAYER_ID", "GAME_DATE"], ascending=True).copy()
 
     if injured:
         # For injured players: last game *before* `date`
