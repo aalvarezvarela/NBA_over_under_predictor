@@ -1,7 +1,5 @@
 import pandas as pd
 
-from nba_ou.utils.seasons import classify_season_type
-
 
 def compute_total_points_features(df):
     """
@@ -22,8 +20,5 @@ def compute_total_points_features(df):
     df["TOTAL_POINTS"] = df.groupby("GAME_ID")["PTS"].transform("sum")
     df["DIFF_FROM_LINE"] = df["TOTAL_POINTS"] - df["TOTAL_OVER_UNDER_LINE"]
     df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], format="%Y-%m-%d")
-
-    df.loc[:, "SEASON_TYPE"] = df["GAME_ID"].apply(classify_season_type)
-    df.loc[:, "SEASON_YEAR"] = df["SEASON_ID"].astype(str).str[-4:].astype(int)
 
     return df

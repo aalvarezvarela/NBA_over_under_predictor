@@ -38,28 +38,32 @@ def get_top_n_averages_with_names(
     if injured:
         # For injured players: last game *before* `date`
         df_inj = df[df["GAME_DATE"] < date]
-        df_last = df_inj.groupby("PLAYER_ID", as_index=False).tail(1)
+        df_last = df_inj.groupby("PLAYER_ID", as_index=False).tail(1).copy()
     else:
         # For non-injured: look at the game exactly on `date`
-        df_last = df[df["GAME_DATE"] == date]
+        df_last = df[df["GAME_DATE"] == date].copy()
 
     if df_last.empty:
         return []
 
-    df_cum_min = (
-        df[df["GAME_DATE"] < date]
-        .groupby("PLAYER_ID", as_index=False)["MIN"]
-        .mean()
-        .rename(columns={"MIN": "MIN_CUM_AVG"})
-    )
+    # Check if MIN_CUM_AVG already exists (e.g., when stat_col="MIN")
+    if "MIN_CUM_AVG" not in df_last.columns:
+        df_cum_min = (
+            df[df["GAME_DATE"] < date]
+            .groupby("PLAYER_ID", as_index=False)["MIN"]
+            .mean()
+            .rename(columns={"MIN": "MIN_CUM_AVG"})
+        )
 
-    # Merge the cumulative average minutes into the selected game rows
-    df_last = df_last.merge(df_cum_min, on="PLAYER_ID", how="left")
+        # Merge the cumulative average minutes into the selected game rows
+        df_last = df_last.merge(df_cum_min, on="PLAYER_ID", how="left")
 
     cum_col = f"{stat_col}_CUM_AVG"
 
     # Create extra variable to check if player meets the minimum threshold
-    df_last["MEETS_MIN_THRESHOLD"] = (df_last["MIN_CUM_AVG"] >= min_minutes).astype(int)
+    df_last["MEETS_MIN_THRESHOLD"] = (
+        df_last["MIN_CUM_AVG"].fillna(0) >= min_minutes
+    ).astype(int)
 
     # Sort by the cumulative average column
     df_sorted = df_last.sort_values(

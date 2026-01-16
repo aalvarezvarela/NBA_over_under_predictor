@@ -3,6 +3,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
 
 def _safe_mean(x: pd.Series) -> float:
@@ -124,8 +125,8 @@ def add_top3_absence_effect_features_for_columns(
     game_id_col: str = "GAME_ID",
     total_points_col: str = "TOTAL_POINTS",
     diff_from_line_col: str = "DIFF_FROM_LINE",
-    home_player_cols: tuple[str, str, str],
-    away_player_cols: tuple[str, str, str],
+    home_player_cols: tuple[str, ...],
+    away_player_cols: tuple[str, ...],
     out_prefix: str,
 ) -> pd.DataFrame:
     """
@@ -133,7 +134,7 @@ def add_top3_absence_effect_features_for_columns(
     This allows reuse for:
       - top scorers (non injured)
       - top injured players
-      - any other top3 player list you have in the DF
+      - any other player list you have in the DF
     """
     df = df_games.copy()
     df = _ensure_datetime(df, game_date_col)
@@ -226,13 +227,20 @@ def add_top3_absence_effect_features_for_columns(
         return f"{out_prefix}_{side}_P{i}_{metric}"
 
     n = len(df)
-    home_tp = np.zeros((n, 3), dtype="float64")
-    home_dfl = np.zeros((n, 3), dtype="float64")
-    away_tp = np.zeros((n, 3), dtype="float64")
-    away_dfl = np.zeros((n, 3), dtype="float64")
+    n_home_players = len(home_player_cols)
+    n_away_players = len(away_player_cols)
+
+    home_tp = np.zeros((n, n_home_players), dtype="float64")
+    home_dfl = np.zeros((n, n_home_players), dtype="float64")
+    away_tp = np.zeros((n, n_away_players), dtype="float64")
+    away_dfl = np.zeros((n, n_away_players), dtype="float64")
 
     # itertuples is faster than apply for 25k rows
-    for i, row in enumerate(df.itertuples(index=False)):
+    for i, row in enumerate(
+        tqdm(
+            df.itertuples(index=False), total=len(df), desc="Computing absence effects"
+        )
+    ):
         date = getattr(row, game_date_col)
         season_year = getattr(row, season_year_col)
         home_team = getattr(row, home_team_id_col)
@@ -284,9 +292,11 @@ def add_top3_absence_effect_features_for_columns(
             away_tp[i, j] = tp_eff
             away_dfl[i, j] = dfl_eff
 
-    for j in range(3):
+    for j in range(n_home_players):
         df[_out_col("HOME", j + 1, "TOTAL_POINTS")] = home_tp[:, j]
         df[_out_col("HOME", j + 1, "DIFF_FROM_LINE")] = home_dfl[:, j]
+
+    for j in range(n_away_players):
         df[_out_col("AWAY", j + 1, "TOTAL_POINTS")] = away_tp[:, j]
         df[_out_col("AWAY", j + 1, "DIFF_FROM_LINE")] = away_dfl[:, j]
 

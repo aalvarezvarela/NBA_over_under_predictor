@@ -12,8 +12,14 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
-from nba_ou.data_preparation.merge_home_away.merge_home_away import (
-    merge_home_away_and_prepare_training_features,
+from nba_ou.data_preparation.merged_home_away_data.add_features_after_merging import (
+    add_derived_features_after_computed_stats,
+)
+from nba_ou.data_preparation.merged_home_away_data.merge_home_away import (
+    merge_home_away_data,
+)
+from nba_ou.data_preparation.merged_home_away_data.select_train_columns import (
+    select_training_columns,
 )
 from nba_ou.data_preparation.past_injuries.injury_effects import (
     add_top3_absence_effect_features_for_columns,
@@ -21,6 +27,9 @@ from nba_ou.data_preparation.past_injuries.injury_effects import (
 from nba_ou.data_preparation.players.attach_player_features import (
     add_player_history_features,
     clear_player_statistics,
+)
+from nba_ou.data_preparation.referees.add_referee_features import (
+    add_referee_features_to_training_data,
 )
 from nba_ou.data_preparation.team.cleaning_teams import adjust_overtime, clean_team_data
 from nba_ou.data_preparation.team.filters import filter_valid_games
@@ -104,10 +113,12 @@ def process_player_statistics_for_training(
     df_players = clear_player_statistics(df_players, df_team)
     df_players = filter_by_date_range(df_players, date_from, date_to_train_until)
     # Define statistics to compute for top players
-    stats = ["PTS", "PACE_PER40", "DEF_RATING", "OFF_RATING", "TS_PCT"]
+    stats = ["PTS", "PACE_PER40", "DEF_RATING", "OFF_RATING", "TS_PCT", "MIN"]
 
     # Attach top player statistics including injury data
-    df, injured_dict = add_player_history_features(df_team, df_players, df_injuries, stats)
+    df, injured_dict = add_player_history_features(
+        df_team, df_players, df_injuries, stats
+    )
 
     return df, injured_dict
 
@@ -161,6 +172,7 @@ def create_df_to_train(
 
     # Filter df by date range
     df = filter_by_date_range(df, date_from, date_to_train_until)
+    original_columns = df.columns.tolist()
 
     # Process team statistics
     df = process_team_statistics_for_training(df, df_odds)
@@ -173,7 +185,12 @@ def create_df_to_train(
         df_players, df, df_injuries, date_from, date_to_train_until
     )
 
-    df_training = merge_home_away_and_prepare_training_features(df)
+    df_merged = merge_home_away_data(df)
+    
+    df_merged = add_referee_features_to_training_data(seasons, df_merged)
+    
+    df_training = select_training_columns(df_merged, original_columns)
+    df_training = add_derived_features_after_computed_stats(df_training)
 
     df_training = add_top3_absence_effect_features_for_columns(
         df_training,
@@ -182,11 +199,15 @@ def create_df_to_train(
             "TOP1_PLAYER_ID_PTS_BEFORE_TEAM_HOME",
             "TOP2_PLAYER_ID_PTS_BEFORE_TEAM_HOME",
             "TOP3_PLAYER_ID_PTS_BEFORE_TEAM_HOME",
+            "TOP1_PLAYER_ID_MIN_BEFORE_TEAM_HOME",
+            "TOP2_PLAYER_ID_MIN_BEFORE_TEAM_HOME",
         ),
         away_player_cols=(
             "TOP1_PLAYER_ID_PTS_BEFORE_TEAM_AWAY",
             "TOP2_PLAYER_ID_PTS_BEFORE_TEAM_AWAY",
             "TOP3_PLAYER_ID_PTS_BEFORE_TEAM_AWAY",
+            "TOP1_PLAYER_ID_MIN_BEFORE_TEAM_AWAY",
+            "TOP2_PLAYER_ID_MIN_BEFORE_TEAM_AWAY",
         ),
         out_prefix="TOP3_ABSENCE_EFFECT",
     )
@@ -207,6 +228,8 @@ def create_df_to_train(
         out_prefix="TOP3_INJURED_ABSENCE_EFFECT",
     )
 
+
+
     print()
     print("--" * 20)
     print(f"Training data created up to {date_to_train_until}")
@@ -225,7 +248,7 @@ if __name__ == "__main__":
     # Create training data up to a specific date
     date_to_train = "2024-01-10"
     # date_from = "2025-11-01"  # Optional: specify start date
-    date_from = "2022-12-01"  # Optional: specify start date
+    date_from = "2023-12-01"  # Optional: specify start date
 
     df_train = create_df_to_train(
         date_to_train_until=date_to_train, date_from=date_from

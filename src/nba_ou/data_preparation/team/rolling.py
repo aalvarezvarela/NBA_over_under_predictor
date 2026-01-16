@@ -26,6 +26,7 @@ COLS_TO_AVERAGE = [
     "TS_PCT",
     "POSS",
     "PIE",
+    "PF",
 ]
 
 COLS_TO_AVERAGE_ODDS = [
@@ -59,7 +60,7 @@ def compute_all_rolling_statistics(df):
     for col in tqdm(
         COLS_TO_AVERAGE + COLS_TO_AVERAGE_ODDS, desc="Computing rolling stats"
     ):
-        df = compute_rolling_stats(df, col, window=5, season_avg=True)
+        df = compute_rolling_stats(df, col, window=5, add_extra_season_avg=True)
         if col in COLS_FOR_WEIGHTED_STATS:
             df = compute_rolling_weighted_stats(
                 df, col, window=10, group_by_season=False

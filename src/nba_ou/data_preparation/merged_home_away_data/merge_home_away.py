@@ -1,15 +1,15 @@
 import numpy as np
 import pandas as pd
 from nba_ou.data_preparation.historic_games.historic_games_statistics import (
+    compute_differences_in_points_conceeded_annotated,
     compute_home_points_conceded_avg,
     compute_trend_slope,
     get_last_5_matchup_excluding_current,
-    compute_differences_in_points_conceeded_annotated
 )
 from tqdm import tqdm
 
 
-def merge_home_away_and_prepare_training_features(df):
+def merge_home_away_data(df):
     """
     Merge home and away team data and prepare final training features.
 
@@ -77,8 +77,10 @@ def merge_home_away_and_prepare_training_features(df):
         how="inner",
         suffixes=("_TEAM_HOME", "_TEAM_AWAY"),
     )
+    #Compute Totals
     df_merged["TOTAL_POINTS"] = df_merged.PTS_TEAM_HOME + df_merged.PTS_TEAM_AWAY
-
+    df_merged["TOTAL_PF"] = df_merged.PF_TEAM_HOME + df_merged.PF_TEAM_AWAY
+    
     # IS_PLAYOFF_GAME based on SEASON_TYPE
     df_merged["IS_PLAYOFF_GAME"] = (
         df_merged["SEASON_TYPE"].str.contains("Playoff", case=False, na=False)
@@ -125,89 +127,5 @@ def merge_home_away_and_prepare_training_features(df):
     )
     df_merged = df_merged.sort_values(by="GAME_DATE", ascending=False)
 
-    columns = [
-        "TEAM_ID",
-        "TEAM_CITY",
-        "TEAM_ABBREVIATION",
-        "TEAM_NAME",
-        "MATCHUP",
-        "GAME_NUMBER",
-    ]
 
-    # Generate new list with _HOME and _AWAY appended
-    columns_info_before = [f"{col}_TEAM_HOME" for col in columns] + [
-        f"{col}_TEAM_AWAY" for col in columns
-    ]
-
-    columns_info_before.extend(
-        [
-            "SEASON_ID",
-            "IS_OVERTIME",
-            "GAME_ID",
-            "GAME_DATE",
-            "SEASON_TYPE",
-            "IS_PLAYOFF_GAME",
-            "PLAYOFF_GAMES_LAST_SEASON_TEAM_AWAY",
-            "PLAYOFF_GAMES_LAST_SEASON_TEAM_HOME",
-            "SEASON_YEAR",
-        ]
-    )
-    # Insert columns that have BEFORE in the name
-    columns_info_before.extend([col for col in df_merged.columns if "BEFORE" in col])
-
-    odds_columns = [
-        "TOTAL_OVER_UNDER_LINE",
-        "SPREAD",
-        "MONEYLINE_TEAM_HOME",
-        "MONEYLINE_TEAM_AWAY",
-    ]
-
-    columns_info_before.extend(odds_columns)
-
-    df_training = df_merged[columns_info_before + ["TOTAL_POINTS"]].copy()
-    df_training = df_training[df_training["SEASON_TYPE"] != "Preseason"]
-
-    df_training["TOTAL_PTS_SEASON_BEFORE_AVG"] = (
-        df_training["PTS_SEASON_BEFORE_AVG_TEAM_HOME"]
-        + df_training["PTS_SEASON_BEFORE_AVG_TEAM_AWAY"]
-    )
-
-    df_training["TOTAL_PTS_LAST_GAMES_AVG"] = (
-        df_training["PTS_LAST_HOME_AWAY_5_MATCHES_BEFORE_TEAM_HOME"]
-        + df_training["PTS_LAST_HOME_AWAY_5_MATCHES_BEFORE_TEAM_AWAY"]
-    )
-
-    df_training["BACK_TO_BACK"] = (
-        df_training["REST_DAYS_BEFORE_MATCH_TEAM_AWAY"] == 1
-    ) & (df_training["REST_DAYS_BEFORE_MATCH_TEAM_HOME"] == 1)
-
-    df_training["DIFERENCE_HOME_OFF_AWAY_DEF_BEFORE_MATCH"] = (
-        df_training["OFF_RATING_LAST_HOME_AWAY_5_MATCHES_BEFORE_TEAM_HOME"]
-        - df_training["DEF_RATING_LAST_HOME_AWAY_5_MATCHES_BEFORE_TEAM_AWAY"]
-    )
-    df_training["DIFERENCE_AWAY_OFF_HOME_DEF_BEFORE_MATCH"] = (
-        df_training["OFF_RATING_LAST_HOME_AWAY_5_MATCHES_BEFORE_TEAM_AWAY"]
-        - df_training["DEF_RATING_LAST_HOME_AWAY_5_MATCHES_BEFORE_TEAM_HOME"]
-    )
-
-    df_training.loc[df_training["MATCHUP_TEAM_HOME"] == 0, "MATCHUP_TEAM_HOME"] = (
-        df_training["TEAM_ABBREVIATION_TEAM_HOME"]
-        + " vs. "
-        + df_training["TEAM_ABBREVIATION_TEAM_AWAY"]
-    )
-
-    df_training.loc[df_training["MATCHUP_TEAM_AWAY"] == 0, "MATCHUP_TEAM_AWAY"] = (
-        df_training["TEAM_ABBREVIATION_TEAM_AWAY"]
-        + " @ "
-        + df_training["TEAM_ABBREVIATION_TEAM_HOME"]
-    )
-
-    df_training.drop(columns=["IS_OVERTIME"], inplace=True)
-
-    # Move TOTAL_OVER_UNDER_LINE to first column
-    first_col = "TOTAL_OVER_UNDER_LINE"
-    df_training = df_training[
-        [first_col] + [col for col in df_training.columns if col != first_col]
-    ]
-
-    return df_training
+    return df_merged

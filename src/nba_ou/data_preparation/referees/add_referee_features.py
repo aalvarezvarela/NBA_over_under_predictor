@@ -6,64 +6,15 @@ including computing referee-specific features based on historical performance.
 """
 
 import pandas as pd
+from nba_ou.postgre_db.refs.get_refs_db import load_refs_data_from_db
 from tqdm import tqdm
 
-
-def load_refs_data_from_db(seasons):
-    """
-    Load referee data from database for the specified seasons.
-
-    Args:
-        seasons (list): List of seasons to load (e.g., ["2023-24", "2022-23"])
-
-    Returns:
-        pd.DataFrame: Combined referee data for all seasons
-    """
-    from postgre_DB.db_config import connect_nba_db, get_schema_name_refs
-    from psycopg import sql
-
-    schema = get_schema_name_refs()
-    table = "nba_refs"  # table name in refs schema
-
-    conn = None
-    try:
-        conn = connect_nba_db()
-
-        # Convert season format from "2023-24" to 2023 (year only)
-        season_years = [int(s.split("-")[0]) for s in seasons]
-
-        query_obj = sql.SQL("""
-            SELECT *
-            FROM {}.{}
-            WHERE season_year = ANY(%s)
-        """).format(sql.Identifier(schema), sql.Identifier(table))
-
-        query = query_obj.as_string(conn)
-        df_refs = pd.read_sql_query(query, conn, params=(season_years,))
-
-        # Convert column names to uppercase to match expected format
-        df_refs.columns = df_refs.columns.str.upper()
-
-        # Ensure GAME_ID is string for consistent merging
-        if "GAME_ID" in df_refs.columns:
-            df_refs["GAME_ID"] = df_refs["GAME_ID"].astype(str)
-
-        # Remove duplicates
-        df_refs = df_refs.drop_duplicates()
-
-        print(f"Loaded {len(df_refs)} referee records from database")
-        return df_refs
-
-    except Exception as e:
-        print(f"Error loading referee data from database: {e}")
-        import traceback
-
-        traceback.print_exc()
-        return pd.DataFrame()
-
-    finally:
-        if conn is not None:
-            conn.close()
+# Metrics to compute for referee impact
+REFEREE_METRICS = [
+    "TOTAL_POINTS",  # Total points scored in the game
+    "DIFFERENCE_FROM_LINE",  # Difference from over/under line
+    "TOTAL_PF",  # Personal fouls called in the game
+]
 
 
 def compute_referee_features(df_refs_pivot):
@@ -75,6 +26,7 @@ def compute_referee_features(df_refs_pivot):
        - Average TOTAL_POINTS in games where that referee participated (as any of REF_1, REF_2, REF_3)
        - Average TOTAL_POINTS in games where that referee did NOT participate
     2. The same calculation using DIFFERENCE_FROM_LINE instead of TOTAL_POINTS
+    3. The same calculation using PF (personal fouls) instead of TOTAL_POINTS
 
     Constraints:
     - Only uses data from the last two seasons (current season + previous season)
@@ -89,19 +41,24 @@ def compute_referee_features(df_refs_pivot):
             - SEASON_YEAR: Year of the season
             - TOTAL_POINTS: Total points scored in the game
             - TOTAL_OVER_UNDER_LINE: Over/under line for the game
+            - PF: Personal fouls called in the game
             - REF_1, REF_2, REF_3: Names of the three referees
             - DIFFERENCE_FROM_LINE: TOTAL_POINTS - TOTAL_OVER_UNDER_LINE
 
     Returns:
         pd.DataFrame: Original DataFrame with additional columns:
-            - REF_1_TOTAL_POINTS_DIFF: Difference in avg total points with/without REF_1
-            - REF_2_TOTAL_POINTS_DIFF: Difference in avg total points with/without REF_2
-            - REF_3_TOTAL_POINTS_DIFF: Difference in avg total points with/without REF_3
-            - REF_1_DIFF_FROM_LINE_DIFF: Difference in avg diff from line with/without REF_1
-            - REF_2_DIFF_FROM_LINE_DIFF: Difference in avg diff from line with/without REF_2
-            - REF_3_DIFF_FROM_LINE_DIFF: Difference in avg diff from line with/without REF_3
-            - REF_TRIO_TOTAL_POINTS_DIFF: Difference in avg total points when all 3 refs appear together
-            - REF_TRIO_DIFF_FROM_LINE_DIFF: Difference in avg diff from line when all 3 refs appear together
+            - REF_1_TOTAL_POINTS_DIFF_BEFORE: Difference in avg total points with/without REF_1
+            - REF_2_TOTAL_POINTS_DIFF_BEFORE: Difference in avg total points with/without REF_2
+            - REF_3_TOTAL_POINTS_DIFF_BEFORE: Difference in avg total points with/without REF_3
+            - REF_1_DIFFERENCE_FROM_LINE_DIFF_BEFORE: Difference in avg diff from line with/without REF_1
+            - REF_2_DIFFERENCE_FROM_LINE_DIFF_BEFORE: Difference in avg diff from line with/without REF_2
+            - REF_3_DIFFERENCE_FROM_LINE_DIFF_BEFORE: Difference in avg diff from line with/without REF_3
+            - REF_1_TOTAL_PF_DIFF_BEFORE: Difference in avg personal fouls with/without REF_1
+            - REF_2_TOTAL_PF_DIFF_BEFORE: Difference in avg personal fouls with/without REF_2
+            - REF_3_TOTAL_PF_DIFF_BEFORE: Difference in avg personal fouls with/without REF_3
+            - REF_TRIO_TOTAL_POINTS_DIFF_BEFORE: Difference in avg total points when all 3 refs appear together
+            - REF_TRIO_DIFFERENCE_FROM_LINE_DIFF_BEFORE: Difference in avg diff from line when all 3 refs appear together
+            - REF_TRIO_TOTAL_PF_DIFF_BEFORE: Difference in avg personal fouls when all 3 refs appear together
     """
     # Ensure GAME_DATE is datetime
     df = df_refs_pivot.copy()
@@ -110,14 +67,14 @@ def compute_referee_features(df_refs_pivot):
     # Sort by GAME_DATE to ensure chronological order
     df = df.sort_values("GAME_DATE").reset_index(drop=True)
 
-    # Initialize new feature columns
+    # Initialize new feature columns dynamically based on REFEREE_METRICS
     for ref_num in [1, 2, 3]:
-        df[f"REF_{ref_num}_TOTAL_POINTS_DIFF"] = 0.0
-        df[f"REF_{ref_num}_DIFF_FROM_LINE_DIFF"] = 0.0
+        for metric in REFEREE_METRICS:
+            df[f"REF_{ref_num}_{metric}_DIFF_BEFORE"] = 0.0
 
     # Initialize trio features
-    df["REF_TRIO_TOTAL_POINTS_DIFF"] = 0.0
-    df["REF_TRIO_DIFF_FROM_LINE_DIFF"] = 0.0
+    for metric in REFEREE_METRICS:
+        df[f"REF_TRIO_{metric}_DIFF_BEFORE"] = 0.0
 
     # Process each game
     for idx in tqdm(range(len(df)), desc="Computing referee features"):
@@ -155,21 +112,14 @@ def compute_referee_features(df_refs_pivot):
             games_with_ref = past_games[ref_participated]
             games_without_ref = past_games[~ref_participated]
 
-            # Calculate TOTAL_POINTS averages
-            if len(games_with_ref) > 0 and len(games_without_ref) > 0:
-                avg_points_with = games_with_ref["TOTAL_POINTS"].mean()
-                avg_points_without = games_without_ref["TOTAL_POINTS"].mean()
-                df.at[idx, f"REF_{ref_num}_TOTAL_POINTS_DIFF"] = (
-                    avg_points_with - avg_points_without
-                )
-
-            # Calculate DIFFERENCE_FROM_LINE averages
-            if len(games_with_ref) > 0 and len(games_without_ref) > 0:
-                avg_diff_with = games_with_ref["DIFFERENCE_FROM_LINE"].mean()
-                avg_diff_without = games_without_ref["DIFFERENCE_FROM_LINE"].mean()
-                df.at[idx, f"REF_{ref_num}_DIFF_FROM_LINE_DIFF"] = (
-                    avg_diff_with - avg_diff_without
-                )
+            # Calculate averages for all metrics
+            for metric in REFEREE_METRICS:
+                if len(games_with_ref) > 0 and len(games_without_ref) > 0:
+                    avg_with = games_with_ref[metric].mean()
+                    avg_without = games_without_ref[metric].mean()
+                    df.at[idx, f"REF_{ref_num}_{metric}_DIFF_BEFORE"] = (
+                        avg_with - avg_without
+                    )
 
         # Process referee trio (all three referees together, regardless of order)
         ref_trio = set()
@@ -191,35 +141,26 @@ def compute_referee_features(df_refs_pivot):
             games_with_trio = past_games[trio_participated]
             games_without_trio = past_games[~trio_participated]
 
-            # Calculate TOTAL_POINTS averages for trio
-            if len(games_with_trio) > 0 and len(games_without_trio) > 0:
-                avg_points_with_trio = games_with_trio["TOTAL_POINTS"].mean()
-                avg_points_without_trio = games_without_trio["TOTAL_POINTS"].mean()
-                df.at[idx, "REF_TRIO_TOTAL_POINTS_DIFF"] = (
-                    avg_points_with_trio - avg_points_without_trio
-                )
-
-            # Calculate DIFFERENCE_FROM_LINE averages for trio
-            if len(games_with_trio) > 0 and len(games_without_trio) > 0:
-                avg_diff_with_trio = games_with_trio["DIFFERENCE_FROM_LINE"].mean()
-                avg_diff_without_trio = games_without_trio[
-                    "DIFFERENCE_FROM_LINE"
-                ].mean()
-                df.at[idx, "REF_TRIO_DIFF_FROM_LINE_DIFF"] = (
-                    avg_diff_with_trio - avg_diff_without_trio
-                )
+            # Calculate averages for all metrics for trio
+            for metric in REFEREE_METRICS:
+                if len(games_with_trio) > 0 and len(games_without_trio) > 0:
+                    avg_with_trio = games_with_trio[metric].mean()
+                    avg_without_trio = games_without_trio[metric].mean()
+                    df.at[idx, f"REF_TRIO_{metric}_DIFF_BEFORE"] = (
+                        avg_with_trio - avg_without_trio
+                    )
 
     return df
 
 
-def process_referee_data_for_training(seasons, df_train):
+def process_referee_data_for_training(seasons, df_merged):
     """
     Load referee data from database, transform it, merge with training data,
     and compute referee-specific features.
 
     Args:
         seasons (list): List of seasons to load (e.g., ["2023-24", "2022-23"])
-        df_train (pd.DataFrame): Training DataFrame with GAME_ID, GAME_DATE, SEASON_YEAR,
+        df_merged (pd.DataFrame): Training DataFrame with GAME_ID, GAME_DATE, SEASON_YEAR,
                                 TOTAL_POINTS, and TOTAL_OVER_UNDER_LINE columns
 
     Returns:
@@ -252,22 +193,23 @@ def process_referee_data_for_training(seasons, df_train):
         )
 
         # Ensure GAME_ID is string in both dataframes
-        df_train["GAME_ID"] = df_train["GAME_ID"].astype(str)
+        df_merged["GAME_ID"] = df_merged["GAME_ID"].astype(str)
         df_refs_pivot["GAME_ID"] = df_refs_pivot["GAME_ID"].astype(str)
         df_refs["GAME_ID"] = df_refs["GAME_ID"].astype(str)
 
-        df_train_temp = df_train[
+        df_merged_temp = df_merged[
             [
                 "GAME_ID",
                 "GAME_DATE",
                 "SEASON_YEAR",
                 "TOTAL_POINTS",
                 "TOTAL_OVER_UNDER_LINE",
+                "TOTAL_PF",
             ]
         ].copy()
 
-        # Join based on GAME_ID the df_refs_pivot and df_train_temp, keeping all columns
-        df_refs_pivot = df_train_temp.merge(
+        # Join based on GAME_ID the df_refs_pivot and df_merged_temp, keeping all columns
+        df_refs_pivot = df_merged_temp.merge(
             df_refs_pivot,
             on="GAME_ID",
             how="inner",
@@ -287,39 +229,39 @@ def process_referee_data_for_training(seasons, df_train):
         return None
 
 
-def add_referee_features_to_training_data(seasons, df_train):
+def add_referee_features_to_training_data(seasons, df_merged):
     """
     Add referee-specific features to the training DataFrame.
 
     Args:
         seasons (list): List of seasons to load (e.g., ["2023-24", "2022-23"])
-        df_train (pd.DataFrame): Training DataFrame with GAME_ID, GAME_DATE, SEASON_YEAR,
+        df_merged (pd.DataFrame): Training DataFrame with GAME_ID, GAME_DATE, SEASON_YEAR,
                                 TOTAL_POINTS, and TOTAL_OVER_UNDER_LINE columns
     Returns:
-        pd.DataFrame: Training DataFrame with added referee features    
+        pd.DataFrame: Training DataFrame with added referee features
     """
-    df_refs_pivot = process_referee_data_for_training(seasons, df_train)
+    df_refs_pivot = process_referee_data_for_training(seasons, df_merged)
 
     # Merge referee features into training data
     if df_refs_pivot is not None:
-        ref_feature_cols = [
-            "GAME_ID",
-            "REF_1_TOTAL_POINTS_DIFF",
-            "REF_2_TOTAL_POINTS_DIFF",
-            "REF_3_TOTAL_POINTS_DIFF",
-            "REF_1_DIFF_FROM_LINE_DIFF",
-            "REF_2_DIFF_FROM_LINE_DIFF",
-            "REF_3_DIFF_FROM_LINE_DIFF",
-            "REF_TRIO_TOTAL_POINTS_DIFF",
-            "REF_TRIO_DIFF_FROM_LINE_DIFF",
-        ]
-        
+        # Dynamically build feature column list based on REFEREE_METRICS
+        ref_feature_cols = ["GAME_ID"]
+
+        # Add individual referee features
+        for ref_num in [1, 2, 3]:
+            for metric in REFEREE_METRICS:
+                ref_feature_cols.append(f"REF_{ref_num}_{metric}_DIFF_BEFORE")
+
+        # Add trio features
+        for metric in REFEREE_METRICS:
+            ref_feature_cols.append(f"REF_TRIO_{metric}_DIFF_BEFORE")
+
         # Select only the feature columns from df_refs_pivot
         df_refs_features = df_refs_pivot[ref_feature_cols].copy()
-        
-        # Merge with df_train based on GAME_ID
-        df_train = df_train.merge(df_refs_features, on="GAME_ID", how="left")
-        
+
+        # Merge with df_merged based on GAME_ID
+        df_merged = df_merged.merge(df_refs_features, on="GAME_ID", how="left")
+
         print("\nReferee features successfully merged into training data!")
-        print(f"Training data shape after merge: {df_train.shape}")
-    return df_train
+        print(f"Training data shape after merge: {df_merged.shape}")
+    return df_merged

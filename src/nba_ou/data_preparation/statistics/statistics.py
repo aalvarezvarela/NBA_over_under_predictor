@@ -13,7 +13,7 @@ def compute_rolling_stats(
     df: pd.DataFrame,
     param: str = "PTS",
     window: int = 5,
-    season_avg: bool = False,
+    add_extra_season_avg: bool = False,
 ) -> pd.DataFrame:
     """
     Computes rolling averages for a given `param`, excluding the current row's game.
@@ -73,7 +73,7 @@ def compute_rolling_stats(
     ).transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean())
 
     # 3) Season-to-date average (within season and home/away), excluding current game
-    if season_avg:
+    if add_extra_season_avg:
         out[season_avg_col] = series.groupby(
             [out["TEAM_ID"], out["SEASON_YEAR"], out["HOME"]]
         ).transform(lambda s: s.shift(1).expanding(min_periods=1).mean())
