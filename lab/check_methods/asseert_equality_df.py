@@ -103,8 +103,8 @@ diff = slow.compare(fast, keep_equal=False)  # "slow" as baseline, "fast" as new
 print(f"\ncompare() output shape: {diff.shape}")
 
 # Save a compact diff CSV (useful if large)
-diff.to_csv("diff_slow_vs_fast.csv", index=True)
-print("Wrote: diff_slow_vs_fast.csv")
+diff.to_csv(f"{path}diff_slow_vs_fast.csv", index=True)
+print(f"Wrote: {path}diff_slow_vs_fast.csv")
 
 # ----------------------------
 # 7) Row-level diff extract (first N differing rows)
@@ -128,8 +128,8 @@ for r in rows:
             }
         )
 row_dump_df = pd.DataFrame(row_dump)
-row_dump_df.to_csv("row_level_differences_first_rows.csv", index=False)
-print("Wrote: row_level_differences_first_rows.csv")
+row_dump_df.to_csv(f"{path}row_level_differences_first_rows.csv", index=False)
+print(f"Wrote: {path}row_level_differences_first_rows.csv")
 
 # ----------------------------
 # 8) Optional: float tolerance check (if you suspect tiny rounding diffs)

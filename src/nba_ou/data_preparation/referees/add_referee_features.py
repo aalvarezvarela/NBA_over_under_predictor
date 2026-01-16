@@ -219,7 +219,6 @@ def process_referee_data_for_training(seasons, df_merged):
         )
 
         # Compute referee features
-        print("Computing referee features...")
         df_refs_pivot = compute_referee_features(df_refs_pivot)
 
         return df_refs_pivot

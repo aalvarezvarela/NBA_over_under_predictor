@@ -4,8 +4,8 @@ from tqdm import tqdm
 from nba_ou.data_preparation.past_injuries.past_injuries import (
     N_TOP_PLAYERS_INJURED,
     N_TOP_PLAYERS_NON_INJURED,
+    create_player_lookup,
     get_injured_players_dict,
-    get_players_for_team_in_season,
 )
 from nba_ou.data_preparation.players.players_statistics import (
     get_top_n_averages_with_names,
@@ -129,6 +129,9 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
     df_players["GAME_DATE"] = pd.to_datetime(df_players["GAME_DATE"], errors="coerce")
     df_players.sort_values(["PLAYER_ID", "GAME_DATE"], kind="mergesort", inplace=True)
 
+    # Create optimized lookup function (precomputes indexes once)
+    player_lookup = create_player_lookup(df_players)
+
     # 3) Iterate over each row in df_team (only needed columns for efficiency)
     cols_needed = ["GAME_ID", "TEAM_ID", "SEASON_ID", "GAME_DATE"]
     for idx, (game_id, team_id, season_id, game_date) in enumerate(
@@ -138,13 +141,8 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
             desc="Adding players data",
         )
     ):
-        # Identify active players
-        df_active = get_players_for_team_in_season(
-            df_players=df_players,
-            season_id=season_id,
-            team_id=team_id,
-            date_to_filter=game_date,
-        )
+        # Identify active players using optimized lookup
+        df_active = player_lookup(season_id, team_id, game_date)
         if df_active.empty:
             continue
 
