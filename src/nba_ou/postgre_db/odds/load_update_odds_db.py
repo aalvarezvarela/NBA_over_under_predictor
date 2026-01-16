@@ -3,7 +3,7 @@ from nba_ou.postgre_db.config.db_config import connect_nba_db, get_schema_name_o
 from psycopg import sql
 
 
-def load_odds_data(season_year: str = None) -> pd.DataFrame:
+def load_odds_data(season_years: str = None) -> pd.DataFrame:
     """
     Load odds data from PostgreSQL database.
     Alias for get_existing_odds_from_db for convenience.
@@ -14,13 +14,21 @@ def load_odds_data(season_year: str = None) -> pd.DataFrame:
     Returns:
         pd.DataFrame: Odds data from database
     """
-    return get_existing_odds_from_db(season_year=season_year)
+    return get_existing_odds_from_db(season_year=season_years)
 
 
 def get_existing_odds_from_db(season_year: str = None) -> pd.DataFrame:
     """
     Query existing odds data from PostgreSQL database.
-    If season_year is provided, filters by the season_year column.
+
+    Args:
+        season_year (str, list, or None): Season year(s) to filter by.
+            - str: Single season year (e.g., "2024")
+            - list: List of season strings (e.g., ['2023-24', '2024-25'])
+            - None: Load all seasons
+
+    Returns:
+        pd.DataFrame: Odds data from database
     """
     schema = get_schema_name_odds()
     table = schema  # convention: schema == table
@@ -28,14 +36,26 @@ def get_existing_odds_from_db(season_year: str = None) -> pd.DataFrame:
     conn = connect_nba_db()
     try:
         with conn.cursor() as cur:
-            if season_year:
-                query = sql.SQL("""
-                    SELECT *
-                    FROM {}.{}
-                    WHERE season_year = %s
-                    ORDER BY game_date DESC
-                """).format(sql.Identifier(schema), sql.Identifier(table))
-                cur.execute(query, (int(season_year),))
+            if season_year is not None:
+                # Handle list of seasons (e.g., ['2023-24', '2024-25'])
+                if isinstance(season_year, list):
+                    season_years = [int(s.split("-")[0]) for s in season_year]
+                    query = sql.SQL("""
+                        SELECT *
+                        FROM {}.{}
+                        WHERE season_year = ANY(%s)
+                        ORDER BY game_date DESC
+                    """).format(sql.Identifier(schema), sql.Identifier(table))
+                    cur.execute(query, (season_years,))
+                else:
+                    # Handle single season year string (e.g., "2024")
+                    query = sql.SQL("""
+                        SELECT *
+                        FROM {}.{}
+                        WHERE season_year = %s
+                        ORDER BY game_date DESC
+                    """).format(sql.Identifier(schema), sql.Identifier(table))
+                    cur.execute(query, (int(season_year),))
             else:
                 query = sql.SQL("""
                     SELECT *

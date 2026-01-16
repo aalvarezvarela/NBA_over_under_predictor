@@ -128,6 +128,7 @@ def process_player_statistics_for_training(
 def create_df_to_train(
     date_to_train_until: str | datetime,
     date_from: str | datetime = None,
+    full_training_data: bool = False,
 ):
     """
     Create training dataset for NBA over/under prediction models.
@@ -147,7 +148,7 @@ def create_df_to_train(
     Returns:
         pd.DataFrame: Complete training dataset with all features
     """
-    df_odds = load_odds_data()
+    
 
     if isinstance(date_to_train_until, str):
         date_to_train_until = pd.to_datetime(date_to_train_until, format="%Y-%m-%d")
@@ -164,8 +165,9 @@ def create_df_to_train(
     else:
         seasons = get_all_seasons_from_2006(date_to_train_until)
 
+    
     print(f"Loading data for seasons: {seasons}")
-
+    df_odds = load_odds_data(season_years=seasons)
     # Load game and player data from database
     df, df_players = load_all_nba_data_from_db(seasons=seasons)
 
@@ -174,6 +176,7 @@ def create_df_to_train(
 
     # Filter df by date range
     df = filter_by_date_range(df, date_from, date_to_train_until)
+    
     original_columns = df.columns.tolist()
 
     # Process team statistics
