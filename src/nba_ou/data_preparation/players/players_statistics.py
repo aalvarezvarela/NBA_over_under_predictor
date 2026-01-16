@@ -72,7 +72,7 @@ def get_top_n_averages_with_names(
     chosen = df_sorted.head(n_players)
 
     top_or_bottom_n = list(
-        zip(chosen["PLAYER_ID"], chosen["PLAYER_NAME"], chosen[cum_col])
+        zip(chosen["PLAYER_ID"], chosen["PLAYER_NAME"], chosen[cum_col], strict=True)
     )
 
     return top_or_bottom_n
