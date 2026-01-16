@@ -11,7 +11,7 @@ Uses geographic coordinates to calculate great-circle distances between cities.
 
 import numpy as np
 import pandas as pd
-from config.constants import CITY_TO_LATLON
+from nba_ou.config.constants import CITY_TO_LATLON
 
 
 def haversine_km(lat1, lon1, lat2, lon2):

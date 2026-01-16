@@ -14,6 +14,7 @@ import pandas as pd
 
 from nba_ou.data_preparation.merged_home_away_data.add_features_after_merging import (
     add_derived_features_after_computed_stats,
+    add_high_value_features_for_team_points,
 )
 from nba_ou.data_preparation.merged_home_away_data.merge_home_away import (
     merge_home_away_data,
@@ -43,6 +44,7 @@ from nba_ou.data_preparation.team.records import (
 )
 from nba_ou.data_preparation.team.rolling import compute_all_rolling_statistics
 from nba_ou.data_preparation.team.totals import compute_total_points_features
+from nba_ou.data_preparation.travel.travel_processing import compute_travel_features
 from nba_ou.postgre_db import load_all_nba_data_from_db
 from nba_ou.postgre_db.injuries.load_injuries import load_injury_data_from_db
 from nba_ou.postgre_db.odds.load_update_odds_db import load_odds_data
@@ -186,9 +188,9 @@ def create_df_to_train(
     )
 
     df_merged = merge_home_away_data(df)
-    
+
     df_merged = add_referee_features_to_training_data(seasons, df_merged)
-    
+
     df_training = select_training_columns(df_merged, original_columns)
     df_training = add_derived_features_after_computed_stats(df_training)
 
@@ -219,16 +221,21 @@ def create_df_to_train(
             "TOP1_INJURED_PLAYER_ID_PTS_BEFORE_TEAM_HOME",
             "TOP2_INJURED_PLAYER_ID_PTS_BEFORE_TEAM_HOME",
             "TOP3_INJURED_PLAYER_ID_PTS_BEFORE_TEAM_HOME",
+            "TOP1_INJURED_PLAYER_ID_MIN_BEFORE_TEAM_HOME",
+            "TOP2_INJURED_PLAYER_ID_MIN_BEFORE_TEAM_HOME",
         ),
         away_player_cols=(
             "TOP1_INJURED_PLAYER_ID_PTS_BEFORE_TEAM_AWAY",
             "TOP2_INJURED_PLAYER_ID_PTS_BEFORE_TEAM_AWAY",
             "TOP3_INJURED_PLAYER_ID_PTS_BEFORE_TEAM_AWAY",
+            "TOP1_INJURED_PLAYER_ID_MIN_BEFORE_TEAM_AWAY",
+            "TOP2_INJURED_PLAYER_ID_MIN_BEFORE_TEAM_AWAY",
         ),
         out_prefix="TOP3_INJURED_ABSENCE_EFFECT",
     )
 
-
+    df_training = compute_travel_features(df_training, log_scale=True)
+    df_training = add_high_value_features_for_team_points(df_training)
 
     print()
     print("--" * 20)
@@ -254,30 +261,9 @@ if __name__ == "__main__":
         date_to_train_until=date_to_train, date_from=date_from
     )
 
-    output_name_before_referee = f"{output_path}/training_data_before_adding_referee_{pd.to_datetime(date_to_train).strftime('%Y%m%d')}.csv"
+    output_name_before_referee = f"{output_path}/training_data{pd.to_datetime(date_to_train).strftime('%Y%m%d')}.csv"
     df_train.to_csv(output_name_before_referee, index=False)
     print(
-        f"Training data before adding referee features saved to {output_name_before_referee}"
+        f"Training data features saved to {output_name_before_referee}"
     )
-    # Load referee data from database
-    # if date_from is not None:
-    #     seasons = get_seasons_between_dates(date_from, date_to_train)
-    # else:
-    #     seasons = get_all_seasons_from_2006(date_to_train)
 
-    # df_train = add_referee_features_to_training_data(seasons, df_train)
-
-    # Compute travel features (distance traveled in last 7 and 14 days)
-    # df_train = compute_travel_features(df_train, log_scale=True)
-
-    # df_train = add_high_value_features_for_team_points(df_train)
-
-    # Save to file with seasons in filename
-    # date_from_dt = (
-    #     pd.to_datetime(date_from) if date_from else pd.to_datetime("2006-01-01")
-    # )
-    # date_to_train_dt = pd.to_datetime(date_to_train)
-
-    # output_name = f"{output_path}/training_data_{date_from_dt.strftime('%Y%m%d')}_to_{date_to_train_dt.strftime('%Y%m%d')}.csv"
-    # df_train.to_csv(output_name, index=False)
-    # print(f"Training data saved to {output_name}")
