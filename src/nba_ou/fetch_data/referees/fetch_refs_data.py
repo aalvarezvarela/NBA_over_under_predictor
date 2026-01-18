@@ -4,17 +4,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
-
-NBA_OFFICIAL_ASSIGNMENTS_URL = "https://official.nba.com/referee-assignments/"
-
-DEFAULT_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Accept-Language": "en-US,en;q=0.9",
-}
-
+from nba_ou.config.request_headers import HEADERS_BROWSER_LIKE
 
 _ET = ZoneInfo("America/New_York")
 
@@ -27,13 +17,13 @@ def _norm_matchup(s: str) -> str:
     return s
 
 
-def fetch_nba_referee_assignments_today() -> pd.DataFrame:
+def fetch_nba_referee_assignments_today(nba_official_url: str) -> pd.DataFrame:
     """
     Returns the NBA referee assignments table for the current day as posted on official.nba.com.
     Note: the site posts daily assignments (typically same-day only).
     """
     resp = requests.get(
-        NBA_OFFICIAL_ASSIGNMENTS_URL, headers=DEFAULT_HEADERS, timeout=30
+        nba_official_url, headers=HEADERS_BROWSER_LIKE, timeout=30
     )
     resp.raise_for_status()
 

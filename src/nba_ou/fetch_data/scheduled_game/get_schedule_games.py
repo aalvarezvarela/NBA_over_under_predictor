@@ -75,3 +75,4 @@ def get_schedule_games(date_to_predict: str) -> pd.DataFrame:
     games["GAME_TIME"] = games["GAME_TIME"].dt.tz_localize(
         "US/Eastern", ambiguous="infer", nonexistent="shift_forward"
     )
+    return games

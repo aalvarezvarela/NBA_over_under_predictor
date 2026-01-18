@@ -219,3 +219,4 @@ data/injury_data
 data/training_data.csv
 *.csv#
 data/train_data
+data/events_cache/*

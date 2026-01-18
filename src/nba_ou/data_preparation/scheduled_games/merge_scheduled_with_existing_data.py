@@ -71,15 +71,15 @@ def standardize_and_merge_scheduled_games_to_team_data(df, games):
     columns_to_keep = list(df.columns)
     if "GAME_TIME" in combined_df.columns and "GAME_TIME" not in columns_to_keep:
         columns_to_keep.append("GAME_TIME")
-    df = combined_df[columns_to_keep]
+    df_merged = combined_df[columns_to_keep]
 
     # remove duplicated rows based on TEAM_ID and GAME_DATE, keeping the last one
-    df = df.drop_duplicates(subset=["TEAM_ID", "GAME_DATE"], keep="last").reset_index(
+    df_merged = df_merged.drop_duplicates(subset=["TEAM_ID", "GAME_DATE"], keep="last").reset_index(
         drop=True
     )
+    df_merged = df_merged.sort_values(by=["GAME_DATE"], ascending=False).reset_index(drop=True)
 
-    return df
-
+    return df_merged
 
 def standardize_and_merge_scheduled_games_to_players_data(
     games_original, df_players_original

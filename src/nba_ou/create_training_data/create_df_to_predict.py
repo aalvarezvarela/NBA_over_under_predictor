@@ -8,10 +8,13 @@ and statistics needed for model training, including injury data processing.
 
 import warnings
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
-
+from nba_ou.data_preparation.scheduled_games.merge_scheduled_with_existing_data import (
+    standardize_and_merge_scheduled_games_to_team_data,
+)
 from nba_ou.data_preparation.merged_home_away_data.add_features_after_merging import (
     add_derived_features_after_computed_stats,
     add_high_value_features_for_team_points,
@@ -45,6 +48,7 @@ from nba_ou.data_preparation.team.records import (
 from nba_ou.data_preparation.team.rolling import compute_all_rolling_statistics
 from nba_ou.data_preparation.team.totals import compute_total_points_features
 from nba_ou.data_preparation.travel.travel_processing import compute_travel_features
+from nba_ou.fetch_data.scheduled_game.get_schedule_games import get_schedule_games
 from nba_ou.postgre_db import load_all_nba_data_from_db
 from nba_ou.postgre_db.injuries.load_injuries import load_injury_data_from_db
 from nba_ou.postgre_db.odds.load_update_odds_db import load_odds_data
@@ -74,6 +78,10 @@ def process_team_statistics_for_training(df, df_odds):
     df = clean_team_data(df)
     df = adjust_overtime(df)
 
+    date_to_predict = pd.Timestamp.now(tz=ZoneInfo("US/Eastern")).normalize()
+    scheduled_games = get_schedule_games(str(date_to_predict.date()))
+    df = standardize_and_merge_scheduled_games_to_team_data(df, scheduled_games)
+    
     df = merge_teams_df_with_odds(df_odds=df_odds, df_team=df)
     df = compute_total_points_features(df)
     df = filter_valid_games(df)
@@ -148,7 +156,6 @@ def create_df_to_train(
     Returns:
         pd.DataFrame: Complete training dataset with all features
     """
-    
 
     if isinstance(date_to_train_until, str):
         date_to_train_until = pd.to_datetime(date_to_train_until, format="%Y-%m-%d")
@@ -164,9 +171,7 @@ def create_df_to_train(
         seasons = get_seasons_between_dates(date_from, date_to_train_until)
     else:
         seasons = get_all_seasons_from_2006(date_to_train_until)
-
     
-    print(f"Loading data for seasons: {seasons}")
     df_odds = load_odds_data(season_years=seasons)
     # Load game and player data from database
     df, df_players = load_all_nba_data_from_db(seasons=seasons)
@@ -176,8 +181,11 @@ def create_df_to_train(
 
     # Filter df by date range
     df = filter_by_date_range(df, date_from, date_to_train_until)
-    
+
     original_columns = df.columns.tolist()
+    # Get today day to predict
+    
+    print(f"Loading data for seasons: {seasons}")
 
     # Process team statistics
     df = process_team_statistics_for_training(df, df_odds)
@@ -259,7 +267,7 @@ if __name__ == "__main__":
     # Create training data up to a specific date
     date_to_train = "2026-01-10"
     # date_from = "2025-11-01"  # Optional: specify start date
-    date_from = "2005-12-01"  # Optional: specify start date
+    date_from = "2024-12-01"  # Optional: specify start date
 
     df_train = create_df_to_train(
         date_to_train_until=date_to_train, date_from=date_from
@@ -267,7 +275,4 @@ if __name__ == "__main__":
 
     output_name_before_referee = f"{output_path}/training_data{pd.to_datetime(date_to_train).strftime('%Y%m%d')}.csv"
     df_train.to_csv(output_name_before_referee, index=False)
-    print(
-        f"Training data features saved to {output_name_before_referee}"
-    )
-
+    print(f"Training data features saved to {output_name_before_referee}")

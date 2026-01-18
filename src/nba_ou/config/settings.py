@@ -122,7 +122,18 @@ class Settings:
         return self.config.get(
             "Injuries",
             "NBA_INJURY_REPORTS_URL",
-            fallback="https://official.nba.com/nba-injury-report-2024-25-season/",
+        )
+
+    # =========================================================================
+    # REFS
+    # =========================================================================
+
+    @property
+    def nba_official_assignments_url(self) -> str:
+        """URL for fetching NBA referee assignments."""
+        return self.config.get(
+            "Refs",
+            "NBA_OFFICIAL_ASSIGNMENTS_URL",
         )
 
     # =========================================================================
@@ -194,11 +205,11 @@ class Settings:
 
 
 # Create a default settings instance for easy importing
-settings = Settings()
+SETTINGS = Settings()
 
 
 # For backward compatibility and convenience
 def get_settings(config_path: str | None = None) -> Settings:
     if config_path:
         return Settings(config_path)
-    return settings
+    return SETTINGS
