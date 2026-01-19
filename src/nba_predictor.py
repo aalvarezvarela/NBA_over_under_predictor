@@ -19,6 +19,7 @@ import argparse
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 # Add parent directory to path if running from src folder
 if __name__ == "__main__":
@@ -86,13 +87,17 @@ Examples:
 
     args = parser.parse_args()
 
-    # Determine the date to predict
+    # Determine the date to predict (using Pacific Time - US West Coast)
+    pacific_tz = ZoneInfo("America/Los_Angeles")
+
     if args.date:
         # Handle special keywords
         if args.date.lower() == "tomorrow":
-            date_to_predict = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+            date_to_predict = (datetime.now(pacific_tz) + timedelta(days=1)).strftime(
+                "%Y-%m-%d"
+            )
         elif args.date.lower() == "today":
-            date_to_predict = datetime.now().strftime("%Y-%m-%d")
+            date_to_predict = datetime.now(pacific_tz).strftime("%Y-%m-%d")
         else:
             # Try to parse as a date string
             try:
@@ -105,7 +110,7 @@ Examples:
                 )
                 return 1
     else:
-        date_to_predict = datetime.now().strftime("%Y-%m-%d")
+        date_to_predict = datetime.now(pacific_tz).strftime("%Y-%m-%d")
 
     # Print welcome message
     print("\n" + "=" * 60)
@@ -167,7 +172,6 @@ Examples:
         # Step 4: Generate predictions
         print_step_header(4, "Generating Predictions")
         predictions_dfs = predict_nba_games(df_to_predict)
-
 
         # Step 6: Save predictions (optional)
         if args.save_excel:
