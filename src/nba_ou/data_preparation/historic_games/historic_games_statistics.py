@@ -50,14 +50,14 @@ def compute_trend_slope(df, parameter="PTS", window=10):
 
     def calculate_slope(series):
         """Applies linear regression to compute the trend slope."""
-        # Remove NaN and None values
-        clean_series = series.dropna()
+        # Remove NaN and None values with a simple loop
+        clean_series = [x for x in series if x is not None and not np.isnan(x)]
 
         if len(clean_series) < 2:
             return 0  # Not enough data for a trend, so we assign 0
 
         X = np.arange(1, len(clean_series) + 1)  # Time index [1, 2, ..., N]
-        Y = clean_series  # Use cleaned series
+        Y = np.array(clean_series)  # Convert to array for linregress
 
         slope, _, _, _, _ = linregress(X, Y)
         return slope
@@ -174,4 +174,3 @@ def compute_home_points_conceded_avg(df):
     )["PTS_TEAM_HOME"].transform(lambda s: s.shift(1).expanding(min_periods=1).mean())
     df = df.sort_values("GAME_DATE", ascending=False)
     return df
-

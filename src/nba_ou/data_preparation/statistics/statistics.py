@@ -99,14 +99,14 @@ def compute_rolling_stats(
         out[season_avg_col] = series.groupby(
             [out["TEAM_ID"], out["SEASON_YEAR"], out["HOME"]]
         ).transform(lambda s: s.shift(1).expanding(min_periods=1).mean())
-        
+
         # Additionally, fill missing season averages using previous season's mean
         # to handle cases where no prior games exist in the current season.
         prev_season_mean = (
             out.assign(_param=series)
-               .groupby(["TEAM_ID", "SEASON_YEAR", "HOME"], as_index=False)["_param"]
-               .mean()
-               .rename(columns={"_param": "_prev_season_mean"})
+            .groupby(["TEAM_ID", "SEASON_YEAR", "HOME"], as_index=False)["_param"]
+            .mean()
+            .rename(columns={"_param": "_prev_season_mean"})
         )
 
         # Map previous season's mean onto the next season
@@ -148,6 +148,8 @@ def compute_season_std(df, param="PTS"):
     which contains the expanding standard deviation of `param` for each group,
     computed using only games before the current one.
 
+    If STD is NaN (not enough games in current season), falls back to previous season's STD.
+
     Parameters
     ----------
     df : pd.DataFrame
@@ -169,6 +171,28 @@ def compute_season_std(df, param="PTS"):
     df[season_std_col] = df.groupby(["TEAM_ID", "SEASON_YEAR", "HOME"])[
         param
     ].transform(lambda s: s.shift(1).expanding(min_periods=1).std(ddof=0))
+
+    # Compute previous season's STD as fallback for missing values
+    prev_season_std = (
+        df.groupby(["TEAM_ID", "SEASON_YEAR", "HOME"], as_index=False)[param]
+        .std()
+        .rename(columns={param: "_prev_season_std"})
+    )
+
+    # Map previous season's STD onto the next season
+    prev_season_std["SEASON_YEAR"] = prev_season_std["SEASON_YEAR"] + 1
+
+    df = df.merge(
+        prev_season_std[["TEAM_ID", "SEASON_YEAR", "HOME", "_prev_season_std"]],
+        on=["TEAM_ID", "SEASON_YEAR", "HOME"],
+        how="left",
+    )
+
+    # Fill NaN values with previous season's STD
+    df[season_std_col] = df[season_std_col].fillna(df["_prev_season_std"])
+
+    # Clean up temporary column
+    df.drop(columns=["_prev_season_std"], inplace=True)
 
     # Optionally, sort the DataFrame back by GAME_DATE descending.
     df = df.sort_values(["GAME_DATE"], ascending=False).reset_index(drop=True)
