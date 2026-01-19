@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import warnings
 
 import matplotlib.dates as mdates
@@ -280,12 +281,61 @@ def main():
 
 def show_upcoming_predictions():
     """Display upcoming game predictions."""
+
+    # Add button to run predictor - always show this first
+    st.markdown("### 🔄 Update Predictions")
+    st.caption(
+        "Run the prediction model to generate fresh predictions for today's games."
+    )
+    st.markdown("")
+
+    if run_nba_predictor is None:
+        st.warning(
+            "⚠️ NBA Predictor module not available. Please check your installation."
+        )
+    else:
+        if st.button("🚀 Run Predictor Now", type="primary", use_container_width=True):
+            try:
+                # Save original sys.argv
+                original_argv = sys.argv.copy()
+
+                # Set sys.argv to simulate command-line call without saving Excel
+                sys.argv = ["streamlit_app.py"]
+
+                with st.spinner(
+                    "🔄 Running NBA predictor... This may take a few minutes."
+                ):
+                    # Run the predictor
+                    result = run_nba_predictor()
+
+                # Restore original sys.argv
+                sys.argv = original_argv
+
+                if result == 0:
+                    st.success("✅ Predictions updated successfully! Reloading page...")
+                    time.sleep(2)  # Brief pause to show success message
+                    st.rerun()
+                else:
+                    st.error(
+                        "❌ Predictor completed with errors. Please check the logs."
+                    )
+
+            except Exception as e:
+                # Restore original sys.argv in case of error
+                sys.argv = original_argv
+                st.error(f"❌ Error running predictor: {str(e)}")
+                st.exception(e)
+
+    st.markdown("---")
+
     # Fetch upcoming games
     with st.spinner("Loading upcoming games..."):
         df_upcoming = get_games_with_total_scored_points(only_null=True)
 
     if df_upcoming.empty:
-        st.info("No upcoming games with predictions available.")
+        st.info(
+            "No upcoming games with predictions available. Run the predictor above to generate new predictions."
+        )
         return
 
     # Get most recent prediction for each game
@@ -312,54 +362,6 @@ def show_upcoming_predictions():
             latest_pred = latest_pred.tz_localize("UTC")
         latest_pred_madrid = latest_pred.tz_convert("Europe/Madrid")
         st.metric("Latest Prediction", latest_pred_madrid.strftime("%Y-%m-%d %H:%M"))
-
-    st.markdown("---")
-
-    # Add button to run predictor
-    st.markdown("### 🔄 Update Predictions")
-    st.caption(
-        "Run the prediction model to generate fresh predictions for today's games."
-    )
-    st.markdown("")
-
-    if run_nba_predictor is None:
-        st.warning(
-            "⚠️ NBA Predictor module not available. Please check your installation."
-        )
-    else:
-        if st.button("🚀 Run Predictor Now", type="primary", width="stretch"):
-            try:
-                # Save original sys.argv
-                original_argv = sys.argv.copy()
-
-                # Set sys.argv to simulate command-line call without saving Excel
-                sys.argv = ["streamlit_app.py"]
-
-                with st.spinner(
-                    "🔄 Running NBA predictor... This may take a few minutes."
-                ):
-                    # Run the predictor
-                    result = run_nba_predictor()
-
-                # Restore original sys.argv
-                sys.argv = original_argv
-
-                if result == 0:
-                    st.success("✅ Predictions updated successfully! Reloading page...")
-                    import time
-
-                    time.sleep(2)  # Brief pause to show success message
-                    st.rerun()
-                else:
-                    st.error(
-                        "❌ Predictor completed with errors. Please check the logs."
-                    )
-
-            except Exception as e:
-                # Restore original sys.argv in case of error
-                sys.argv = original_argv
-                st.error(f"❌ Error running predictor: {str(e)}")
-                st.exception(e)
 
     st.markdown("---")
     st.markdown("## Today's Predictions")
