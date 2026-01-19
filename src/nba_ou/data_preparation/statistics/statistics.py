@@ -14,6 +14,7 @@ def compute_rolling_stats(
     param: str = "PTS",
     window: int = 5,
     add_extra_season_avg: bool = False,
+    group_by_season: bool = False,
 ) -> pd.DataFrame:
     """
     Computes rolling averages for a given `param`, excluding the current row's game.
@@ -21,16 +22,26 @@ def compute_rolling_stats(
     Creates:
       - f"{param}_LAST_ALL_{window}_MATCHES_BEFORE"
       - f"{param}_LAST_HOME_AWAY_{window}_MATCHES_BEFORE"
-      - f"{param}_SEASON_BEFORE_AVG" (if season_avg=True)
+      - f"{param}_SEASON_BEFORE_AVG" (if add_extra_season_avg=True)
 
     Requirements:
       - Columns: TEAM_ID, HOME (bool), GAME_DATE, SEASON_YEAR, and `param`.
-        (SEASON_YEAR is used to prevent cross-season contamination in rolling windows.)
+        (SEASON_YEAR is used to prevent cross-season contamination when group_by_season=True)
+
+    Parameters:
+      - df: Input DataFrame
+      - param: Column name to compute rolling stats for
+      - window: Number of games in rolling window
+      - add_extra_season_avg: If True, add season-to-date average column
+      - group_by_season: If True, computes rolling stats within each SEASON_YEAR to prevent
+        cross-season contamination. If False, allows rolling across seasons to fill windows.
 
     Notes:
       - Uses shift(1) everywhere to exclude the current game.
-      - Computes rolling within (TEAM_ID, SEASON_YEAR) for "ANY"
-      - Computes rolling within (TEAM_ID, SEASON_YEAR, HOME) for home/away split
+      - When group_by_season=True: computes rolling within (TEAM_ID, SEASON_YEAR) for "ANY"
+        and (TEAM_ID, SEASON_YEAR, HOME) for home/away split
+      - When group_by_season=False: computes rolling within (TEAM_ID) for "ANY"
+        and (TEAM_ID, HOME) for home/away split, allowing previous seasons to fill windows
       - Keeps final sort by GAME_DATE descending to match your pipeline style
     """
     if param not in df.columns:
@@ -49,7 +60,9 @@ def compute_rolling_stats(
 
     # Stable deterministic sort for rolling computations:
     # sort within team/season by date, and break ties by GAME_ID if present.
-    sort_cols = ["TEAM_ID", "SEASON_YEAR", "GAME_DATE"]
+    sort_cols = ["TEAM_ID", "GAME_DATE"]
+    if group_by_season:
+        sort_cols.insert(1, "SEASON_YEAR")
     if "GAME_ID" in out.columns:
         sort_cols.append("GAME_ID")
 
@@ -62,24 +75,57 @@ def compute_rolling_stats(
     # Ensure numeric (keeps NaNs if coercion fails)
     series = pd.to_numeric(out[param], errors="coerce")
 
-    # 1) Last N games (ANY) within season, excluding current game
-    out[last_n_avg_col] = series.groupby(
-        [out["TEAM_ID"], out["SEASON_YEAR"]]
-    ).transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean())
+    # Build groupby keys based on group_by_season flag
+    if group_by_season:
+        group_keys_any = [out["TEAM_ID"], out["SEASON_YEAR"]]
+        group_keys_homeaway = [out["TEAM_ID"], out["SEASON_YEAR"], out["HOME"]]
+    else:
+        group_keys_any = [out["TEAM_ID"]]
+        group_keys_homeaway = [out["TEAM_ID"], out["HOME"]]
 
-    # 2) Last N games split by HOME/AWAY within season, excluding current game
-    out[last_n_homeaway_col] = series.groupby(
-        [out["TEAM_ID"], out["SEASON_YEAR"], out["HOME"]]
-    ).transform(lambda s: s.shift(1).rolling(window, min_periods=1).mean())
+    # 1) Last N games (ANY), excluding current game
+    out[last_n_avg_col] = series.groupby(group_keys_any).transform(
+        lambda s: s.shift(1).rolling(window, min_periods=1).mean()
+    )
+
+    # 2) Last N games split by HOME/AWAY, excluding current game
+    out[last_n_homeaway_col] = series.groupby(group_keys_homeaway).transform(
+        lambda s: s.shift(1).rolling(window, min_periods=1).mean()
+    )
 
     # 3) Season-to-date average (within season and home/away), excluding current game
     if add_extra_season_avg:
+        # Season average always groups by season (even if group_by_season=False for rolling)
         out[season_avg_col] = series.groupby(
             [out["TEAM_ID"], out["SEASON_YEAR"], out["HOME"]]
         ).transform(lambda s: s.shift(1).expanding(min_periods=1).mean())
+        
+        # Additionally, fill missing season averages using previous season's mean
+        # to handle cases where no prior games exist in the current season.
+        prev_season_mean = (
+            out.assign(_param=series)
+               .groupby(["TEAM_ID", "SEASON_YEAR", "HOME"], as_index=False)["_param"]
+               .mean()
+               .rename(columns={"_param": "_prev_season_mean"})
+        )
 
-        # If season-to-date is missing (first game), fall back to last-N home/away
+        # Map previous season's mean onto the next season
+        prev_season_mean["SEASON_YEAR"] = prev_season_mean["SEASON_YEAR"] + 1
+
+        out = out.merge(
+            prev_season_mean[["TEAM_ID", "SEASON_YEAR", "HOME", "_prev_season_mean"]],
+            on=["TEAM_ID", "SEASON_YEAR", "HOME"],
+            how="left",
+        )
+
+        # Fill order:
+        # 1) season-to-date (preferred)
+        # 2) previous season mean
+        # 3) rolling home/away (your current fallback)
+        out[season_avg_col] = out[season_avg_col].fillna(out["_prev_season_mean"])
         out[season_avg_col] = out[season_avg_col].fillna(out[last_n_homeaway_col])
+
+        out.drop(columns=["_prev_season_mean"], inplace=True)
 
     # Return to your preferred ordering
     out.sort_values(["GAME_DATE"], ascending=False, inplace=True)
@@ -130,7 +176,7 @@ def compute_season_std(df, param="PTS"):
     return df
 
 
-def compute_rolling_weighted_stats(df, param="PTS", window=10, group_by_season=True):
+def compute_rolling_weighted_stats(df, param="PTS", window=10, group_by_season=False):
     """
     Computes weighted moving average for a given param, excluding the current row's game.
 

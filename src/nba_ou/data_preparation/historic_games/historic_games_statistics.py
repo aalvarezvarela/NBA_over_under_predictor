@@ -32,6 +32,7 @@ def compute_differences_in_points_conceeded_annotated(df: pd.DataFrame) -> pd.Da
     out.sort_values("GAME_DATE", ascending=False, inplace=True)
     return out
 
+
 def compute_trend_slope(df, parameter="PTS", window=10):
     """
     Computes the slope of a linear regression line over the last `window` games
@@ -49,11 +50,14 @@ def compute_trend_slope(df, parameter="PTS", window=10):
 
     def calculate_slope(series):
         """Applies linear regression to compute the trend slope."""
-        if len(series) < 2:
-            return 0  # Not enough data for a trend, so we assing 0
+        # Remove NaN and None values
+        clean_series = series.dropna()
 
-        X = np.arange(1, len(series) + 1)  # Time index [1, 2, ..., N]
-        Y = series  # Directly use the series
+        if len(clean_series) < 2:
+            return 0  # Not enough data for a trend, so we assign 0
+
+        X = np.arange(1, len(clean_series) + 1)  # Time index [1, 2, ..., N]
+        Y = clean_series  # Use cleaned series
 
         slope, _, _, _, _ = linregress(X, Y)
         return slope
@@ -171,32 +175,3 @@ def compute_home_points_conceded_avg(df):
     df = df.sort_values("GAME_DATE", ascending=False)
     return df
 
-
-def compute_differences_in_points_conceeded_annotated(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-
-    sort_home = ["TEAM_ID_TEAM_HOME", "SEASON_YEAR", "GAME_DATE"]
-    sort_away = ["TEAM_ID_TEAM_AWAY", "SEASON_YEAR", "GAME_DATE"]
-    if "GAME_ID" in out.columns:
-        sort_home.append("GAME_ID")
-        sort_away.append("GAME_ID")
-
-    home_col = "AVG_DIFFERENCE_CONCEDED_VS_ANNOTATED_BEFORE_GAME_TEAM_HOME"
-    away_col = "AVG_DIFFERENCE_CONCEDED_VS_ANNOTATED_BEFORE_GAME_TEAM_AWAY"
-
-    out.sort_values(sort_home, ascending=True, inplace=True)
-    out[home_col] = (
-        out.groupby(["TEAM_ID_TEAM_HOME", "SEASON_YEAR"])[
-            "DIFERENCE_POINTS_CONCEDED_VS_EXPECTED_BEFORE_HOME_GAME"
-        ].transform(lambda s: s.shift(1).expanding(min_periods=1).mean())
-    ).fillna(0)
-
-    out.sort_values(sort_away, ascending=True, inplace=True)
-    out[away_col] = (
-        out.groupby(["TEAM_ID_TEAM_AWAY", "SEASON_YEAR"])[
-            "DIFERENCE_POINTS_CONCEDED_VS_EXPECTED_BEFORE_AWAY_GAME"
-        ].transform(lambda s: s.shift(1).expanding(min_periods=1).mean())
-    ).fillna(0)
-
-    out.sort_values("GAME_DATE", ascending=False, inplace=True)
-    return out

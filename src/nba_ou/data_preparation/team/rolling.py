@@ -61,8 +61,8 @@ def compute_all_rolling_statistics(df):
     for col in tqdm(
         COLS_TO_AVERAGE + COLS_TO_AVERAGE_ODDS, desc="Computing rolling stats"
     ):
-        df = compute_rolling_stats(df, col, window=5, add_extra_season_avg=True)
-        df = compute_rolling_stats(df, col, window=10, add_extra_season_avg=False)
+        df = compute_rolling_stats(df, col, window=5, add_extra_season_avg=True, group_by_season=False)
+        df = compute_rolling_stats(df, col, window=10, add_extra_season_avg=False, group_by_season=False)
         if col in COLS_FOR_WEIGHTED_STATS:
             df = compute_rolling_weighted_stats(
                 df, col, window=10, group_by_season=False
@@ -72,7 +72,7 @@ def compute_all_rolling_statistics(df):
             )
         if col == 'DIFF_FROM_LINE':
             # Also compute weighted stats grouped by season for DIFF_FROM_LINE
-            df = compute_rolling_stats(df, col, window=1, add_extra_season_avg=False)
+            df = compute_rolling_stats(df, col, window=1, add_extra_season_avg=False, )
             df = compute_rolling_stats(df, col, window=2, add_extra_season_avg=False)
             df = compute_rolling_stats(df, col, window=3, add_extra_season_avg=False)
 

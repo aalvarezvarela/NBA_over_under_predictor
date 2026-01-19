@@ -259,7 +259,7 @@ if __name__ == "__main__":
     # Create training data up to a specific date
     date_to_train = "2026-01-10"
     # older_limit_to_include = "2025-11-01"  # Optional: specify start date
-    older_limit_to_include = "2024-12-01"  # Optional: specify start date
+    older_limit_to_include = "2004-10-01"  # Optional: specify start date
 
     df_train = create_df_to_train(
         recent_limit_to_include=date_to_train, older_limit_to_include=older_limit_to_include
