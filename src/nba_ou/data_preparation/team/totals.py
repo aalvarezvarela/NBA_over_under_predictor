@@ -19,6 +19,7 @@ def compute_total_points_features(df):
     """
     df["TOTAL_POINTS"] = df.groupby("GAME_ID")["PTS"].transform("sum")
     df["DIFF_FROM_LINE"] = df["TOTAL_POINTS"] - df["TOTAL_OVER_UNDER_LINE"]
+    df["IS_OVER_LINE"] = (df["TOTAL_POINTS"] > df["TOTAL_OVER_UNDER_LINE"]).astype(int)
     df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], format="%Y-%m-%d")
 
     return df

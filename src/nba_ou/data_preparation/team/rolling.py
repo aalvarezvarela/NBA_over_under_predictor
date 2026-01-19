@@ -35,11 +35,12 @@ COLS_TO_AVERAGE_ODDS = [
     "TOTAL_POINTS",
     "MONEYLINE",
     "SPREAD",
+    "IS_OVER_LINE",
 ]
 
-COLS_FOR_WEIGHTED_STATS = ["PTS", "TOTAL_POINTS", "TOTAL_OVER_UNDER_LINE"]
+COLS_FOR_WEIGHTED_STATS = ["PTS", "TOTAL_POINTS", "TOTAL_OVER_UNDER_LINE", "DIFF_FROM_LINE"]
 
-COLS_FOR_SEASON_STD = ["PTS", "TOTAL_POINTS", "TOTAL_OVER_UNDER_LINE", "DIFF_FROM_LINE"]
+COLS_FOR_SEASON_STD = ["PTS", "TOTAL_POINTS", "TOTAL_OVER_UNDER_LINE", "DIFF_FROM_LINE", "IS_OVER_LINE"]
 
 def compute_all_rolling_statistics(df):
     """
@@ -61,6 +62,7 @@ def compute_all_rolling_statistics(df):
         COLS_TO_AVERAGE + COLS_TO_AVERAGE_ODDS, desc="Computing rolling stats"
     ):
         df = compute_rolling_stats(df, col, window=5, add_extra_season_avg=True)
+        df = compute_rolling_stats(df, col, window=10, add_extra_season_avg=False)
         if col in COLS_FOR_WEIGHTED_STATS:
             df = compute_rolling_weighted_stats(
                 df, col, window=10, group_by_season=False
@@ -68,7 +70,13 @@ def compute_all_rolling_statistics(df):
             df = compute_rolling_weighted_stats(
                 df, col, window=5, group_by_season=False
             )
+        if col == 'DIFF_FROM_LINE':
+            # Also compute weighted stats grouped by season for DIFF_FROM_LINE
+            df = compute_rolling_stats(df, col, window=1, add_extra_season_avg=False)
+            df = compute_rolling_stats(df, col, window=2, add_extra_season_avg=False)
+            df = compute_rolling_stats(df, col, window=3, add_extra_season_avg=False)
 
+        
     # Compute seasonal standard deviations
     for param in COLS_FOR_SEASON_STD:
         df = compute_season_std(df, param=param)

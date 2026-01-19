@@ -125,6 +125,9 @@ def merge_home_away_data(df):
     df_merged = compute_trend_slope(
         df_merged, parameter="TOTAL_OVER_UNDER_LINE", window=5
     )
+    df_merged = compute_trend_slope(
+        df_merged, parameter="IS_OVER_LINE", window=5
+    )
     df_merged = df_merged.sort_values(by="GAME_DATE", ascending=False)
 
 
