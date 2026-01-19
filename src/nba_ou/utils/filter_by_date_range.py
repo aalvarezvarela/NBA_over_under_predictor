@@ -4,22 +4,27 @@ import pandas as pd
 
 
 def filter_by_date_range(
-    df: pd.DataFrame, date_from: datetime | None, date_to: datetime
+    df: pd.DataFrame,
+    older_date_to_include: datetime | None,
+    most_recent_date_to_include: datetime,
 ) -> pd.DataFrame:
     """
     Filter DataFrame by date range.
 
     Args:
         df (pd.DataFrame): DataFrame with GAME_DATE column
-        date_from (datetime | None): Starting date for filtering. If None, no lower bound
-        date_to (datetime): End date for filtering
+        older_date_to_include (datetime | None): Starting date for filtering. If None, no lower bound
+        most_recent_date_to_include (datetime): End date for filtering
 
     Returns:
         pd.DataFrame: Filtered DataFrame
     """
-    if date_from is not None:
-        df = df[(df["GAME_DATE"] >= date_from) & (df["GAME_DATE"] <= date_to)]
+    if older_date_to_include is not None:
+        df = df[
+            (df["GAME_DATE"] >= older_date_to_include)
+            & (df["GAME_DATE"] <= most_recent_date_to_include)
+        ]
     else:
-        df = df[df["GAME_DATE"] <= date_to]
+        df = df[df["GAME_DATE"] <= most_recent_date_to_include]
 
     return df

@@ -134,6 +134,10 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
 
     # 3) Iterate over each row in df_team (only needed columns for efficiency)
     cols_needed = ["GAME_ID", "TEAM_ID", "SEASON_ID", "GAME_DATE"]
+
+    # Collect all updates in a list for bulk assignment
+    updates_list = []
+
     for idx, (game_id, team_id, season_id, game_date) in enumerate(
         tqdm(
             df_team[cols_needed].itertuples(index=False, name=None),
@@ -144,6 +148,7 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
         # Identify active players using optimized lookup
         df_active = player_lookup(season_id, team_id, game_date)
         if df_active.empty:
+            updates_list.append({})
             continue
 
         # Who is injured for this game/team?
@@ -154,6 +159,7 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
         df_non_inj = df_active[~df_active["PLAYER_ID"].isin(injured_players)]
         df_inj = df_active[df_active["PLAYER_ID"].isin(injured_players)]
 
+        row_update = {}
         for stat_col in stat_cols:
             # Top-n for each (use module constants)
             n_players_noninj = N_TOP_PLAYERS_NON_INJURED
@@ -180,8 +186,6 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
             while len(top3_inj) < n_players_inj:
                 top3_inj.append((None, None, 0))
 
-            row_update = {}
-
             for i in range(n_players_noninj):
                 row_update[f"TOP{i+1}_PLAYER_ID_{stat_col}"] = topn_non_inj[i][0]
                 row_update[f"TOP{i+1}_PLAYER_NAME_{stat_col}"] = topn_non_inj[i][1]
@@ -197,8 +201,12 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
                 sum(inj_values) / len(inj_values) if inj_values else 0
             )
 
-            # Single assignment for all columns in row_update
-            df_team.loc[idx, row_update.keys()] = row_update.values()
+        updates_list.append(row_update)
+
+    # Apply all updates at once using a DataFrame
+    updates_df = pd.DataFrame(updates_list, index=df_team.index)
+    for col in updates_df.columns:
+        df_team[col] = updates_df[col]
 
     df_team["TOTAL_INJURED_PLAYER_PTS_BEFORE"] = (
         df_team[

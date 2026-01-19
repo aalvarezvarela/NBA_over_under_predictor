@@ -94,7 +94,7 @@ def process_team_statistics_for_training(df, df_odds):
 
 
 def process_player_statistics_for_training(
-    df_players, df_team, df_injuries, date_from, date_to_train_until
+    df_players, df_team, df_injuries, older_limit_to_include, date_to_train_until
 ):
     """
     Process player statistics and prepare for training.
@@ -113,7 +113,7 @@ def process_player_statistics_for_training(
     """
 
     df_players = clear_player_statistics(df_players, df_team)
-    df_players = filter_by_date_range(df_players, date_from, date_to_train_until)
+    df_players = filter_by_date_range(df_players, older_limit_to_include, date_to_train_until)
     # Define statistics to compute for top players
     stats = ["PTS", "PACE_PER40", "DEF_RATING", "OFF_RATING", "TS_PCT", "MIN"]
 
@@ -126,44 +126,44 @@ def process_player_statistics_for_training(
 
 
 def create_df_to_train(
-    date_to_train_until: str | datetime,
-    date_from: str | datetime = None,
+    recent_limit_to_include: str | datetime,
+    older_limit_to_include: str | datetime = None,
     full_training_data: bool = False,
 ):
     """
     Create training dataset for NBA over/under prediction models.
 
     This function:
-    - Loads data from database for seasons from date_from (or 2006-07) to date_to_train_until
+    - Loads data from database for seasons from older_limit_to_include (or 2006-07) to recent_limit_to_include
     - Processes injuries from database (not from live reports)
     - Computes all team and player statistics
     - Calculates rolling averages and trends
     - Merges home/away data and prepares final training features
 
     Args:
-        date_to_train_until (str | datetime): Latest date to include in training data (YYYY-MM-DD)
+        recent_limit_to_include (str | datetime): Latest date to include in training data (YYYY-MM-DD)
         df_odds (pd.DataFrame): Betting odds data
-        date_from (str | datetime, optional): Starting date for training data. If None, starts from 2006-07
+        older_limit_to_include (str | datetime, optional): Starting date for training data. If None, starts from 2006-07
 
     Returns:
         pd.DataFrame: Complete training dataset with all features
     """
     
 
-    if isinstance(date_to_train_until, str):
-        date_to_train_until = pd.to_datetime(date_to_train_until, format="%Y-%m-%d")
+    if isinstance(recent_limit_to_include, str):
+        recent_limit_to_include = pd.to_datetime(recent_limit_to_include, format="%Y-%m-%d")
     else:
-        date_to_train_until = pd.to_datetime(date_to_train_until)
+        recent_limit_to_include = pd.to_datetime(recent_limit_to_include)
 
     # Determine which seasons to load
-    if date_from is not None:
-        if isinstance(date_from, str):
-            date_from = pd.to_datetime(date_from, format="%Y-%m-%d")
+    if older_limit_to_include is not None:
+        if isinstance(older_limit_to_include, str):
+            older_limit_to_include = pd.to_datetime(older_limit_to_include, format="%Y-%m-%d")
         else:
-            date_from = pd.to_datetime(date_from)
-        seasons = get_seasons_between_dates(date_from, date_to_train_until)
+            older_limit_to_include = pd.to_datetime(older_limit_to_include)
+        seasons = get_seasons_between_dates(older_limit_to_include, recent_limit_to_include)
     else:
-        seasons = get_all_seasons_from_2006(date_to_train_until)
+        seasons = get_all_seasons_from_2006(recent_limit_to_include)
 
     
     print(f"Loading data for seasons: {seasons}")
@@ -175,7 +175,7 @@ def create_df_to_train(
     df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
 
     # Filter df by date range
-    df = filter_by_date_range(df, date_from, date_to_train_until)
+    df = filter_by_date_range(df, older_limit_to_include, recent_limit_to_include)
     
     original_columns = df.columns.tolist()
 
@@ -188,7 +188,7 @@ def create_df_to_train(
     # Add Players Statistics
 
     df, injured_dict = process_player_statistics_for_training(
-        df_players, df, df_injuries, date_from, date_to_train_until
+        df_players, df, df_injuries, older_limit_to_include, recent_limit_to_include
     )
 
     df_merged = merge_home_away_data(df)
@@ -243,7 +243,7 @@ def create_df_to_train(
 
     print()
     print("--" * 20)
-    print(f"Training data created up to {date_to_train_until}")
+    print(f"Training data created up to {recent_limit_to_include}")
     print(f"Number of games: {df_training.shape[0]}")
     print(f"Number of features: {df_training.shape[1]}")
     print("--" * 20)
@@ -258,14 +258,14 @@ if __name__ == "__main__":
     )
     # Create training data up to a specific date
     date_to_train = "2026-01-10"
-    # date_from = "2025-11-01"  # Optional: specify start date
-    date_from = "2005-12-01"  # Optional: specify start date
+    # older_limit_to_include = "2025-11-01"  # Optional: specify start date
+    older_limit_to_include = "2024-12-01"  # Optional: specify start date
 
     df_train = create_df_to_train(
-        date_to_train_until=date_to_train, date_from=date_from
+        recent_limit_to_include=date_to_train, older_limit_to_include=older_limit_to_include
     )
 
-    output_name_before_referee = f"{output_path}/training_data{pd.to_datetime(date_to_train).strftime('%Y%m%d')}.csv"
+    output_name_before_referee = f"{output_path}/training_data_from_{older_limit_to_include}_to_{date_to_train}.csv"
     df_train.to_csv(output_name_before_referee, index=False)
     print(
         f"Training data features saved to {output_name_before_referee}"
