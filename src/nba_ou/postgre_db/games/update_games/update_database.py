@@ -10,7 +10,7 @@ import sys
 from datetime import datetime
 
 import pandas as pd
-from postgre_DB.create_nba_games_db import load_games_data_to_db
+from nba_ou.postgre_db.games.create_nba_games_db import load_games_data_to_db
 from postgre_DB.create_nba_players_db import load_players_data_to_db
 from utils.general_utils import get_nba_season_nullable
 

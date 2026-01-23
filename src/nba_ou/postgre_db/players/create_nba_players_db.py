@@ -1,30 +1,30 @@
 import pandas as pd
 import psycopg
-from psycopg import sql
-
-from .config.db_config import (
+from nba_ou.postgre_db.config.db_config import (
     connect_nba_db,
     connect_postgres_db,
     get_db_credentials,
     get_schema_name_players,
 )
+from psycopg import sql
 
 
-def create_players_schema_database():
-    """
-    Create the single PostgreSQL database (DB_NAME from config) if it doesn't exist.
-    You can run this once globally, but keeping it here is fine.
-    """
+def create_database():
+    """Create the single PostgreSQL database (DB_NAME) if it doesn't exist."""
     try:
         db_name = get_db_credentials()["dbname"]
 
         conn = connect_postgres_db()
         with conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM pg_catalog.pg_database WHERE datname = %s", (db_name,))
+            cur.execute(
+                "SELECT 1 FROM pg_catalog.pg_database WHERE datname = %s", (db_name,)
+            )
             exists = cur.fetchone()
 
             if not exists:
-                cur.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(db_name)))
+                cur.execute(
+                    sql.SQL("CREATE DATABASE {}").format(sql.Identifier(db_name))
+                )
                 print(f"Database '{db_name}' created successfully!")
             else:
                 print(f"Database '{db_name}' already exists.")
@@ -35,9 +35,49 @@ def create_players_schema_database():
         print(f"Error creating database: {e}")
         return False
 
+
+def database_exists() -> bool:
+    """Check if the database exists."""
+    try:
+        db_name = get_db_credentials()["dbname"]
+        conn = connect_postgres_db()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM pg_catalog.pg_database WHERE datname = %s", (db_name,)
+            )
+            exists = cur.fetchone()
+        conn.close()
+        return exists is not None
+    except Exception as e:
+        print(f"Error checking database existence: {e}")
+        return False
+
+
+def schema_exists(schema_name: str = None) -> bool:
+    """Check if the schema exists in the database."""
+    try:
+        if schema_name is None:
+            schema_name = get_schema_name_players()
+
+        conn = connect_nba_db()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM information_schema.schemata WHERE schema_name = %s",
+                (schema_name,),
+            )
+            exists = cur.fetchone()
+        conn.close()
+        return exists is not None
+    except Exception as e:
+        print(f"Error checking schema existence: {e}")
+        return False
+
+
 def create_schema_if_not_exists(conn: psycopg.Connection, schema: str) -> None:
     with conn.cursor() as cur:
-        cur.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(schema)))
+        cur.execute(
+            sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(schema))
+        )
     conn.commit()
 
 
@@ -164,117 +204,32 @@ def create_players_table(drop_existing: bool = True):
         return False
 
 
-def load_players_data_to_db(df: pd.DataFrame, conn: psycopg.Connection | None = None):
-    """Load players dataframe into schema SCHEMA_NAME_PLAYERS table nba_players."""
-    close_conn = False
-    schema = get_schema_name_players()
-
-    # Remove unnecessary slug columns
-    columns_to_remove = ["teamSlug", "playerSlug"]
-    for col in columns_to_remove:
-        if col in df.columns:
-            df = df.drop(columns=[col])
-            print(f"Removed '{col}' column")
-
-    if conn is None:
-        conn = connect_nba_db()
-        close_conn = True
-
-    create_schema_if_not_exists(conn, schema)
-
-    with conn.cursor() as cur:
-        print("Converting data types...")
-
-        integer_cols = [
-            "FGM","FGA","FG3M","FG3A","FTM","FTA","OREB","DREB","REB",
-            "AST","STL","BLK","TOV","PF","PTS",
-        ]
-        for col in integer_cols:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce").round().astype("Int64")
-                df[col] = df[col].astype(object).where(df[col].notna(), None)
-
-        float_cols = [
-            "FG_PCT","FG3_PCT","FT_PCT","PLUS_MINUS","E_OFF_RATING","OFF_RATING",
-            "E_DEF_RATING","DEF_RATING","E_NET_RATING","NET_RATING","AST_PCT",
-            "AST_TOV","AST_RATIO","OREB_PCT","DREB_PCT","REB_PCT","TM_TOV_PCT",
-            "EFG_PCT","TS_PCT","USG_PCT","E_USG_PCT","E_PACE","PACE","PACE_PER40",
-            "POSS","PIE",
-        ]
-        for col in float_cols:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-
-        # Convert pandas NA/NaT to None
-        df = df.where(pd.notna(df), None)
-
-        print(f"Loading {len(df)} rows into database...")
-
-        columns = [col for col in df.columns if col not in columns_to_remove]
-        column_names = ", ".join([col.lower() for col in columns])
-        placeholders = ", ".join(["%s"] * len(columns))
-
-        insert_query = sql.SQL(
-            """
-            INSERT INTO {}.{} ({})
-            VALUES ({})
-            ON CONFLICT (game_id, team_id, player_id, season_year) DO NOTHING
-            """
-        ).format(
-            sql.Identifier(schema),
-            sql.Identifier(schema),
-            sql.SQL(column_names),
-            sql.SQL(placeholders),
-        )
-
-        batch_size = 1000
-        total_inserted = 0
-        for i in range(0, len(df), batch_size):
-            batch = df.iloc[i : i + batch_size]
-            values = [tuple(row) for row in batch[columns].values]
-            cur.executemany(insert_query, values)
-            conn.commit()
-            total_inserted += len(batch)
-            print(f"Inserted {total_inserted}/{len(df)} rows...")
-
-        print(f"\nSuccessfully loaded {total_inserted} rows into the database!")
-
-        cur.execute(
-            sql.SQL("SELECT COUNT(*) FROM {}.{}").format(
-                sql.Identifier(schema), sql.Identifier(schema)
-            )
-        )
-        count = cur.fetchone()[0]
-        print(f"Total rows in {schema}.{schema}: {count}")
-
-    if close_conn:
-        conn.close()
-    return True
-
-
-
 
 if __name__ == "__main__":
     print("Step 1: Creating database...")
-    if not create_players_schema_database():
-        raise SystemExit(1)
+    if not create_database():
+        exit(1)
 
-    print("\nStep 2: Creating schema + table...")
+    print("\nStep 2: Creating table...")
     if not create_players_table():
-        raise SystemExit(1)
+        exit(1)
 
     print("\nStep 3: Loading combined data...")
     from combine_games_data import combine_all_nba_games
+    from nba_ou.postgre_db.players.upload_players_data_to_db import (
+        upload_players_data_to_db,
+    )
 
-    data_dir = "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/season_games_data"
+    data_dir = (
+        "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/season_games_data"
+    )
     df_all_players = combine_all_nba_games(data_dir, file_prefix="nba_players")
 
-    if df_all_players is None:
+    if df_all_players is not None:
+        print("\nStep 4: Inserting data into PostgreSQL...")
+        upload_players_data_to_db(df_all_players)
+    else:
         print("Failed to load combined dataframe!")
-        raise SystemExit(1)
+        exit(1)
 
-    print("\nStep 4: Inserting data into PostgreSQL...")
-    if not load_players_data_to_db(df_all_players):
-        raise SystemExit(1)
-
-    print("\nDatabase setup complete.")
+    print("\n✅ Database setup complete!")

@@ -9,14 +9,6 @@ from nba_ou.config.request_headers import HEADERS_BROWSER_LIKE
 _ET = ZoneInfo("America/New_York")
 
 
-def _norm_matchup(s: str) -> str:
-    s = (s or "").lower().strip()
-    s = s.replace("los angeles", "la")
-    s = re.sub(r"[^a-z0-9@ ]+", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
-
-
 def fetch_nba_referee_assignments_today(nba_official_url: str) -> pd.DataFrame:
     """
     Returns the NBA referee assignments table for the current day as posted on official.nba.com.
@@ -45,5 +37,7 @@ def fetch_nba_referee_assignments_today(nba_official_url: str) -> pd.DataFrame:
     if "Alternate" not in nba_tbl.columns:
         nba_tbl["Alternate"] = pd.NA
 
-    nba_tbl["MATCHUP_KEY"] = nba_tbl["Game"].map(lambda x: _norm_matchup(str(x)))
+    if nba_tbl.empty:
+        raise RuntimeError("No referee assignments found for today yet, please check back later.")
+
     return nba_tbl

@@ -6,6 +6,9 @@ including computing referee-specific features based on historical performance.
 """
 
 import pandas as pd
+from nba_ou.data_preparation.referees.process_refs_scheduled_game import (
+    process_scheduled_referee_assignments,
+)
 from nba_ou.postgre_db.refs.get_refs_db import load_refs_data_from_db
 from tqdm import tqdm
 
@@ -153,7 +156,7 @@ def compute_referee_features(df_refs_pivot):
     return df
 
 
-def process_referee_data_for_training(seasons, df_merged):
+def process_referee_data_for_training(seasons, df_merged, df_referees_scheduled=None):
     """
     Load referee data from database, transform it, merge with training data,
     and compute referee-specific features.
@@ -162,7 +165,7 @@ def process_referee_data_for_training(seasons, df_merged):
         seasons (list): List of seasons to load (e.g., ["2023-24", "2022-23"])
         df_merged (pd.DataFrame): Training DataFrame with GAME_ID, GAME_DATE, SEASON_YEAR,
                                 TOTAL_POINTS, and TOTAL_OVER_UNDER_LINE columns
-
+        new_ref_data (pd.DataFrame, optional): New referee data from scheduled games
     Returns:
         pd.DataFrame: DataFrame with referee features, or None if no referee data available
     """
@@ -192,8 +195,21 @@ def process_referee_data_for_training(seasons, df_merged):
             .reset_index()
         )
 
+        if df_referees_scheduled is not None:
+            # Append new referee assignments from scheduled games
+            # Select only GAME_ID and REF columns from new_ref_data
+            new_ref_data_subset = df_referees_scheduled[
+                ["GAME_ID", "REF_1", "REF_2", "REF_3"]
+            ].copy()
+
+            # Append new referee data to df_refs_pivot
+            df_refs_pivot = pd.concat(
+                [df_refs_pivot, new_ref_data_subset], ignore_index=True
+            )
+
         # Ensure GAME_ID is string in both dataframes
         df_merged["GAME_ID"] = df_merged["GAME_ID"].astype(str)
+
         df_refs_pivot["GAME_ID"] = df_refs_pivot["GAME_ID"].astype(str)
         df_refs["GAME_ID"] = df_refs["GAME_ID"].astype(str)
 
@@ -228,7 +244,7 @@ def process_referee_data_for_training(seasons, df_merged):
         return None
 
 
-def add_referee_features_to_training_data(seasons, df_merged):
+def add_referee_features_to_training_data(seasons, df_merged, df_referees_scheduled=None):
     """
     Add referee-specific features to the training DataFrame.
 
@@ -239,7 +255,9 @@ def add_referee_features_to_training_data(seasons, df_merged):
     Returns:
         pd.DataFrame: Training DataFrame with added referee features
     """
-    df_refs_pivot = process_referee_data_for_training(seasons, df_merged)
+    df_refs_pivot = process_referee_data_for_training(
+        seasons, df_merged, df_referees_scheduled=df_referees_scheduled
+    )
 
     # Merge referee features into training data
     if df_refs_pivot is not None:
@@ -263,4 +281,5 @@ def add_referee_features_to_training_data(seasons, df_merged):
 
         print("\nReferee features successfully merged into training data!")
         print(f"Training data shape after merge: {df_merged.shape}")
+
     return df_merged

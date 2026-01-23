@@ -58,7 +58,8 @@ def get_out_players_by_game_and_team(df: pd.DataFrame) -> dict:
     return {game: dict(teams) for game, teams in result.items()}
 
 
-def process_injury_data(games: pd.DataFrame, injur_df: pd.DataFrame):
+def process_injury_data(games_original: pd.DataFrame, injur_df: pd.DataFrame):
+    games = games_original.copy()
     # Ensure datetime
     injur_df["Game Date"] = pd.to_datetime(injur_df["Game Date"])
     games["GAME_DATE_EST"] = pd.to_datetime(games["GAME_DATE_EST"])

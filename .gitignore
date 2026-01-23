@@ -220,3 +220,5 @@ data/training_data.csv
 *.csv#
 data/train_data
 data/events_cache/*
+lab/train_classifier/AutogluonModels/*
+models/*

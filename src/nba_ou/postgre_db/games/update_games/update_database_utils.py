@@ -11,27 +11,26 @@ import time
 
 import pandas as pd
 import requests
-from config.constants import SEASON_TYPE_MAP as SEASON_TYPE_MAPPING
 from nba_api.library.http import NBAHTTP
 from nba_api.stats.endpoints import (
     BoxScoreAdvancedV3,
     BoxScoreTraditionalV3,
     LeagueGameFinder,
 )
-from postgre_DB.db_config import (
+from nba_ou.config.constants import SEASON_TYPE_MAP as SEASON_TYPE_MAPPING
+from nba_ou.postgre_db.config.db_config import (
     connect_games_db,
     connect_players_db,
     get_schema_name_games,
     get_schema_name_players,
 )
-from psycopg import sql
-from tqdm import tqdm
-
-from .mapping_v3_v2 import (
+from nba_ou.postgre_db.games.update_games.mapping_v3_v2 import (
     V3_TO_V2_ADVANCED_PLAYER_MAP,
     V3_TO_V2_ADVANCED_TEAM_MAP,
     V3_TO_V2_TRADITIONAL_MAP,
 )
+from psycopg import sql
+from tqdm import tqdm
 
 
 def get_existing_game_ids_from_db(season_year: str, db_connection=None) -> set:

@@ -5,9 +5,8 @@ description = "NBA over/under prediction project."
 authors = ["Adrian Alvarez"]
 packages = [{ include = "nba_ou", from = "src" }]
 
-
 [tool.poetry.dependencies]
-python = "^3.11"
+python = ">=3.11,<3.14"
 asttokens = "3.0.0"
 certifi = "2025.1.31"
 charset-normalizer = "3.4.1"
@@ -67,6 +66,9 @@ pymupdf = "^1.26.6"
 beautifulsoup4 = "^4.14.2"
 psycopg = "^3.3.2"
 lxml = "^6.0.2"
+imblearn = "^0.0"
+autogluon = "^1.5.0"
+ipywidgets = "^8.1.8"
 
 [tool.poetry.group.dev.dependencies]
 black = "^24.0.0"

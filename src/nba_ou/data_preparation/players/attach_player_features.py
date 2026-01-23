@@ -60,7 +60,7 @@ def clear_player_statistics(df_players, df_team):
     return df_players
 
 
-def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PTS"]):
+def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PTS"], injury_dict_scheduled=None):
     """
     Main function to attach top player statistics and injured player stats to team data.
 
@@ -74,12 +74,16 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
         df_players (pd.DataFrame): Player-level boxscore data
         df_injuries (pd.DataFrame): Injury data per (GAME_ID, TEAM_ID, PLAYER_ID)
         stat_cols (list or str): Statistics columns to compute averages for
+        injury_dict_scheduled (dict, optional): Dictionary of scheduled injury data
 
     Returns:
         pd.DataFrame: Updated df_team with extra columns for top players and injured players
+        dict: Updated injured players dictionary
     """
     # Build injuries lookup
     injured_dict = get_injured_players_dict(df_injuries)
+    if injury_dict_scheduled:
+        injured_dict.update(injury_dict_scheduled)
 
     if isinstance(stat_cols, str):
         stat_cols = [stat_cols]

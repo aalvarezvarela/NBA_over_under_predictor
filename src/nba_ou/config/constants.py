@@ -126,6 +126,7 @@ TEAM_NAME_STANDARDIZATION = {
     "Los Angeles Clippers": "Los Angeles Clippers",
     # Los Angeles Lakers
     "LA Lakers": "Los Angeles Lakers",
+    "L.A. Lakers": "Los Angeles Lakers",
     "Los Angeles Lakers": "Los Angeles Lakers",
     # Memphis Grizzlies
     "MEM Grizzlies": "Memphis Grizzlies",
