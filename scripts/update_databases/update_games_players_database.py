@@ -7,20 +7,13 @@ Uses the existing `update_database` function (which fetches only missing game_id
 Covers seasons from 2005-06 through 2024-25, i.e. games played in calendar years 2006..2025.
 """
 
-from __future__ import annotations
 
-import sys
 import time
 from datetime import datetime
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]  # if script is inside src/
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-
-from config import settings
-from fetch_data.manage_games_database.update_database import update_database
+from nba_ou.config import settings
+from nba_ou.fetch_data.manage_games_database.update_database import update_database
 from fetch_data.manage_odds_data.update_odds import update_odds
 
 

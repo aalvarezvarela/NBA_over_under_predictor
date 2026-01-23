@@ -9,7 +9,7 @@ import streamlit as st
 
 # Suppress pandas SQLAlchemy warnings
 # Import nba_predictor main function
-from nba_predictor import main as run_nba_predictor
+from scripts.predict_nba_games import main as run_nba_predictor
 from postgre_DB.update_evaluation_predictions import (
     add_ou_betting_metrics,
     compute_daily_accuracy,

@@ -23,6 +23,9 @@ def get_predictions_schema_and_table() -> tuple[str, str]:
 def get_game_ids_with_null_total_scored_points() -> pd.DataFrame:
     schema, table = get_predictions_schema_and_table()
 
+    if not schema_exists(schema):
+        raise ValueError(f"Schema '{schema}' does not exist in the database.")
+    
     conn = connect_nba_db()
     try:
         query_obj = sql.SQL("""
