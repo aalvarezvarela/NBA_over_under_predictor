@@ -159,6 +159,16 @@ class Settings:
             fallback="https://therundown-therundown-v1.p.rapidapi.com",
         )
 
+    @property
+    def odds_save_pickle(self) -> bool:
+        """Whether to save raw odds pickles."""
+        return self.config.getboolean("Odds", "SAVE_ODDS_PICKLE", fallback=False)
+
+    @property
+    def odds_pickle_path(self) -> str | None:
+        """Path to store raw odds pickles (optional)."""
+        return self.config.get("Odds", "ODDS_PICKLE_PATH", fallback=None)
+
     # =========================================================================
     # HELPER METHODS
     # =========================================================================

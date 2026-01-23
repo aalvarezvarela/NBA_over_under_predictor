@@ -1,16 +1,10 @@
-from __future__ import annotations
-
-# Import the update function from the existing utilities
-import sys
 from pathlib import Path
 from typing import Optional, Union
 
 import numpy as np
 import pandas as pd
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from config.constants import TEAM_NAME_STANDARDIZATION
-from fetch_data.manage_odds_data.update_odds_utils import update_odds_db
+from nba_ou.config.constants import TEAM_NAME_STANDARDIZATION
+from nba_ou.postgre_db.odds.update_odds.update_odds_database import update_odds_database
 
 
 def _mode_or_none(s: pd.Series) -> Optional[float]:
@@ -220,7 +214,8 @@ if __name__ == "__main__":
 
     # Upload to PostgreSQL using the existing update function
     print("\nUploading to PostgreSQL...")
-    success = update_odds_db(df_odds)
+
+    success = update_odds_database(df_odds)
 
     if success:
         print("✅ Historical odds data successfully uploaded to database!")

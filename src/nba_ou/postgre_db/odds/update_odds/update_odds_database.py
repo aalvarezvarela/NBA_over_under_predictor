@@ -154,7 +154,7 @@ def update_odds_database(
                 print("No odds data could be fetched")
         else:
             print("No missing dates found in initial check")
-    else:
+    if check_missing_by_game:
         # Use database to get games and perform game-by-game verification
         print("Loading games from database for game-by-game verification...")
         games_df = load_games_from_db(seasons=[season_to_download])
