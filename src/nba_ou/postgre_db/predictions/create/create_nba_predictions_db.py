@@ -1,11 +1,31 @@
+
 import pandas as pd
 import psycopg
 from psycopg import sql
 
-from .config.db_config import (
+from nba_ou.postgre_db.config.db_config import (
     connect_nba_db,
     get_schema_name_predictions,
 )
+
+def schema_exists(schema_name: str = None) -> bool:
+    """Check if the predictions schema exists in the database."""
+    try:
+        if schema_name is None:
+            schema_name = get_schema_name_predictions()
+
+        conn = connect_nba_db()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM information_schema.schemata WHERE schema_name = %s",
+                (schema_name,),
+            )
+            exists = cur.fetchone()
+        conn.close()
+        return exists is not None
+    except Exception as e:
+        print(f"Error checking schema existence: {e}")
+        return False
 
 
 def create_prediction_schema_if_not_exists(conn: psycopg.Connection, schema: str) -> None:

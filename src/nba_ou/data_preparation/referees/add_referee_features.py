@@ -6,10 +6,7 @@ including computing referee-specific features based on historical performance.
 """
 
 import pandas as pd
-from nba_ou.data_preparation.referees.process_refs_scheduled_game import (
-    process_scheduled_referee_assignments,
-)
-from nba_ou.postgre_db.refs.get_refs_db import load_refs_data_from_db
+from nba_ou.postgre_db.injuries_refs.fetch_refs_db.get_refs_db import get_refs_data_from_db
 from tqdm import tqdm
 
 # Metrics to compute for referee impact
@@ -169,7 +166,7 @@ def process_referee_data_for_training(seasons, df_merged, df_referees_scheduled=
     Returns:
         pd.DataFrame: DataFrame with referee features, or None if no referee data available
     """
-    df_refs = load_refs_data_from_db(seasons)
+    df_refs = get_refs_data_from_db(seasons)
 
     # Transform referee data to have one row per game with REF_1, REF_2, REF_3
     if not df_refs.empty and "GAME_ID" in df_refs.columns:

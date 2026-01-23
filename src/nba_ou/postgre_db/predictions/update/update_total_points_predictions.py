@@ -1,9 +1,12 @@
 import pandas as pd
 from nba_api.stats.endpoints import LeagueGameFinder
 from psycopg import sql
-from utils.general_utils import get_nba_season_nullable
+from nba_ou.utils.general_utils import get_nba_season_nullable
 
-from .config.db_config import connect_nba_db, get_schema_name_predictions
+from nba_ou.postgre_db.config.db_config import connect_nba_db, get_schema_name_predictions
+from nba_ou.postgre_db.predictions.create.create_nba_predictions_db import (
+    schema_exists,
+)
 
 
 def get_predictions_schema_and_table() -> tuple[str, str]:
@@ -18,7 +21,6 @@ def get_predictions_schema_and_table() -> tuple[str, str]:
 
 
 def get_game_ids_with_null_total_scored_points() -> pd.DataFrame:
-    # TODO: Get also games which have total_scored_points < 140 
     schema, table = get_predictions_schema_and_table()
 
     conn = connect_nba_db()
@@ -27,10 +29,14 @@ def get_game_ids_with_null_total_scored_points() -> pd.DataFrame:
             SELECT *
             FROM {}.{}
             WHERE total_scored_points IS NULL
-        """).format(sql.Identifier(schema), sql.Identifier(table))
-        query = query_obj.as_string(conn)  # <-- convert to string for pandas
+            OR total_scored_points < %s
+        """).format(
+            sql.Identifier(schema),
+            sql.Identifier(table),
+        )
 
-        df = pd.read_sql_query(query, conn)
+        query = query_obj.as_string(conn)
+        df = pd.read_sql_query(query, conn, params=(110,))
     finally:
         conn.close()
 
@@ -56,9 +62,11 @@ def get_game_ids_with_null_total_scored_points() -> pd.DataFrame:
     games["total_scored_points"] = games.groupby("game_id")["PTS"].transform("sum")
     games = games[["game_id", "total_scored_points"]].drop_duplicates()
 
+    # NEW: drop games with total score < 140
+    games = games[games["total_scored_points"] >= 140]
+
     updates = games.dropna(subset=["game_id", "total_scored_points"]).copy()
     return updates
-
 
 def update_total_scored_points(updates: pd.DataFrame) -> None:
     """
@@ -95,3 +103,12 @@ def update_total_scored_points(updates: pd.DataFrame) -> None:
         conn.commit()
     finally:
         conn.close()
+
+def update_total_points_predictions():
+    updates = get_game_ids_with_null_total_scored_points()
+    print(f"Found {len(updates)} games to update with total scored points.")
+    if not updates.empty:
+        update_total_scored_points(updates)
+        print("Total scored points updated successfully.")
+    else:
+        print("No updates needed.")

@@ -178,7 +178,7 @@ def create_injuries_schema(drop_existing: bool = True):
         return False
 
 
-def load_injuries_to_db(df: pd.DataFrame, if_exists: str = "append") -> bool:
+def upload_injuries_data_to_db(df: pd.DataFrame, if_exists: str = "append") -> bool:
     """
     Load injuries data from DataFrame to PostgreSQL database.
 

@@ -3,7 +3,7 @@ from nba_ou.postgre_db.config.db_config import connect_nba_db, get_schema_name_r
 from psycopg import sql
 
 
-def load_refs_data_from_db(seasons):
+def get_refs_data_from_db(seasons):
     """
     Load referee data from database for the specified seasons.
 

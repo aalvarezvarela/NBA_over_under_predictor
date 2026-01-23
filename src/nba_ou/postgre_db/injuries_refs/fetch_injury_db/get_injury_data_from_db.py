@@ -6,7 +6,7 @@ from nba_ou.postgre_db.config.db_config import (
 from psycopg import sql
 
 
-def load_injury_data_from_db(seasons):
+def get_injury_data_from_db(seasons):
     """
     Load injury data from database for the specified seasons.
 

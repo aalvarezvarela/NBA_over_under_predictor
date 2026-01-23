@@ -176,7 +176,7 @@ def create_refs_schema(drop_existing: bool = True):
         return False
 
 
-def load_refs_to_db(df: pd.DataFrame, if_exists: str = "append") -> bool:
+def upload_refs_data_to_db(df: pd.DataFrame, if_exists: str = "append") -> bool:
     """
     Load refs data from DataFrame to PostgreSQL database.
 
