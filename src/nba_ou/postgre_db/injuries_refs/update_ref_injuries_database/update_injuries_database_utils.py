@@ -1,8 +1,8 @@
 """
-NBA Over/Under Predictor - Referees and Injuries Database Utilities
+NBA Over/Under Predictor - Injuries Database Utilities
 
-This module contains utility functions for fetching and updating NBA referee
-and injury data from the NBA API.
+This module contains utility functions for fetching and updating NBA injury data
+from the NBA API.
 """
 
 import random
@@ -11,21 +11,18 @@ import time
 
 import pandas as pd
 import requests
-from config.constants import TEAM_ID_MAP
 from nba_api.library.http import NBAHTTP
 from nba_api.stats.endpoints import BoxScoreSummaryV3, LeagueGameFinder
-from postgre_DB.db_config import (
+from nba_ou.config.constants import TEAM_ID_MAP
+from nba_ou.postgre_db.config.db_config import (
     connect_injuries_db,
-    connect_refs_db,
     get_schema_name_injuries,
-    get_schema_name_refs,
 )
 from psycopg import sql
 from tqdm import tqdm
 
-from ...postgre_db.injuries.mapping_v3_v2_injuries_refs import (
+from nba_ou.postgre_db.injuries.mapping_v3_v2_injuries_refs import (
     V3_TO_V2_INJURIES_MAP,
-    V3_TO_V2_OFFICIALS_MAP,
 )
 
 
@@ -51,7 +48,6 @@ def get_existing_injury_game_ids_from_db(season_year: str, db_connection=None) -
     cursor = db_connection.cursor()
     schema_name = get_schema_name_injuries()
 
-    # Query distinct game IDs for the season
     query = sql.SQL(
         """
         SELECT DISTINCT game_id
@@ -69,50 +65,6 @@ def get_existing_injury_game_ids_from_db(season_year: str, db_connection=None) -
 
     print(
         f"Found {len(game_ids)} existing games in injuries database for season {season_year}"
-    )
-    return game_ids
-
-
-def get_existing_ref_game_ids_from_db(season_year: str, db_connection=None) -> set:
-    """Query existing ref game IDs from PostgreSQL database for a specific season.
-
-    Args:
-        season_year: The first 4 digits of the season (e.g., '2024')
-        db_connection: Optional database connection. If None, attempts to create one.
-
-    Returns:
-        set: Set of existing game IDs in the refs database for the given season
-    """
-    close_conn = False
-    if db_connection is None:
-        try:
-            db_connection = connect_refs_db()
-            close_conn = True
-        except Exception as e:
-            print(f"Could not connect to refs database: {e}")
-            return set()
-
-    cursor = db_connection.cursor()
-    schema_name = get_schema_name_refs()
-
-    # Query distinct game IDs for the season
-    query = sql.SQL(
-        """
-        SELECT DISTINCT game_id
-        FROM {}.nba_refs
-        WHERE season_year = %s
-    """
-    ).format(sql.Identifier(schema_name))
-
-    cursor.execute(query, (int(season_year),))
-    game_ids = {row[0] for row in cursor.fetchall()}
-
-    cursor.close()
-    if close_conn:
-        db_connection.close()
-
-    print(
-        f"Found {len(game_ids)} existing games in refs database for season {season_year}"
     )
     return game_ids
 
@@ -142,7 +94,6 @@ def calculate_season_year(date):
     if pd.isna(date):
         return None
 
-    # Convert to datetime if needed
     if hasattr(date, "month"):
         month = date.month
         year = date.year
@@ -151,14 +102,12 @@ def calculate_season_year(date):
         month = dt.month
         year = dt.year
 
-    # January to July → season_year = year - 1
-    # August to December → season_year = year
     return year - 1 if month in [1, 2, 3, 4, 5, 6, 7] else year
 
 
 def fetch_box_score_summary(game_id: str, season_id: str, game_date, n_tries: int = 3):
     """
-    Fetches boxscore summary data for a single game, extracting referee and injury info.
+    Fetches boxscore summary data for a single game, extracting injury info.
     Uses V3 API and applies mapping to maintain V2 column compatibility.
 
     Args:
@@ -168,56 +117,33 @@ def fetch_box_score_summary(game_id: str, season_id: str, game_date, n_tries: in
         n_tries: Number of retry attempts
 
     Returns:
-        tuple: (df_refs, df_injuries, limit_reached)
+        tuple: (df_injuries, limit_reached)
     """
     limit_reached = False
-    df_refs = None
     df_injuries = None
 
     attempts = 0
-    time.sleep(random.uniform(0.05, 0.1))  # Avoid rate limiting
+    time.sleep(random.uniform(0.05, 0.1))
 
     while attempts < n_tries:
         try:
-            # Use BoxScoreSummaryV3 instead of V2
             boxscore = BoxScoreSummaryV3(game_id=game_id)
             game_info = boxscore.get_data_frames()
 
-            # Get officials data
-            # In V3, the structure may differ - need to identify correct dataframe index
-            # Typically: [0] = game summary, [1] = line score, [2] = officials, [3] = inactives
-            df_refs = game_info[3].copy()
-
-            # Apply V3 to V2 mapping for officials
-            df_refs.rename(columns=V3_TO_V2_OFFICIALS_MAP, inplace=True)
-
-            # Add columns that don't exist in V3
-            df_refs["GAME_ID"] = game_id
-            df_refs["SEASON_ID"] = season_id
-            df_refs["GAME_DATE"] = game_date
-
-            # Get inactive/injured players data
             df_injuries = game_info[5].copy()
 
-            # Apply V3 to V2 mapping for injuries
             df_injuries.rename(columns=V3_TO_V2_INJURIES_MAP, inplace=True)
 
-            # Add columns that don't exist in V3
             df_injuries["GAME_ID"] = game_id
             df_injuries["SEASON_ID"] = season_id
             df_injuries["GAME_DATE"] = game_date
 
-            # V3 injuries may not have team info in the injuries table itself
-            # We need to fill TEAM_ID using TEAM_ID_MAP if we have team name
-            # If team info exists in injuries df, map team names to IDs
             if (
                 "TEAM_NAME" in df_injuries.columns
                 and "TEAM_ID" not in df_injuries.columns
             ):
-                # Create team ID from team name using TEAM_ID_MAP
                 df_injuries["TEAM_ID"] = df_injuries["TEAM_NAME"].map(TEAM_ID_MAP)
 
-            # Add missing team columns with None if they don't exist
             if "TEAM_ID" not in df_injuries.columns:
                 df_injuries["TEAM_ID"] = None
             if "TEAM_CITY" not in df_injuries.columns:
@@ -247,21 +173,19 @@ def fetch_box_score_summary(game_id: str, season_id: str, game_date, n_tries: in
                     f"Failed to fetch boxscore summary for game {game_id} after {n_tries} attempts: {e}"
                 )
 
-    if df_refs is None or df_injuries is None:
-        print(
-            f"Warning: Missing data for game_id {game_id}. Refs: {df_refs is not None}, Injuries: {df_injuries is not None}"
-        )
+    if df_injuries is None:
+        print(f"Warning: Missing injuries for game_id {game_id}.")
 
-    return df_refs, df_injuries, limit_reached
+    return df_injuries, limit_reached
 
 
-def fetch_refs_injuries_data(
+def fetch_injuries_data(
     season_nullable: str,
     existing_game_ids: set = None,
     n_tries: int = 3,
-) -> tuple[pd.DataFrame, pd.DataFrame, bool]:
+) -> tuple[pd.DataFrame, bool]:
     """
-    Fetches and processes NBA referee and injury data for a specified season.
+    Fetches and processes NBA injury data for a specified season.
 
     Args:
         season_nullable: The NBA season in the format 'YYYY-YY' (e.g., '2023-24').
@@ -270,7 +194,6 @@ def fetch_refs_injuries_data(
 
     Returns:
         tuple:
-            - pd.DataFrame: Referee data
             - pd.DataFrame: Injury data
             - bool: Flag indicating if the rate limit was reached
     """
@@ -279,10 +202,9 @@ def fetch_refs_injuries_data(
     if not re.match(r"^\d{4}-\d{2}$", season_nullable):
         raise ValueError("Invalid season format. Expected format: 'YYYY-YY'")
 
-    # Retry LeagueGameFinder up to 3 times if it fails
     for attempt in range(1, 4):
         try:
-            time.sleep(random.uniform(0.1, 0.3))  # Avoid rate limiting
+            time.sleep(random.uniform(0.1, 0.3))
             games = LeagueGameFinder(season_nullable=season_nullable).get_data_frames()[
                 0
             ]
@@ -298,14 +220,13 @@ def fetch_refs_injuries_data(
                 print(
                     f"Failed to fetch LeagueGameFinder for {season_nullable} after 3 attempts: {e}"
                 )
-                return pd.DataFrame(), pd.DataFrame(), False
+                return pd.DataFrame(), False
 
-    # Extract unique games (LeagueGameFinder returns both teams, we need unique games)
     games_unique = games.drop_duplicates(subset=["GAME_ID"]).copy()
 
-    # Determine existing game IDs
     if existing_game_ids is not None:
         existing_ids = existing_game_ids
+    
     else:
         existing_ids = set()
 
@@ -315,19 +236,17 @@ def fetch_refs_injuries_data(
         print(
             f"No new games found for season {season_nullable}. Skipping data fetch..."
         )
-        return pd.DataFrame(), pd.DataFrame(), False
+        return pd.DataFrame(), False
 
-    # Create a mapping of game_id to season_id and game_date
     game_info_map = games_unique.set_index("GAME_ID")[
         ["SEASON_ID", "GAME_DATE"]
     ].to_dict("index")
 
-    all_refs = []
     all_injuries = []
     fetched_counter = 0
 
-    for game_id in tqdm(game_ids_to_fetch, desc="Fetching Refs/Injuries Data"):
-        time.sleep(random.uniform(0.1, 0.5))  # Avoid rate limiting
+    for game_id in tqdm(game_ids_to_fetch, desc="Fetching Injury Data"):
+        time.sleep(random.uniform(0.1, 0.5))
 
         game_info = game_info_map.get(game_id)
         if not game_info:
@@ -337,12 +256,9 @@ def fetch_refs_injuries_data(
         season_id = game_info["SEASON_ID"]
         game_date = game_info["GAME_DATE"]
 
-        df_refs, df_injuries, limit_reached = fetch_box_score_summary(
+        df_injuries, limit_reached = fetch_box_score_summary(
             game_id, season_id, game_date, n_tries
         )
-
-        if df_refs is not None and not df_refs.empty:
-            all_refs.append(df_refs)
 
         if df_injuries is not None and not df_injuries.empty:
             all_injuries.append(df_injuries)
@@ -357,19 +273,9 @@ def fetch_refs_injuries_data(
         if limit_reached:
             break
 
-    # Combine all dataframes
-    refs_df = pd.concat(all_refs, ignore_index=True) if all_refs else pd.DataFrame()
     injuries_df = (
         pd.concat(all_injuries, ignore_index=True) if all_injuries else pd.DataFrame()
     )
-
-    if not refs_df.empty:
-        refs_df["GAME_DATE"] = pd.to_datetime(
-            refs_df["GAME_DATE"], format="mixed", errors="coerce"
-        )
-        refs_df["SEASON_YEAR"] = refs_df["GAME_DATE"].apply(calculate_season_year)
-        refs_df = refs_df.dropna(subset=["SEASON_YEAR"])
-        refs_df["SEASON_YEAR"] = refs_df["SEASON_YEAR"].astype(int)
 
     if not injuries_df.empty:
         injuries_df["GAME_DATE"] = pd.to_datetime(
@@ -381,4 +287,4 @@ def fetch_refs_injuries_data(
         injuries_df = injuries_df.dropna(subset=["SEASON_YEAR"])
         injuries_df["SEASON_YEAR"] = injuries_df["SEASON_YEAR"].astype(int)
 
-    return refs_df, injuries_df, limit_reached
+    return injuries_df, limit_reached

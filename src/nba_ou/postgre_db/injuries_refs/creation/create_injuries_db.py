@@ -1,20 +1,51 @@
-import glob
 from pathlib import Path
 
 import pandas as pd
 import psycopg
+from nba_ou.postgre_db.config.db_config import (
+    connect_nba_db,
+    connect_postgres_db,
+    get_db_credentials,
+    get_schema_name_injuries,
+)
 from psycopg import sql
 
-try:
-    from .config.db_config import (
-        connect_nba_db,
-        get_schema_name_injuries,
-    )
-except ImportError:
-    from db_config import (
-        connect_nba_db,
-        get_schema_name_injuries,
-    )
+
+def database_exists() -> bool:
+    """Check if the database exists."""
+    try:
+        db_name = get_db_credentials()["dbname"]
+        conn = connect_postgres_db()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM pg_catalog.pg_database WHERE datname = %s", (db_name,)
+            )
+            exists = cur.fetchone()
+        conn.close()
+        return exists is not None
+    except Exception as e:
+        print(f"Error checking database existence: {e}")
+        return False
+
+
+def schema_exists(schema_name: str = None) -> bool:
+    """Check if the schema exists in the database."""
+    try:
+        if schema_name is None:
+            schema_name = get_schema_name_injuries()
+
+        conn = connect_nba_db()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM information_schema.schemata WHERE schema_name = %s",
+                (schema_name,),
+            )
+            exists = cur.fetchone()
+        conn.close()
+        return exists is not None
+    except Exception as e:
+        print(f"Error checking schema existence: {e}")
+        return False
 
 
 def create_schema_if_not_exists(conn: psycopg.Connection, schema: str) -> None:

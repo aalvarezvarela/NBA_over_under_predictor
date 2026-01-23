@@ -1,5 +1,8 @@
+import os
+import pickle
 import time
 from collections import Counter
+from pathlib import Path
 
 import pandas as pd
 import requests
@@ -34,14 +37,39 @@ def american_to_decimal(a: float) -> float:
 
 
 def process_odds_date(
-    date: str, BASE_URL: str, HEADERS: dict, is_today=False
+    date: str,
+    BASE_URL: str,
+    HEADERS: dict,
+    is_today=False,
+    save_pickle=False,
+    pickle_path=None,
 ) -> pd.DataFrame:
     sport_id = 4
+
     matches = get_events_for_date(sport_id, date, BASE_URL, HEADERS)
-    time.sleep(0.5)
+
+    time.sleep(0.25)
+
     if len(matches) == 0:
         print(f"No matches found for {date}")
         return pd.DataFrame()
+
+    # Save raw matches data as pickle if configured and not today
+    if save_pickle and not is_today and pickle_path:
+        try:
+            # Create directory if it doesn't exist
+            Path(pickle_path).mkdir(parents=True, exist_ok=True)
+
+            # Save pickle file with date in filename
+            pickle_filename = f"odds_matches_{date}.pkl"
+            pickle_filepath = os.path.join(pickle_path, pickle_filename)
+
+            with open(pickle_filepath, "wb") as f:
+                pickle.dump(matches, f)
+
+            print(f"Saved raw matches to {pickle_filepath}")
+        except Exception as e:
+            print(f"Warning: Failed to save pickle file for {date}: {e}")
 
     total_field = "total_over_delta" if not is_today else "total_over"
     moneyline_home_field = "moneyline_home_delta" if not is_today else "moneyline_home"

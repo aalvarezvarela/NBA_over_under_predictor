@@ -1,6 +1,57 @@
 import pandas as pd
 from nba_ou.postgre_db.config.db_config import connect_nba_db, get_schema_name_odds
+from nba_ou.postgre_db.odds.create.create_nba_odds_db import (
+    database_exists,
+    schema_exists,
+)
 from psycopg import sql
+
+
+def filter_invalid_odds(df_odds: pd.DataFrame) -> pd.DataFrame:
+    """
+    Filter out invalid odds data.
+
+    Removes rows where:
+    - most_common_total_line or average_total_line is null/NaN
+    - most_common_total_line or average_total_line is less than 100
+
+    Args:
+        df_odds (pd.DataFrame): Raw odds dataframe
+
+    Returns:
+        pd.DataFrame: Filtered odds dataframe with only valid data
+    """
+    if df_odds is None or df_odds.empty:
+        return df_odds
+
+    df_filtered = df_odds.copy()
+    initial_count = len(df_filtered)
+
+    # Drop rows where most_common_total_line or average_total_line is null/NaN
+    df_filtered = df_filtered.dropna(
+        subset=["most_common_total_line", "average_total_line"], how="any"
+    )
+    null_dropped = initial_count - len(df_filtered)
+    if null_dropped > 0:
+        print(f"Dropped {null_dropped} rows with null total line values")
+
+    # Drop rows where most_common_total_line < 100
+    df_filtered = df_filtered[df_filtered["most_common_total_line"] >= 100]
+
+    # Drop rows where average_total_line < 100
+    df_filtered = df_filtered[df_filtered["average_total_line"] >= 100]
+
+    invalid_dropped = initial_count - null_dropped - len(df_filtered)
+    if invalid_dropped > 0:
+        print(f"Dropped {invalid_dropped} rows with total line < 100")
+
+    total_dropped = initial_count - len(df_filtered)
+    if total_dropped > 0:
+        print(
+            f"Total dropped: {total_dropped} of {initial_count} rows ({total_dropped/initial_count*100:.1f}%)"
+        )
+
+    return df_filtered
 
 
 def load_odds_data(season_years: str = None) -> pd.DataFrame:
@@ -97,10 +148,22 @@ def get_existing_odds_from_db(season_year: str = None) -> pd.DataFrame:
     return df
 
 
-def update_odds_db(df_odds: pd.DataFrame) -> bool:
+def upload_to_odds_db(df_odds: pd.DataFrame) -> bool:
     if df_odds is None or df_odds.empty:
         print("No odds data to upload to PostgreSQL.")
         return False
+
+    # Safety check: verify database exists
+    if not database_exists():
+        raise RuntimeError(
+            "Database does not exist. Please create the database first using create_nba_odds_db.py"
+        )
+
+    # Safety check: verify schema exists
+    if not schema_exists():
+        raise RuntimeError(
+            "Odds schema does not exist. Please create the schema first using create_nba_odds_db.py"
+        )
 
     schema = get_schema_name_odds()
     table = schema  # convention: schema == table
@@ -110,19 +173,11 @@ def update_odds_db(df_odds: pd.DataFrame) -> bool:
     # Optional but recommended: normalize to lowercase to match DB column names
     df_upload.columns = [c.lower() for c in df_upload.columns]
 
-    # Drop rows where most_common_total_line or average_total_line is null/NaN
-    initial_count = len(df_upload)
-    df_upload = df_upload.dropna(
-        subset=["most_common_total_line", "average_total_line"], how="any"
-    )
-    dropped_count = initial_count - len(df_upload)
-    if dropped_count > 0:
-        print(
-            f"Dropped {dropped_count} rows with null most_common_total_line or average_total_line"
-        )
+    # Filter out invalid odds data
+    df_upload = filter_invalid_odds(df_upload)
 
     if df_upload.empty:
-        print("No valid odds data to upload after filtering null values.")
+        print("No valid odds data to upload after filtering.")
         return False
 
     # Convert game_date to timestamp (UTC)

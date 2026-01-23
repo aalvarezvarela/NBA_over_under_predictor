@@ -12,7 +12,7 @@ from nba_api.stats.endpoints import LeagueGameFinder
 from tqdm import tqdm
 
 from nba_ou.fetch_data.fetch_odds_data.get_odds_date import process_odds_date
-from nba_ou.postgre_db.odds.load_update_odds_db import (
+from nba_ou.postgre_db.odds.update_odds.upload_to_odds_db import (
     get_existing_odds_from_db,
     update_odds_db,
 )

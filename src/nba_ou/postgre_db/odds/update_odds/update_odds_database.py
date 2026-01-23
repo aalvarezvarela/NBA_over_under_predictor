@@ -7,8 +7,6 @@ It combines season-wide updates with game-by-game verification.
 
 import pandas as pd
 from nba_api.stats.endpoints import LeagueGameFinder
-from tqdm import tqdm
-
 from nba_ou.config.constants import SEASON_TYPE_MAP
 from nba_ou.fetch_data.fetch_odds_data.get_odds_date import process_odds_date
 from nba_ou.postgre_db.config.db_loader import load_games_from_db
@@ -16,10 +14,12 @@ from nba_ou.postgre_db.odds.create.create_nba_odds_db import (
     database_exists,
     schema_exists,
 )
+from nba_ou.postgre_db.odds.update_odds.odds_no_data_dates import ODDS_NO_DATA_DATES
 from nba_ou.postgre_db.odds.update_odds.upload_to_odds_db import (
     get_existing_odds_from_db,
-    update_odds_db,
+    upload_to_odds_db,
 )
+from tqdm import tqdm
 
 
 def update_odds_database(
@@ -27,6 +27,8 @@ def update_odds_database(
     ODDS_API_KEY: str,
     BASE_URL: str,
     check_missing_by_game: bool = True,
+    save_pickle: bool = False,
+    pickle_path: str = None,
 ) -> pd.DataFrame:
     """
     Update odds database with missing odds data for a given season.
@@ -123,21 +125,33 @@ def update_odds_database(
         if unique_dates:
             print(f"Found {len(unique_dates)} dates without odds. Fetching...")
 
+            new_odds_data = []
             for date in tqdm(unique_dates, desc="Processing odds per date"):
-                df_day = process_odds_date(date, BASE_URL, HEADERS)
+                df_day = process_odds_date(
+                    date,
+                    BASE_URL,
+                    HEADERS,
+                    is_today=False,
+                    save_pickle=save_pickle,
+                    pickle_path=pickle_path,
+                )
                 if df_day.empty:
                     print(f"No data for {date}")
                     continue
 
-                # Append to existing odds
-                df_odds = pd.concat([df_odds, df_day], ignore_index=True)
+                # Collect new odds
+                new_odds_data.append(df_day)
 
-            df_odds.sort_values(by="game_date", inplace=True, ascending=False)
-            df_odds.reset_index(drop=True, inplace=True)
+            # Combine and update database with only the newly fetched odds
+            if new_odds_data:
+                df_new_odds = pd.concat(new_odds_data, ignore_index=True)
+                print(
+                    f"Updating database with {len(df_new_odds)} newly fetched odds..."
+                )
+                upload_to_odds_db(df_new_odds)
 
-            # Update database with newly fetched odds
-            print("Updating database with fetched odds...")
-            update_odds_db(df_odds)
+            else:
+                print("No odds data could be fetched")
         else:
             print("No missing dates found in initial check")
     else:
@@ -164,32 +178,31 @@ def update_odds_database(
             )
 
         print("\nPerforming game-by-game missing odds verification...")
-        missing_odds_dates = _find_missing_odds_dates_from_games(
-            games_df, df_odds, season_to_download
-        )
+        missing_odds_dates = _find_missing_odds_dates_from_games(games_df, df_odds)
 
         if missing_odds_dates:
             print(f"Found {len(missing_odds_dates)} dates with missing game odds")
-            new_odds = _fetch_missing_odds(missing_odds_dates, BASE_URL, HEADERS)
+            new_odds = _fetch_missing_odds(
+                missing_odds_dates,
+                BASE_URL,
+                HEADERS,
+                save_pickle=save_pickle,
+                pickle_path=pickle_path,
+            )
 
             if not new_odds.empty:
-                df_odds = pd.concat([df_odds, new_odds], ignore_index=True)
-                df_odds.sort_values(by="game_date", inplace=True, ascending=False)
-                df_odds.reset_index(drop=True, inplace=True)
-
                 print("Updating database with missing game odds...")
-                update_odds_db(new_odds)
+                upload_to_odds_db(new_odds)
         else:
             print("No missing game odds found")
 
     print(f"\nTotal odds records: {len(df_odds)}")
-    return df_odds
+    return True
 
 
 def _find_missing_odds_dates_from_games(
     games_df: pd.DataFrame,
     df_odds: pd.DataFrame,
-    season: str,
 ) -> list:
     """
     Find dates where games exist but odds might be missing.
@@ -197,7 +210,6 @@ def _find_missing_odds_dates_from_games(
     Args:
         games_df (pd.DataFrame): Games dataframe from NBA API
         df_odds (pd.DataFrame): Current odds dataframe
-        season (str): Season string for filtering
 
     Returns:
         list: List of dates (with next day) where odds might be missing
@@ -216,10 +228,6 @@ def _find_missing_odds_dates_from_games(
     for date in game_dates:
         date_dt = pd.to_datetime(date)
 
-        # Skip off-season dates
-        if date_dt.month in [7, 8, 9] or (date_dt.month == 10 and date_dt.day < 22):
-            continue
-
         # Add date and next day to check
         date_str = date_dt.strftime("%Y-%m-%d")
         if date_str not in odds_dates:
@@ -236,6 +244,8 @@ def _fetch_missing_odds(
     missing_dates: list,
     BASE_URL: str,
     HEADERS: dict,
+    save_pickle: bool = False,
+    pickle_path: str = None,
 ) -> pd.DataFrame:
     """
     Fetch odds data for missing dates using the odds API.
@@ -244,28 +254,36 @@ def _fetch_missing_odds(
         missing_dates (list): List of dates to fetch odds for
         BASE_URL (str): Base URL for odds API
         HEADERS (dict): API headers with authentication
+        save_pickle (bool): Whether to save raw matches as pickle
+        pickle_path (str): Path to save pickle files
 
     Returns:
         pd.DataFrame: Combined odds data for all missing dates
     """
-    if not missing_dates:
+    # Import the list of dates to skip
+
+    # Exclude dates with no data
+    filtered_dates = [d for d in missing_dates if d not in ODDS_NO_DATA_DATES]
+    if not filtered_dates:
+        print("No missing dates to fetch after excluding known no-data dates.")
         return pd.DataFrame()
 
-    print(f"Fetching odds for {len(missing_dates)} potentially missing dates...")
+    print(f"Fetching odds for {len(filtered_dates)} potentially missing dates...")
 
     all_odds_data = []
 
-    for date in tqdm(missing_dates, desc="Fetching missing odds"):
-        try:
-            odds_df = process_odds_date(
-                date=date, BASE_URL=BASE_URL, HEADERS=HEADERS, is_today=False
-            )
+    for date in tqdm(filtered_dates, desc="Fetching missing odds"):
+        odds_df = process_odds_date(
+            date=date,
+            BASE_URL=BASE_URL,
+            HEADERS=HEADERS,
+            is_today=False,
+            save_pickle=save_pickle,
+            pickle_path=pickle_path,
+        )
 
-            if not odds_df.empty:
-                all_odds_data.append(odds_df)
-        except Exception as e:
-            print(f"Error fetching odds for {date}: {e}")
-            continue
+        if not odds_df.empty:
+            all_odds_data.append(odds_df)
 
     if all_odds_data:
         combined_odds = pd.concat(all_odds_data, ignore_index=True)
@@ -290,6 +308,8 @@ if __name__ == "__main__":
 
     BASE_URL = config.get("Odds", "BASE_URL")
     ODDS_API_KEY = secrets_config.get("Odds", "ODDS_API_KEY")
+    SAVE_PICKLE = config.getboolean("Odds", "SAVE_ODDS_PICKLE", fallback=False)
+    PICKLE_PATH = config.get("Odds", "ODDS_PICKLE_PATH", fallback=None)
 
     # Update odds for current season
     season = "2024-25"
@@ -300,6 +320,8 @@ if __name__ == "__main__":
         ODDS_API_KEY=ODDS_API_KEY,
         BASE_URL=BASE_URL,
         check_missing_by_game=True,
+        save_pickle=SAVE_PICKLE,
+        pickle_path=PICKLE_PATH,
     )
 
     print(f"\nFinal odds dataframe shape: {df_odds.shape}")

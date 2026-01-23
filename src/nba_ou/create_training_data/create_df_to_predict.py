@@ -53,8 +53,8 @@ from nba_ou.data_preparation.team.rolling import compute_all_rolling_statistics
 from nba_ou.data_preparation.team.totals import compute_total_points_features
 from nba_ou.data_preparation.travel.travel_processing import compute_travel_features
 from nba_ou.postgre_db import load_all_nba_data_from_db
-from nba_ou.postgre_db.injuries.load_injuries import load_injury_data_from_db
-from nba_ou.postgre_db.odds.load_update_odds_db import load_odds_data
+from nba_ou.postgre_db.injuries.fetch_injury_db.get_injury_data_from_db import load_injury_data_from_db
+from nba_ou.postgre_db.odds.update_odds.upload_to_odds_db import load_odds_data
 from nba_ou.utils.filter_by_date_range import filter_by_date_range
 from nba_ou.utils.seasons import get_seasons_between_dates
 
