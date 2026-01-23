@@ -13,6 +13,31 @@ from nba_ou.data_preparation.players.players_statistics import (
 )
 
 
+def _parse_minutes_series(min_series: pd.Series) -> pd.Series:
+    def parse_value(value) -> float:
+        if pd.isna(value) or value == "":
+            return 0.0
+        value_str = str(value)
+        if ":" in value_str:
+            parts = value_str.split(":")
+            if len(parts) == 2:
+                minutes_part = parts[0].strip()
+                seconds_part = parts[1].strip()
+                try:
+                    minutes_val = float(minutes_part)
+                except ValueError:
+                    return 0.0
+                if seconds_part.isdigit():
+                    return minutes_val + int(seconds_part) / 60.0
+            return 0.0
+        try:
+            return float(value_str)
+        except ValueError:
+            return 0.0
+
+    return min_series.apply(parse_value)
+
+
 def clear_player_statistics(df_players, df_team):
     """
     Process player statistics and prepare for training.
@@ -37,23 +62,7 @@ def clear_player_statistics(df_players, df_team):
     df_players = df_players.dropna(subset=["GAME_DATE"])
 
     df_players["GAME_DATE"] = pd.to_datetime(df_players["GAME_DATE"], format="%Y-%m-%d")
-    df_players["MIN"] = df_players["MIN"].astype(str)
-
-    # Extract minutes (XX) and seconds (YY) separately
-    df_players[["MINUTES", "SECONDS"]] = df_players["MIN"].str.extract(
-        r"^(\d+\.?\d*):?(\d*)$"
-    )
-
-    # Convert to float (handle empty second values as 0)
-    df_players["MINUTES"] = df_players["MINUTES"].astype(float)
-    df_players["SECONDS"] = df_players["SECONDS"].replace("", 0).astype(float)
-
-    # Compute total playing time in minutes
-    df_players["MIN"] = df_players["MINUTES"] + (df_players["SECONDS"] / 60)
-    df_players["MIN"] = df_players["MIN"].round(3).fillna(0)
-
-    # Drop temporary columns
-    df_players.drop(columns=["MINUTES", "SECONDS"], inplace=True)
+    df_players["MIN"] = _parse_minutes_series(df_players["MIN"]).round(3).fillna(0)
 
     df_players = df_players.drop_duplicates(keep="first")
 

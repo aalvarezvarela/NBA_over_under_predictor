@@ -1,6 +1,12 @@
 import numpy as np
 import pandas as pd
 
+from nba_ou.config.constants import (
+    TEAM_NAME_CONFERENCE_MAP,
+    TEAM_NAME_DIVISION_MAP,
+    TEAM_NAME_STANDARDIZATION,
+)
+
 
 def apply_final_transformations(df_training):
     """
@@ -58,6 +64,20 @@ def add_derived_features_after_computed_stats(df_training):
     df_training["BACK_TO_BACK"] = (
         df_training["REST_DAYS_BEFORE_MATCH_TEAM_AWAY"] == 1
     ) & (df_training["REST_DAYS_BEFORE_MATCH_TEAM_HOME"] == 1)
+
+    home_name = df_training["TEAM_NAME_TEAM_HOME"].astype(str)
+    away_name = df_training["TEAM_NAME_TEAM_AWAY"].astype(str)
+
+    home_name = home_name.map(TEAM_NAME_STANDARDIZATION).fillna(home_name)
+    away_name = away_name.map(TEAM_NAME_STANDARDIZATION).fillna(away_name)
+
+    home_conference = home_name.map(TEAM_NAME_CONFERENCE_MAP)
+    away_conference = away_name.map(TEAM_NAME_CONFERENCE_MAP)
+    df_training["SAME_CONFERENCE"] = (home_conference == away_conference).astype(int)
+
+    home_division = home_name.map(TEAM_NAME_DIVISION_MAP)
+    away_division = away_name.map(TEAM_NAME_DIVISION_MAP)
+    df_training["SAME_DIVISION"] = (home_division == away_division).astype(int)
 
     df_training["DIFERENCE_HOME_OFF_AWAY_DEF_BEFORE_MATCH"] = (
         df_training["OFF_RATING_LAST_HOME_AWAY_5_MATCHES_BEFORE_TEAM_HOME"]

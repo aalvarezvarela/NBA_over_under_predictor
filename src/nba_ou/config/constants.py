@@ -180,6 +180,81 @@ TEAM_NAME_STANDARDIZATION = {
     "Everton FC": None,  # Not an NBA team
 }
 
+
+TEAM_NAME_CONFERENCE_MAP = {
+    # Eastern Conference
+    "Atlanta Hawks": "East",
+    "Boston Celtics": "East",
+    "Brooklyn Nets": "East",
+    "Charlotte Hornets": "East",
+    "Chicago Bulls": "East",
+    "Cleveland Cavaliers": "East",
+    "Detroit Pistons": "East",
+    "Indiana Pacers": "East",
+    "Miami Heat": "East",
+    "Milwaukee Bucks": "East",
+    "New York Knicks": "East",
+    "Orlando Magic": "East",
+    "Philadelphia 76ers": "East",
+    "Toronto Raptors": "East",
+    "Washington Wizards": "East",
+    # Western Conference
+    "Dallas Mavericks": "West",
+    "Denver Nuggets": "West",
+    "Golden State Warriors": "West",
+    "Houston Rockets": "West",
+    "Los Angeles Clippers": "West",
+    "Los Angeles Lakers": "West",
+    "Memphis Grizzlies": "West",
+    "Minnesota Timberwolves": "West",
+    "New Orleans Pelicans": "West",
+    "Oklahoma City Thunder": "West",
+    "Phoenix Suns": "West",
+    "Portland Trail Blazers": "West",
+    "Sacramento Kings": "West",
+    "San Antonio Spurs": "West",
+    "Utah Jazz": "West",
+}
+
+TEAM_NAME_DIVISION_MAP = {
+    # Atlantic
+    "Boston Celtics": "Atlantic",
+    "Brooklyn Nets": "Atlantic",
+    "New York Knicks": "Atlantic",
+    "Philadelphia 76ers": "Atlantic",
+    "Toronto Raptors": "Atlantic",
+    # Central
+    "Chicago Bulls": "Central",
+    "Cleveland Cavaliers": "Central",
+    "Detroit Pistons": "Central",
+    "Indiana Pacers": "Central",
+    "Milwaukee Bucks": "Central",
+    # Southeast
+    "Atlanta Hawks": "Southeast",
+    "Charlotte Hornets": "Southeast",
+    "Miami Heat": "Southeast",
+    "Orlando Magic": "Southeast",
+    "Washington Wizards": "Southeast",
+    # Northwest
+    "Denver Nuggets": "Northwest",
+    "Minnesota Timberwolves": "Northwest",
+    "Oklahoma City Thunder": "Northwest",
+    "Portland Trail Blazers": "Northwest",
+    "Utah Jazz": "Northwest",
+    # Pacific
+    "Golden State Warriors": "Pacific",
+    "Los Angeles Clippers": "Pacific",
+    "Los Angeles Lakers": "Pacific",
+    "Phoenix Suns": "Pacific",
+    "Sacramento Kings": "Pacific",
+    # Southwest
+    "Dallas Mavericks": "Southwest",
+    "Houston Rockets": "Southwest",
+    "Memphis Grizzlies": "Southwest",
+    "New Orleans Pelicans": "Southwest",
+    "San Antonio Spurs": "Southwest",
+}
+
 # ==============================================================================
 # SEASON TYPE MAPPINGS
 # ==============================================================================
