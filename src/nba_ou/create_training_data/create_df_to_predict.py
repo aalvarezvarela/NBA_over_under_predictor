@@ -18,6 +18,7 @@ from nba_ou.create_training_data.get_all_info_for_scheduled_games import (
 )
 from nba_ou.data_preparation.merged_home_away_data.add_features_after_merging import (
     add_derived_features_after_computed_stats,
+    add_game_date_features,
     add_high_value_features_for_team_points,
 )
 from nba_ou.data_preparation.merged_home_away_data.merge_home_away import (
@@ -53,7 +54,9 @@ from nba_ou.data_preparation.team.rolling import compute_all_rolling_statistics
 from nba_ou.data_preparation.team.totals import compute_total_points_features
 from nba_ou.data_preparation.travel.travel_processing import compute_travel_features
 from nba_ou.postgre_db import load_all_nba_data_from_db
-from nba_ou.postgre_db.injuries_refs.fetch_injury_db.get_injury_data_from_db import get_injury_data_from_db
+from nba_ou.postgre_db.injuries_refs.fetch_injury_db.get_injury_data_from_db import (
+    get_injury_data_from_db,
+)
 from nba_ou.postgre_db.odds.update_odds.upload_to_odds_db import load_odds_data
 from nba_ou.utils.filter_by_date_range import filter_by_date_range
 from nba_ou.utils.seasons import get_seasons_between_dates
@@ -295,6 +298,7 @@ def create_df_to_predict(
 
     df_training = compute_travel_features(df_training, log_scale=True)
     df_training = add_high_value_features_for_team_points(df_training)
+    df_training = add_game_date_features(df_training)
 
     print()
     print("--" * 20)
@@ -329,12 +333,13 @@ if __name__ == "__main__":
     )
 
     df_train = create_df_to_predict(
-        recent_limit_to_include=date_to_train,
-        older_limit_to_include=older_limit_to_include,
+        todays_prediction=False,
         scheduled_games=scheduled_games,
         df_referees_scheduled=df_referees_scheduled,
         injury_dict_scheduled=injury_dict_scheduled,
         df_odds_scheduled=df_odds_scheduled,
+        recent_limit_to_include=date_to_train,
+        older_limit_to_include=older_limit_to_include,
     )
 
     output_name_before_referee = f"{output_path}/training_data{pd.to_datetime(date_to_train).strftime('%Y%m%d')}.csv"

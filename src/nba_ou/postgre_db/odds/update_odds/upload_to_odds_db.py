@@ -180,23 +180,7 @@ def upload_to_odds_db(df_odds: pd.DataFrame) -> bool:
         print("No valid odds data to upload after filtering.")
         return False
 
-    # Convert game_date to timestamp (UTC)
-    if "game_date" in df_upload.columns:
-        df_upload["game_date"] = pd.to_datetime(
-            df_upload["game_date"], utc=True, errors="coerce"
-        )
-
-        # Calculate season_year based on game_date
-        def calculate_season_year(date):
-            if pd.isna(date):
-                return None
-            month = date.month
-            year = date.year
-            # January to July → season_year = year - 1
-            # August to December → season_year = year
-            return year - 1 if month in [1, 2, 3, 4, 5, 6, 7] else year
-
-        df_upload["season_year"] = df_upload["game_date"].apply(calculate_season_year)
+    
 
     # Convert numeric columns
     numeric_cols = [

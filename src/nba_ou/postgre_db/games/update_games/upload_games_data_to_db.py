@@ -97,7 +97,7 @@ def upload_games_data_to_db(
     # Check if database and schema exist
     if not database_exists():
         raise ValueError(
-            f"Database does not exist. Please create it first using create_database()."
+            "Database does not exist. Please create it first using create_database()."
         )
 
     if not schema_exists(schema):
@@ -127,6 +127,12 @@ def upload_games_data_to_db(
 
     # Filter out invalid games before upload
     df = filter_before_upload(df)
+
+    if df.empty:
+        print("No valid data to upload after filtering. Exiting upload.")
+        if close_conn:
+            conn.close()
+        return False
 
     # 3) Enforce exact column set in the table
     insert_cols = [

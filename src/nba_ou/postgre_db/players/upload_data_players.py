@@ -43,7 +43,7 @@ def filter_players_by_team_minutes(
                     return int(parts[0]) + int(parts[1]) / 60
                 else:
                     return float(min_str)
-            except:
+            except Exception:
                 return 0
 
         df["MIN_NUMERIC"] = df["MIN"].apply(parse_minutes)
@@ -136,6 +136,12 @@ def upload_players_data_to_db(
 
     # Filter out games with insufficient team minutes
     df = filter_players_by_team_minutes(df)
+    
+    if df.empty:
+        print("No valid data to upload after filtering. Exiting upload.")
+        if close_conn:
+            conn.close()
+        return False
 
     with conn.cursor() as cur:
         print("Converting data types...")

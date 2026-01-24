@@ -7,6 +7,19 @@ General utility functions for use across NBA Over/Under Predictor modules.
 from datetime import datetime
 
 
+def get_season_nullable_from_year(season_year: int | str) -> str:
+    """
+    Given a season start year (e.g., 2024), returns the NBA season string in the format 'YYYY-YY'.
+
+    Args:
+        season_year (int or str): The starting year of the NBA season.
+    Returns:
+        str: NBA season string (e.g., '2024-25')
+    """
+    season_year = int(season_year)
+    return f"{season_year}-{str(season_year + 1)[-2:]}"
+
+
 def get_nba_season_nullable(date):
     """
     Given a date, returns the NBA season string in the format 'YYYY-YY'.

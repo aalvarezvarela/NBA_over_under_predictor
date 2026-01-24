@@ -50,7 +50,8 @@ def upload_games_to_postgresql(team_df: pd.DataFrame, games_id_to_exclude=None):
     if success:
         print("✅ Successfully uploaded data to PostgreSQL!")
     else:
-        print("❌ Failed to upload data to PostgreSQL.")
+        print("❌ No Games data uploaded to PostgreSQL.")
+    
     return success
 
 
@@ -76,16 +77,18 @@ def upload_players_to_postgresql(
     if success:
         print("✅ Successfully uploaded player data to PostgreSQL!")
     else:
-        print("❌ Failed to upload player data to PostgreSQL.")
+        print("❌ No player data uploaded to PostgreSQL.")
     return success
 
 
-def update_team_players_database(date=None, games_id_to_exclude=None) -> bool:
-    if not date:
+
+
+def update_team_players_database(season_year=None, games_id_to_exclude=None) -> bool:
+    if not season_year:
         date = datetime.now()
     # Get Season to Update
-    season_nullable = get_nba_season_nullable(date)
-    season_year = season_nullable[:4]  # Extract first 4 digits
+        season_nullable = get_nba_season_nullable(date)
+        season_year = season_nullable[:4]  # Extract first 4 digits
 
     print(f"Updating season: {season_nullable}")
 
@@ -98,6 +101,10 @@ def update_team_players_database(date=None, games_id_to_exclude=None) -> bool:
     # Use the intersection - only skip games that exist in BOTH databases
     # This ensures we only fetch truly new games
     all_existing_game_ids = existing_game_ids.intersection(existing_player_game_ids)
+
+    #extend all_existing_game_ids with games_id_to_exclude to avoid even fetching that data
+    if games_id_to_exclude:
+        all_existing_game_ids.update(games_id_to_exclude)
 
     print(f"Total existing game IDs in both databases: {len(all_existing_game_ids)}")
 

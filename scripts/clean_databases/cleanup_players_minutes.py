@@ -203,7 +203,7 @@ def main() -> int:
     parser.add_argument(
         "--season-year",
         type=int,
-        default=2022,
+        default=2025,
         help="Season year to filter (default: 2025)",
     )
     args = parser.parse_args()

@@ -1,11 +1,11 @@
 import numpy as np
 import pandas as pd
-
 from nba_ou.config.constants import (
     TEAM_NAME_CONFERENCE_MAP,
     TEAM_NAME_DIVISION_MAP,
     TEAM_NAME_STANDARDIZATION,
 )
+from pandas.tseries.holiday import USFederalHolidayCalendar
 
 
 def apply_final_transformations(df_training):
@@ -41,6 +41,97 @@ def apply_final_transformations(df_training):
     return df_training
 
 
+def add_conference_division_features(
+    df: pd.DataFrame,
+    home_team_col: str = "TEAM_NAME_TEAM_HOME",
+    away_team_col: str = "TEAM_NAME_TEAM_AWAY",
+) -> pd.DataFrame:
+    """
+    Adds SAME_CONFERENCE, SAME_DIVISION, IS_HOME_WEST_CONFERENCE, IS_AWAY_WEST_COMFERENCE
+    based on standardized team names and lookup maps.
+
+    Notes:
+    - Unknown team names map to pd.NA for conference/division and yield 0 for boolean flags.
+    - SAME_* becomes 1 only when both sides are known AND equal.
+    """
+    # 1) Standardize names
+    home_name = df[home_team_col].astype(str).map(TEAM_NAME_STANDARDIZATION)
+    away_name = df[away_team_col].astype(str).map(TEAM_NAME_STANDARDIZATION)
+
+    # If mapping returns None/NaN, fall back to original string
+    home_name = home_name.where(home_name.notna(), df[home_team_col].astype(str))
+    away_name = away_name.where(away_name.notna(), df[away_team_col].astype(str))
+
+    # 2) Map to conference/division (unmapped -> pd.NA)
+    home_conference = home_name.map(TEAM_NAME_CONFERENCE_MAP)
+    away_conference = away_name.map(TEAM_NAME_CONFERENCE_MAP)
+
+    home_division = home_name.map(TEAM_NAME_DIVISION_MAP)
+    away_division = away_name.map(TEAM_NAME_DIVISION_MAP)
+
+    # 3) SAME_* only if both are known
+    same_conference = (
+        home_conference.notna()
+        & away_conference.notna()
+        & (home_conference == away_conference)
+    )
+    same_division = (
+        home_division.notna() & away_division.notna() & (home_division == away_division)
+    )
+
+    df["SAME_CONFERENCE"] = same_conference.astype(int)
+    df["SAME_DIVISION"] = same_division.astype(int)
+
+    # 4) West flags
+    df["IS_HOME_WEST_CONFERENCE"] = (
+        (home_conference == "West").fillna(False).astype(int)
+    )
+    df["IS_AWAY_WEST_COMFERENCE"] = (
+        (away_conference == "West").fillna(False).astype(int)
+    )
+
+    return df
+
+
+def add_game_date_features(
+    df: pd.DataFrame,
+    date_col: str = "GAME_DATE",
+) -> pd.DataFrame:
+    """
+    Adds IS_WEEKEND, MONTH, IS_US_HOLIDAY derived from GAME_DATE.
+
+    - IS_WEEKEND: Saturday/Sunday -> 1 else 0
+    - MONTH: integer 1..12
+    - IS_US_HOLIDAY: US federal holiday -> 1 else 0
+
+    Notes:
+    - Robust to strings / datetimes; coerces invalid dates to NaT.
+    - If date is NaT, all features default to 0 (and MONTH becomes pd.NA then filled to 0).
+    """
+    dates = pd.to_datetime(df[date_col], errors="coerce")
+
+    # Weekend and month
+    df["IS_WEEKEND"] = (dates.dt.weekday >= 5).fillna(False).astype(int)
+    df["MONTH"] = dates.dt.month.astype("Int64")  # keep nullable int
+    df["MONTH"] = df["MONTH"].fillna(0).astype(int)
+
+    # US Federal holidays within observed min/max date range
+    cal = USFederalHolidayCalendar()
+
+    if dates.notna().any():
+        start = dates.min().normalize()
+        end = dates.max().normalize()
+        us_holidays = cal.holidays(start=start, end=end)  # DatetimeIndex (normalized)
+
+        df["IS_US_HOLIDAY"] = (
+            dates.dt.normalize().isin(us_holidays).fillna(False).astype(int)
+        )
+    else:
+        df["IS_US_HOLIDAY"] = 0
+
+    return df
+
+
 def add_derived_features_after_computed_stats(df_training):
     """
     Add derived features to the training dataset.
@@ -51,6 +142,8 @@ def add_derived_features_after_computed_stats(df_training):
     Returns:
         pd.DataFrame: DataFrame with additional derived features
     """
+    df_training = add_conference_division_features(df_training)
+
     df_training["TOTAL_PTS_SEASON_BEFORE_AVG"] = (
         df_training["PTS_SEASON_BEFORE_AVG_TEAM_HOME"]
         + df_training["PTS_SEASON_BEFORE_AVG_TEAM_AWAY"]
@@ -62,22 +155,8 @@ def add_derived_features_after_computed_stats(df_training):
     )
 
     df_training["BACK_TO_BACK"] = (
-        df_training["REST_DAYS_BEFORE_MATCH_TEAM_AWAY"] == 1
-    ) & (df_training["REST_DAYS_BEFORE_MATCH_TEAM_HOME"] == 1)
-
-    home_name = df_training["TEAM_NAME_TEAM_HOME"].astype(str)
-    away_name = df_training["TEAM_NAME_TEAM_AWAY"].astype(str)
-
-    home_name = home_name.map(TEAM_NAME_STANDARDIZATION).fillna(home_name)
-    away_name = away_name.map(TEAM_NAME_STANDARDIZATION).fillna(away_name)
-
-    home_conference = home_name.map(TEAM_NAME_CONFERENCE_MAP)
-    away_conference = away_name.map(TEAM_NAME_CONFERENCE_MAP)
-    df_training["SAME_CONFERENCE"] = (home_conference == away_conference).astype(int)
-
-    home_division = home_name.map(TEAM_NAME_DIVISION_MAP)
-    away_division = away_name.map(TEAM_NAME_DIVISION_MAP)
-    df_training["SAME_DIVISION"] = (home_division == away_division).astype(int)
+        df_training["REST_DAYS_BEFORE_MATCH_TEAM_AWAY"] <= 1
+    ) & (df_training["REST_DAYS_BEFORE_MATCH_TEAM_HOME"] <= 1)
 
     df_training["DIFERENCE_HOME_OFF_AWAY_DEF_BEFORE_MATCH"] = (
         df_training["OFF_RATING_LAST_HOME_AWAY_5_MATCHES_BEFORE_TEAM_HOME"]

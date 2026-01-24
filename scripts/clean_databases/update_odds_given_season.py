@@ -10,9 +10,6 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-# Add parent directory to path for imports
-current_dir = Path(__file__).parent
-sys.path.append(str(current_dir))
 
 import pandas as pd
 from fetch_data.manage_odds_data.update_odds_utils import (
@@ -21,7 +18,7 @@ from fetch_data.manage_odds_data.update_odds_utils import (
     process_odds_date,
     update_odds_db,
 )
-from postgre_DB.db_loader import load_games_from_db
+from nba_ou.postgre_db.config.db_loader import load_games_from_db
 
 
 def load_config():
