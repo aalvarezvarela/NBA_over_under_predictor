@@ -13,7 +13,7 @@ import pandas as pd
 import requests
 from nba_api.library.http import NBAHTTP
 from nba_api.stats.endpoints import BoxScoreSummaryV3, LeagueGameFinder
-from nba_ou.config.constants import TEAM_ID_MAP
+from nba_ou.config.constants import SEASON_TYPE_MAP, TEAM_ID_MAP
 from nba_ou.postgre_db.config.db_config import (
     connect_injuries_db,
     connect_refs_db,
@@ -300,10 +300,18 @@ def fetch_refs_injuries_data(
     all_refs = []
     all_injuries = []
     fetched_counter = 0
-
+    excluded_types = {
+        code
+        for code, name in SEASON_TYPE_MAP.items()
+        if name in ("Preseason", "All Star")
+    }
+    game_ids_to_fetch = [
+        game_id
+        for game_id in game_ids_to_fetch
+        if str(game_id)[:3] not in excluded_types
+    ]
     for game_id in tqdm(game_ids_to_fetch, desc="Fetching Refs/Injuries Data"):
         time.sleep(random.uniform(0.1, 0.5))
-
         game_info = game_info_map.get(game_id)
         if not game_info:
             print(f"Warning: Could not find game info for {game_id}")

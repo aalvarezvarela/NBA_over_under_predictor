@@ -20,13 +20,6 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-# Add parent directory to path if running from src folder
-if __name__ == "__main__":
-    # Get the directory containing this script
-    current_dir = Path(__file__).parent
-    # If we're in the src directory, add it to sys.path
-    if current_dir.name == "src" and str(current_dir) not in sys.path:
-        sys.path.insert(0, str(current_dir))
 
 from config import LEGEND, settings
 from data_processing import create_df_to_predict

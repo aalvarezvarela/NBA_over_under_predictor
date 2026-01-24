@@ -65,11 +65,11 @@ def get_game_ids_with_null_total_scored_points() -> pd.DataFrame:
     assert all(games.groupby("game_id").size() == 2), "Not all games have two rows"
 
     games["total_scored_points"] = games.groupby("game_id")["PTS"].transform("sum")
-    games = games[["game_id", "total_scored_points"]].drop_duplicates()
-
-    # NEW: drop games with total score < 140
     games = games[games["total_scored_points"] >= 140]
-
+    # drop rows that WL is empty or None or NaN
+    games = games[games["WL"].notna()]    
+    
+    games = games[["game_id", "total_scored_points"]].drop_duplicates(keep = "first")
     updates = games.dropna(subset=["game_id", "total_scored_points"]).copy()
     return updates
 

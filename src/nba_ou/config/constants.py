@@ -376,7 +376,6 @@ CITY_TO_LATLON = {
     "Tel Aviv": (32.0853, 34.7818),
     "Vitoria": (42.8500, -2.6833),          # Vitoria-Gasteiz :contentReference[oaicite:1]{index=1}
     "Zalgiris Kaunas": (54.8985, 23.9036),  # Kaunas :contentReference[oaicite:2]{index=2}
-    "Beijing": (39.9042, 116.4074),
 
     # Team/club labels -> map to their home cities
     "Panathinaikos": (37.9838, 23.7275),    # Athens
