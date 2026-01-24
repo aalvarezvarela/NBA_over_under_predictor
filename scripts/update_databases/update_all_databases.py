@@ -8,7 +8,6 @@ Covers seasons from 2005-06 through 2024-25, i.e. games played in calendar years
 """
 
 import time
-from datetime import datetime
 
 from nba_ou.config.settings import SETTINGS
 from nba_ou.fetch_data.live_games.live_games import get_live_game_ids
@@ -23,7 +22,9 @@ from nba_ou.postgre_db.odds.update_odds.update_odds_database import update_odds_
 #     Using Oct 1 avoids edge cases around Oct/Nov logic in get_nba_season_nullable.
 #     Example: season_start_year=2005 -> date 2005-10-01 -> season "2005-06"
 #     """
-#     return datetime(season_start_year, 10, 1)
+# from datetime import datetime
+
+# return datetime(season_start_year, 10, 1)
 
 
 def update_all_databases(
@@ -60,19 +61,15 @@ def update_all_databases(
 
         print(f"\n--- Updating odds for season {y} ---")
 
-        try:
-            update_odds_database(
-                season_to_download=season_nullable,
-                ODDS_API_KEY=SETTINGS.odds_api_key,
-                BASE_URL=SETTINGS.odds_base_url,
-                save_pickle=SETTINGS.odds_save_pickle,
-                pickle_path=SETTINGS.odds_pickle_path,
-            )
-            print(f"✓ Odds data updated for season {y}")
-
-        except Exception as e:
-            print(f"⚠️ Warning: Failed to update odds for season {y}: {e}")
-            print("Continuing with next season...")
+        update_odds_database(
+            season_year=season_year,
+            ODDS_API_KEY=SETTINGS.odds_api_key,
+            BASE_URL=SETTINGS.odds_base_url,
+            check_missing_by_game=True,
+            save_pickle=SETTINGS.odds_save_pickle,
+            pickle_path=SETTINGS.odds_pickle_path,
+        )
+        print(f"✓ Odds data updated for season {y}")
 
         time.sleep(sleep_seconds_between_seasons)
 
@@ -109,6 +106,5 @@ if __name__ == "__main__":
     update_all_databases(
         start_season_year=args.start,
         end_season_year=args.end,
-        update_odds_data=args.update_odds,
         games_id_to_exclude=ids_to_exclude,
     )

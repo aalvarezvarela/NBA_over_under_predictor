@@ -3,23 +3,56 @@ import pickle
 import time
 from collections import Counter
 from pathlib import Path
+from typing import Any, Optional
 
 import pandas as pd
 import requests
 
 
-def get_events_for_date(sport_id, date, BASE_URL, HEADERS):
-    url = f"{BASE_URL}/sports/{sport_id}/events/{date}"
-    response = requests.get(url, headers=HEADERS)
-    if response.status_code == 200:
-        events = response.json().get("events", [])
-        print(f"Events for sport ID {sport_id} on {date}:")
-        return events
+def get_events_for_date(
+    sport_id: int,
+    date: str,
+    base_url: str,
+    headers: dict[str, str],
+    timeout: int = 10,
+    retry_delay: float = 1.0,
+) -> list[dict[str, Any]]:
+    """
+    Fetch events for a given sport and date.
 
-    else:
-        print(f"Failed to retrieve events: {response.status_code}")
-        print(response.json())
-        return []
+    Behaviour:
+    - 200 → return events
+    - 429 → retry once, then raise
+    - any other non-200 → raise
+    - network error → raise
+    """
+    url = f"{base_url}/sports/{sport_id}/events/{date}"
+
+    for attempt in (1, 2):  # initial attempt + exactly one retry
+        try:
+            response = requests.get(url, headers=headers, timeout=timeout)
+
+            if response.status_code == 200:
+                return response.json().get("events", [])
+
+            if response.status_code == 429:
+                if attempt == 1:
+                    time.sleep(retry_delay)
+                    continue
+                raise RuntimeError(
+                    f"Rate limited (429) after retry for sport_id={sport_id}, date={date}"
+                )
+
+            # Any other HTTP error
+            response.raise_for_status()
+
+        except requests.exceptions.RequestException as exc:
+            raise RuntimeError(
+                f"Request failed for sport_id={sport_id}, date={date}"
+            ) from exc
+
+    # Defensive: this should never be reached
+    raise RuntimeError("Unreachable state in get_events_for_date")
 
 
 def most_common(lst):
@@ -34,6 +67,61 @@ def american_to_decimal(a: float) -> float:
         return 1.0 + a / 100.0
     if a < 0:
         return 1.0 + 100.0 / abs(a)
+
+
+def save_matches_pickle(
+    matches: Any,
+    date: str,
+    pickle_path: str,
+    prefix: str = "odds_matches",
+    strict: bool = True,
+) -> Optional[str]:
+    """
+    Save matches object to a dated pickle file.
+
+    Parameters
+    ----------
+    matches : Any
+        Object to serialize.
+    date : str
+        Date identifier used in filename.
+    pickle_path : str
+        Target directory.
+    prefix : str, optional
+        Filename prefix, by default "odds_matches".
+    strict : bool, optional
+        If True (default), raise on failure.
+        If False, log warning and return None.
+
+    Returns
+    -------
+    Optional[str]
+        File path on success, None on failure when strict=False.
+
+    Raises
+    ------
+    RuntimeError
+        If strict=True and saving fails.
+    """
+    filename = f"{str(date)}_{prefix}.pkl"
+    filepath = os.path.join(pickle_path, filename)
+
+    try:
+        Path(pickle_path).mkdir(parents=True, exist_ok=True)
+
+        with open(filepath, "wb") as f:
+            pickle.dump(matches, f)
+
+        return filepath
+
+    except Exception as exc:
+        if strict:
+            raise RuntimeError(
+                f"Failed to save pickle file for date={date} at {filepath}"
+            ) from exc
+
+        print(f"Warning: Failed to save pickle file for {date}: {exc}")
+        return None
 
 
 def process_odds_date(
@@ -56,20 +144,9 @@ def process_odds_date(
 
     # Save raw matches data as pickle if configured and not today
     if save_pickle and not is_today and pickle_path:
-        try:
-            # Create directory if it doesn't exist
-            Path(pickle_path).mkdir(parents=True, exist_ok=True)
-
-            # Save pickle file with date in filename
-            pickle_filename = f"odds_matches_{date}.pkl"
-            pickle_filepath = os.path.join(pickle_path, pickle_filename)
-
-            with open(pickle_filepath, "wb") as f:
-                pickle.dump(matches, f)
-
-            print(f"Saved raw matches to {pickle_filepath}")
-        except Exception as e:
-            print(f"Warning: Failed to save pickle file for {date}: {e}")
+        save_matches_pickle(
+            matches, date, pickle_path, prefix="odds_matches", strict=True
+        )
 
     total_field = "total_over_delta" if not is_today else "total_over"
     moneyline_home_field = "moneyline_home_delta" if not is_today else "moneyline_home"

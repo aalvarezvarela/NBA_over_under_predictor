@@ -1,12 +1,14 @@
 import pandas as pd
 from nba_api.stats.endpoints import LeagueGameFinder
-from psycopg import sql
-from nba_ou.utils.general_utils import get_nba_season_nullable
-
-from nba_ou.postgre_db.config.db_config import connect_nba_db, get_schema_name_predictions
+from nba_ou.postgre_db.config.db_config import (
+    connect_nba_db,
+    get_schema_name_predictions,
+)
 from nba_ou.postgre_db.predictions.create.create_nba_predictions_db import (
     schema_exists,
 )
+from nba_ou.utils.general_utils import get_nba_season_nullable_from_date
+from psycopg import sql
 
 
 def get_predictions_schema_and_table() -> tuple[str, str]:
@@ -25,7 +27,7 @@ def get_game_ids_with_null_total_scored_points() -> pd.DataFrame:
 
     if not schema_exists(schema):
         raise ValueError(f"Schema '{schema}' does not exist in the database.")
-    
+
     conn = connect_nba_db()
     try:
         query_obj = sql.SQL("""
@@ -48,7 +50,7 @@ def get_game_ids_with_null_total_scored_points() -> pd.DataFrame:
         return pd.DataFrame(columns=["game_id", "total_scored_points"])
 
     dates = pd.to_datetime(df["game_date"], errors="coerce").dropna().unique()
-    seasons = {get_nba_season_nullable(d) for d in dates}
+    seasons = {get_nba_season_nullable_from_date(d) for d in dates}
 
     games = []
     for season in seasons:
@@ -70,6 +72,7 @@ def get_game_ids_with_null_total_scored_points() -> pd.DataFrame:
 
     updates = games.dropna(subset=["game_id", "total_scored_points"]).copy()
     return updates
+
 
 def update_total_scored_points(updates: pd.DataFrame) -> None:
     """
@@ -106,6 +109,7 @@ def update_total_scored_points(updates: pd.DataFrame) -> None:
         conn.commit()
     finally:
         conn.close()
+
 
 def update_total_points_predictions():
     updates = get_game_ids_with_null_total_scored_points()

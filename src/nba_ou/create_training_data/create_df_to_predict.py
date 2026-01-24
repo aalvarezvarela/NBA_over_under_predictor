@@ -195,6 +195,11 @@ def create_df_to_predict(
 
     # Determine older_limit_to_include based on todays_prediction flag
     if todays_prediction:
+        recent_limit_to_include = pd.Timestamp.now(
+            tz=ZoneInfo("US/Eastern")
+        ) - pd.Timedelta(days=1)
+        recent_limit_to_include = pd.to_datetime(recent_limit_to_include, format="%Y-%m-%d")
+
         # If predicting today, go back two years from today
         older_limit_to_include = pd.Timestamp.now(
             tz=ZoneInfo("US/Eastern")

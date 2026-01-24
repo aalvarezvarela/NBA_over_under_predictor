@@ -17,7 +17,10 @@ from nba_ou.postgre_db.games.update_games.upload_games_data_to_db import (
     upload_games_data_to_db,
 )
 from nba_ou.postgre_db.players.upload_data_players import upload_players_data_to_db
-from nba_ou.utils.general_utils import get_nba_season_nullable
+from nba_ou.utils.general_utils import (
+    get_nba_season_nullable_from_date,
+    get_season_nullable_from_year,
+)
 
 
 def load_existing_data(filepath: str, dtype: dict):
@@ -51,7 +54,7 @@ def upload_games_to_postgresql(team_df: pd.DataFrame, games_id_to_exclude=None):
         print("✅ Successfully uploaded data to PostgreSQL!")
     else:
         print("❌ No Games data uploaded to PostgreSQL.")
-    
+
     return success
 
 
@@ -81,15 +84,14 @@ def upload_players_to_postgresql(
     return success
 
 
-
-
 def update_team_players_database(season_year=None, games_id_to_exclude=None) -> bool:
     if not season_year:
         date = datetime.now()
-    # Get Season to Update
-        season_nullable = get_nba_season_nullable(date)
+        # Get Season to Update
+        season_nullable = get_nba_season_nullable_from_date(date)
         season_year = season_nullable[:4]  # Extract first 4 digits
-
+    else:
+        season_nullable = get_season_nullable_from_year(season_year)
     print(f"Updating season: {season_nullable}")
 
     # Query existing game IDs from database
@@ -102,7 +104,7 @@ def update_team_players_database(season_year=None, games_id_to_exclude=None) -> 
     # This ensures we only fetch truly new games
     all_existing_game_ids = existing_game_ids.intersection(existing_player_game_ids)
 
-    #extend all_existing_game_ids with games_id_to_exclude to avoid even fetching that data
+    # extend all_existing_game_ids with games_id_to_exclude to avoid even fetching that data
     if games_id_to_exclude:
         all_existing_game_ids.update(games_id_to_exclude)
 
@@ -130,9 +132,3 @@ def update_team_players_database(season_year=None, games_id_to_exclude=None) -> 
     return limit_reached
 
 
-if __name__ == "__main__":
-    # Define Data Folder
-    DATA_FOLDER = (
-        "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/season_games_data/"
-    )
-    update_team_players_database(DATA_FOLDER)

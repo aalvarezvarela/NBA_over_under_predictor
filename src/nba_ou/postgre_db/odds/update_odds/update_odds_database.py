@@ -11,7 +11,6 @@ from nba_ou.config.constants import SEASON_TYPE_MAP
 from nba_ou.fetch_data.fetch_odds_data.get_odds_date import process_odds_date
 from nba_ou.postgre_db.config.db_loader import load_games_from_db
 from nba_ou.postgre_db.odds.create.create_nba_odds_db import (
-    database_exists,
     schema_exists,
 )
 from nba_ou.postgre_db.odds.update_odds.odds_no_data_dates import ODDS_NO_DATA_DATES
@@ -24,7 +23,9 @@ from tqdm import tqdm
 
 
 def normalize_odds_game_date_and_season_year(
-    df: pd.DataFrame,  season_year: str|int, date_col: str = "game_date",
+    df: pd.DataFrame,
+    season_year: str | int,
+    date_col: str = "game_date",
 ) -> pd.DataFrame:
     """
     Ensure the given `date_col` is a UTC datetime and add a `season_year` column.
@@ -41,11 +42,8 @@ def normalize_odds_game_date_and_season_year(
     df = df.copy()
     df[date_col] = pd.to_datetime(df[date_col], utc=True, errors="coerce")
 
-  
-
     df["season_year"] = int(season_year)
     return df
-
 
 
 def _find_missing_odds_dates_from_games(
@@ -139,9 +137,6 @@ def _fetch_missing_odds(
         return combined_odds
     else:
         return pd.DataFrame()
-
-
-
 
 
 def update_odds_database(
@@ -316,6 +311,7 @@ def update_odds_database(
 
     return True
 
+
 if __name__ == "__main__":
     # Example usage
     import configparser
@@ -345,4 +341,3 @@ if __name__ == "__main__":
         save_pickle=SAVE_PICKLE,
         pickle_path=PICKLE_PATH,
     )
-

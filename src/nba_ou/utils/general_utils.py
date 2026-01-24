@@ -20,7 +20,7 @@ def get_season_nullable_from_year(season_year: int | str) -> str:
     return f"{season_year}-{str(season_year + 1)[-2:]}"
 
 
-def get_nba_season_nullable(date):
+def get_nba_season_nullable_from_date(date):
     """
     Given a date, returns the NBA season string in the format 'YYYY-YY'.
     If the date is before November, it is considered part of the previous season.

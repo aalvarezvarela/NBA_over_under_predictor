@@ -11,14 +11,15 @@ import pandas as pd
 from nba_ou.postgre_db.injuries_refs.creation.create_injuries_db import (
     upload_injuries_data_to_db,
 )
-from nba_ou.postgre_db.injuries_refs.creation.create_refs_db import upload_refs_data_to_db
-from nba_ou.utils.general_utils import get_nba_season_nullable
-
+from nba_ou.postgre_db.injuries_refs.creation.create_refs_db import (
+    upload_refs_data_to_db,
+)
 from nba_ou.postgre_db.injuries_refs.update_ref_injuries_database.update_refs_injuries_database_utils import (
     fetch_refs_injuries_data,
     get_existing_injury_game_ids_from_db,
     get_existing_ref_game_ids_from_db,
 )
+from nba_ou.utils.general_utils import get_nba_season_nullable_from_date
 
 
 def load_existing_data(filepath: str, dtype: dict):
@@ -93,7 +94,7 @@ def update_refs_injuries_database(
     if not date:
         date = datetime.now()
 
-    season_nullable = get_nba_season_nullable(date)
+    season_nullable = get_nba_season_nullable_from_date(date)
     season_year = season_nullable[:4]
 
     print(f"Updating referees and injuries for season: {season_nullable}")
@@ -133,5 +134,4 @@ def update_refs_injuries_database(
 
 
 if __name__ == "__main__":
-
-    update_refs_injuries_database( )
+    update_refs_injuries_database()
