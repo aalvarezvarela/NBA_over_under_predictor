@@ -35,7 +35,6 @@ def update_all_databases(
     start_season_year: int = 2006,
     end_season_year: int = 2025,
     sleep_seconds_between_seasons: float = 2.0,
-    games_id_to_exclude: list = None,
 ) -> None:
     """
     Backfill from `start_season_year`-YY through `end_season_year`-(YY+1).
@@ -46,6 +45,8 @@ def update_all_databases(
         end_season_year: Last season start year (2024 -> 2024-25).
         sleep_seconds_between_seasons: Small pause to be polite with the NBA API.
     """
+    games_id_to_exclude = get_live_game_ids()
+    
     for y in range(start_season_year, end_season_year + 1):
         season_year = str(y)
         print(f"\n=== Backfilling season starting {season_year} season) ===")
@@ -103,17 +104,10 @@ if __name__ == "__main__":
         default=2025,
         help="Last season start year (e.g. 2025 for 2025-26)",
     )
-    parser.add_argument(
-        "--update-odds",
-        action="store_true",
-        help="If set, also backfill odds data for each season (default: False)",
-    )
 
     args = parser.parse_args()
-
-    ids_to_exclude = get_live_game_ids()
+    
     update_all_databases(
         start_season_year=args.start,
         end_season_year=args.end,
-        games_id_to_exclude=ids_to_exclude,
     )

@@ -198,7 +198,9 @@ def create_df_to_predict(
         recent_limit_to_include = pd.Timestamp.now(
             tz=ZoneInfo("US/Eastern")
         ) - pd.Timedelta(days=1)
-        recent_limit_to_include = pd.to_datetime(recent_limit_to_include, format="%Y-%m-%d")
+        recent_limit_to_include = pd.to_datetime(
+            recent_limit_to_include, format="%Y-%m-%d"
+        )
 
         # If predicting today, go back two years from today
         older_limit_to_include = pd.Timestamp.now(
@@ -338,7 +340,7 @@ if __name__ == "__main__":
     )
 
     df_train = create_df_to_predict(
-        todays_prediction=False,
+        todays_prediction=True,
         scheduled_games=scheduled_games,
         df_referees_scheduled=df_referees_scheduled,
         injury_dict_scheduled=injury_dict_scheduled,

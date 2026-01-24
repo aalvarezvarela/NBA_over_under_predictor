@@ -15,30 +15,45 @@ Usage:
     With date:         python nba_predictor.py -d 2025-01-15
 """
 
-import argparse
-import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
+from nba_ou.config.settings import SETTINGS
+from nba_ou.create_training_data.create_df_to_predict import (
+    create_df_to_predict,
+)
+from nba_ou.create_training_data.get_all_info_for_scheduled_games import (
+    get_all_info_for_scheduled_games,
+)
 
-from config import LEGEND, settings
-from data_processing import create_df_to_predict
-from fetch_data.manage_games_database import update_database
-from fetch_data.manage_odds_data.update_odds import update_odds
 from models import predict_nba_games, save_predictions_to_excel
+from scripts.update_databases.update_all_databases import update_all_databases
+
+
+def print_banner(date_to_predict: str) -> None:
+    line = "=" * 70
+    title = "NBA OVER/UNDER PREDICTION SYSTEM"
+    print(f"\n{line}")
+    print(title.center(len(line)))
+    print(line)
+    print(f"  Prediction Date: {date_to_predict}")
+    print(line + "\n")
 
 
 def print_step_header(step_number: int, title: str) -> None:
-    """
-    Prints a formatted header for each pipeline step.
+    """Print a compact, eye-catching step header."""
+    sep = "-" * 70
+    header = f" STEP {step_number} — {title} "
+    print(sep)
+    print(header.center(len(sep)))
+    print(sep)
 
-    Args:
-        step_number: The step number in the pipeline
-        title: Description of the step
-    """
-    print("\n" + "=" * 60)
-    print(f"STEP {step_number}: {title}")
-    print("=" * 60 + "\n")
+
+def print_status(message: str, ok: bool = True) -> None:
+    """Print a single-line status message with a check or cross."""
+    symbol = "✓" if ok else "✖"
+    print(f"  {symbol} {message}")
 
 
 def main():
@@ -53,141 +68,79 @@ def main():
     5. Generates predictions
     6. Saves results to Excel
     """
-    # Parse command-line arguments
-    parser = argparse.ArgumentParser(
-        description="NBA Over/Under Prediction System - Generate predictions for NBA games",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  %(prog)s                    Generate predictions for today's games
-  %(prog)s -d 2025-01-15     Generate predictions for January 15, 2025
-        """,
-    )
-    parser.add_argument(
-        "-d",
-        "--date",
-        type=str,
-        help="Prediction date in YYYY-MM-DD format (default: today)",
-    )
-    parser.add_argument(
-        "-s",
-        "--save-excel",
-        action="store_true",
-        default=False,
-        help="If set, save predictions to Excel. Default: False",
+
+    date_to_predict = datetime.now(ZoneInfo("US/Pacific")).strftime("%Y-%m-%d")
+
+    # Print welcome banner
+    print_banner(date_to_predict)
+    print(
+        f"  Models: regressor={SETTINGS.regressor_model_path} | classifier={SETTINGS.classifier_model_path}\n"
     )
 
-    args = parser.parse_args()
-
-    # Determine the date to predict
-    if args.date:
-        # Handle special keywords
-        if args.date.lower() == "tomorrow":
-            date_to_predict = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
-        elif args.date.lower() == "today":
-            date_to_predict = datetime.now().strftime("%Y-%m-%d")
-        else:
-            # Try to parse as a date string
-            try:
-                date_to_predict = datetime.strptime(args.date, "%Y-%m-%d").strftime(
-                    "%Y-%m-%d"
-                )
-            except ValueError:
-                print(
-                    "❌ Error: Invalid date format. Please use YYYY-MM-DD, 'today', or 'tomorrow'."
-                )
-                return 1
-    else:
-        date_to_predict = datetime.now().strftime("%Y-%m-%d")
-
-    # Print welcome message
-    print("\n" + "=" * 60)
-    print("  NBA OVER/UNDER PREDICTION SYSTEM")
-    print("=" * 60)
-    print(f"📅 Prediction Date: {date_to_predict}")
-    print(f"📁 Data Folder: {settings.data_folder}")
-    print(f"💰 Odds Data Folder: {settings.odds_data_folder}")
-    print(f"🤖 Regressor Model: {settings.regressor_model_path}")
-    print(f"🤖 Classifier Model: {settings.classifier_model_path}")
-    print(f"📊 Output Folder: {settings.output_path}")
-
-    data_folder = settings.get_absolute_path(settings.data_folder)
-
+    # Step 1: Update the database
+    print_step_header(1, "Updating All Databases")
+    season_to_update = str(date_to_predict)[:4]
     try:
-        # Step 1: Update the database
-        print_step_header(1, "Updating Game Database")
-        limit = True
-        while limit:
-            limit = update_database(
-                str(data_folder / "season_games_data/"),
-                date=datetime.strptime(date_to_predict, "%Y-%m-%d"),
-                save_csv=args.save_excel,
-            )
-
-        # Step 2: Update odds data
-        print_step_header(2, "Fetching Betting Odds Data")
-        odds_folder = settings.get_absolute_path(settings.odds_data_folder) or None
-        if args.save_excel and odds_folder is not None:
-            odds_folder.mkdir(parents=True, exist_ok=True)
-
-        df_odds = update_odds(
-            date_to_predict=date_to_predict,
-            odds_folder=str(odds_folder),
-            ODDS_API_KEY=settings.odds_api_key,
-            BASE_URL=settings.odds_base_url,
-            save_csv=args.save_excel,
+        update_all_databases(
+            start_season_year=int(season_to_update),
+            end_season_year=int(season_to_update),
         )
-        print("✓ Odds data updated successfully")
+        print_status("Databases updated")
+    except Exception as e:
+        print_status(f"Failed to update databases: {e}", ok=False)
+        raise
 
-        # Step 3: Prepare data for prediction
-        print_step_header(3, "Processing Data and Injury Reports")
+    # Step 2: Fetch scheduled games, referees, injuries and odds
+    print_step_header(2, "Fetching Scheduled Games & Reports")
+    try:
+        (
+            scheduled_games,
+            df_referees_scheduled,
+            injury_dict_scheduled,
+            df_odds_scheduled,
+        ) = get_all_info_for_scheduled_games(
+            date_to_predict=date_to_predict,
+            nba_injury_reports_url=SETTINGS.nba_injury_reports_url,
+            save_reports_path=SETTINGS.report_path,
+            odds_api_key=SETTINGS.odds_api_key,
+            odds_base_url=SETTINGS.odds_base_url,
+        )
+        print_status("Fetched scheduled games, refs, injuries and odds")
+    except Exception as e:
+        print_status(f"Failed to fetch scheduled data: {e}", ok=False)
+        raise
+
+    # Step 3: Build feature DataFrame for prediction
+    print_step_header(3, "Preparing Feature DataFrame")
+    try:
         df_to_predict = create_df_to_predict(
-            data_path=str(data_folder),
-            date_to_predict=date_to_predict,
-            nba_injury_reports_url=settings.nba_injury_reports_url,
-            df_odds=df_odds,
-            reports_path=str(settings.get_absolute_path(settings.report_path)),
-            filter_for_date_to_predict=True,
+            todays_prediction=True,
+            scheduled_games=scheduled_games,
+            df_referees_scheduled=df_referees_scheduled,
+            injury_dict_scheduled=injury_dict_scheduled,
+            df_odds_scheduled=df_odds_scheduled,
+            recent_limit_to_include=date_to_predict,
         )
+        print_status("Feature DataFrame prepared")
+    except Exception as e:
+        print_status(f"Failed to prepare features: {e}", ok=False)
+        raise
 
-        if df_to_predict.empty:
-            print("⚠️  Warning: No games found for the specified date.")
-            print("    Please check if there are scheduled games on this date.")
-            return 0
-
-        print(f"✓ Found {len(df_to_predict)} games to predict")
-
-        # Step 4: Generate predictions
-        print_step_header(4, "Generating Predictions")
-        predictions_dfs = predict_nba_games(df_to_predict)
-
-
-        # Step 6: Save predictions (optional)
-        if args.save_excel:
-            print_step_header(5, "Saving Results")
-            output_dir = settings.get_absolute_path(settings.output_path)
-            output_dir.mkdir(parents=True, exist_ok=True)
-            output_file = output_dir / f"NBA_predictions_{date_to_predict}.xlsx"
-            save_predictions_to_excel(predictions_dfs, str(output_file), LEGEND)
-            print("\n" + "=" * 60)
-            print("  ✓ PREDICTION COMPLETED SUCCESSFULLY!")
-            print("=" * 60)
-            print(f"📄 Results saved to: {output_file}")
-            print(f"📊 Total games analyzed: {len(df_to_predict)}")
-            print("\n")
-
+    if df_to_predict.empty:
+        print("⚠️  Warning: No games found for the specified date.")
+        print("    Please check if there are scheduled games on this date.")
         return 0
 
-    except FileNotFoundError as e:
-        print(f"\n❌ Error: Required file not found - {e}")
-        print("   Please check your configuration and data files.")
-        raise e
-    except Exception as e:
-        print(f"\n❌ Error during prediction pipeline: {e}")
-        import traceback
+    print_status(f"Found {len(df_to_predict)} game(s) to predict")
 
-        traceback.print_exc()
-        raise e
+    # # Step 4: Generate predictions
+    # print_step_header(4, "Generating Predictions")
+    # try:
+    #     predictions_dfs = predict_nba_games(df_to_predict)
+    #     print_status("Predictions generated")
+    # except Exception as e:
+    #     print_status(f"Failed to generate predictions: {e}", ok=False)
+    #     raise
 
 
 if __name__ == "__main__":
