@@ -14,6 +14,7 @@ from nba_ou.postgre_db.games.update_games.update_database_utils import (
     get_existing_player_game_ids_from_db,
 )
 from nba_ou.postgre_db.games.update_games.upload_games_data_to_db import (
+    filter_before_upload,
     upload_games_data_to_db,
 )
 from nba_ou.postgre_db.players.upload_data_players import upload_players_data_to_db
@@ -84,7 +85,10 @@ def upload_players_to_postgresql(
     return success
 
 
-def update_team_players_database(season_year=None, games_id_to_exclude=None) -> bool:
+def update_team_players_database(
+    season_year: str = None, games_id_to_exclude: list = None
+) -> bool:
+    exclude_game_ids = set(games_id_to_exclude or [])
     if not season_year:
         date = datetime.now()
         # Get Season to Update
@@ -105,8 +109,8 @@ def update_team_players_database(season_year=None, games_id_to_exclude=None) -> 
     all_existing_game_ids = existing_game_ids.intersection(existing_player_game_ids)
 
     # extend all_existing_game_ids with games_id_to_exclude to avoid even fetching that data
-    if games_id_to_exclude:
-        all_existing_game_ids.update(games_id_to_exclude)
+    if exclude_game_ids:
+        all_existing_game_ids.update(exclude_game_ids)
 
     print(f"Total existing game IDs in both databases: {len(all_existing_game_ids)}")
 
@@ -117,18 +121,18 @@ def update_team_players_database(season_year=None, games_id_to_exclude=None) -> 
         n_tries=3,
     )
 
-    # Save updated data to CSV
     if team_df is not None:
+        team_df, invalid_game_ids = filter_before_upload(team_df, return_invalid=True)
+        if len(invalid_game_ids) > 0:
+            exclude_game_ids.update(invalid_game_ids)
         # Upload team/game data to PostgreSQL
-        upload_games_to_postgresql(team_df, games_id_to_exclude=games_id_to_exclude)
+        upload_games_to_postgresql(team_df, games_id_to_exclude=list(exclude_game_ids))
 
     if players_df is not None:
         # Upload player data to PostgreSQL
         upload_players_to_postgresql(
-            players_df, players_game_ids_to_exclude=games_id_to_exclude
+            players_df, players_game_ids_to_exclude=list(exclude_game_ids)
         )
 
     print(f"Completed season: {season_nullable}\n" + "-" * 50)
-    return limit_reached
-
-
+    return limit_reached, list(exclude_game_ids)

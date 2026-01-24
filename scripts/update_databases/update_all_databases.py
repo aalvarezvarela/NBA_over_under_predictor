@@ -8,11 +8,15 @@ Covers seasons from 2005-06 through 2024-25, i.e. games played in calendar years
 """
 
 import time
+from datetime import datetime
 
 from nba_ou.config.settings import SETTINGS
 from nba_ou.fetch_data.live_games.live_games import get_live_game_ids
 from nba_ou.postgre_db.games.update_games.update_database import (
     update_team_players_database,
+)
+from nba_ou.postgre_db.injuries_refs.update_ref_injuries_database.update_refs_injuries_database import (
+    update_refs_injuries_database,
 )
 from nba_ou.postgre_db.odds.update_odds.update_odds_database import update_odds_database
 
@@ -44,20 +48,12 @@ def update_all_databases(
     """
     for y in range(start_season_year, end_season_year + 1):
         season_year = str(y)
-        season_nullable = f"{season_year}-{str(y + 1)[-2:]}"
         print(f"\n=== Backfilling season starting {season_year} season) ===")
 
-        limit_reached = update_team_players_database(
+        limit_reached, exclude_game_ids = update_team_players_database(
             season_year=season_year,
             games_id_to_exclude=games_id_to_exclude,
         )
-
-        if limit_reached:
-            print(
-                "\n⚠️ API limit reached or throttling detected. "
-                "Stopping backfill now. Re-run this script later to continue."
-            )
-            raise RuntimeError("API limit reached during backfill.")
 
         print(f"\n--- Updating odds for season {y} ---")
 
@@ -70,6 +66,19 @@ def update_all_databases(
             pickle_path=SETTINGS.odds_pickle_path,
         )
         print(f"✓ Odds data updated for season {y}")
+
+        print(f"\n--- Updating refs/injuries for season {y} ---")
+        limit_reached = update_refs_injuries_database(
+            season_year=season_year,
+            exclude_game_ids=exclude_game_ids,
+        )
+
+        if limit_reached:
+            print(
+                "\n⚠️ API limit reached or throttling detected while updating refs/injuries. "
+                "Stopping backfill now. Re-run this script later to continue."
+            )
+            raise RuntimeError("API limit reached during refs/injuries backfill.")
 
         time.sleep(sleep_seconds_between_seasons)
 

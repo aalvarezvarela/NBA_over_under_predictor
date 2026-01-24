@@ -5,8 +5,6 @@ This script manages the update of the NBA referees and injuries databases by fet
 new data from the NBA API and loading it to PostgreSQL.
 """
 
-from datetime import datetime
-
 import pandas as pd
 from nba_ou.postgre_db.injuries_refs.creation.create_injuries_db import (
     upload_injuries_data_to_db,
@@ -19,7 +17,7 @@ from nba_ou.postgre_db.injuries_refs.update_ref_injuries_database.update_refs_in
     get_existing_injury_game_ids_from_db,
     get_existing_ref_game_ids_from_db,
 )
-from nba_ou.utils.general_utils import get_nba_season_nullable_from_date
+from nba_ou.utils.general_utils import get_season_nullable_from_year
 
 
 def load_existing_data(filepath: str, dtype: dict):
@@ -78,24 +76,21 @@ def upload_injuries_to_postgresql(injuries_df: pd.DataFrame):
 
 
 def update_refs_injuries_database(
-    date=None,
+    season_year,
     exclude_game_ids: list[str] | None = None,
 ):
     """
     Main function to update referees and injuries databases.
 
     Args:
-        date: Date to determine the season (default: today)
+        season_year: Year to determine the season (e.g., 2023 for 2023-24)
         exclude_game_ids: Optional list of game IDs to exclude from uploads
 
     Returns:
         bool: True if rate limit was reached, False otherwise
     """
-    if not date:
-        date = datetime.now()
 
-    season_nullable = get_nba_season_nullable_from_date(date)
-    season_year = season_nullable[:4]
+    season_nullable = get_season_nullable_from_year(season_year)
 
     print(f"Updating referees and injuries for season: {season_nullable}")
 
@@ -134,4 +129,8 @@ def update_refs_injuries_database(
 
 
 if __name__ == "__main__":
-    update_refs_injuries_database()
+    import datetime
+
+    season_year = datetime.datetime.now().year
+
+    update_refs_injuries_database(season_year=season_year)

@@ -13,7 +13,7 @@ from nba_ou.postgre_db.games.creation.create_nba_games_db import (
 from psycopg import sql
 
 
-def filter_before_upload(df: pd.DataFrame) -> pd.DataFrame:
+def filter_before_upload(df: pd.DataFrame, return_invalid: bool = False) -> pd.DataFrame:
     """
     Filter out invalid games before uploading to database.
 
@@ -59,6 +59,8 @@ def filter_before_upload(df: pd.DataFrame) -> pd.DataFrame:
     else:
         print("No invalid games found")
 
+    if return_invalid:
+        return df, invalid_game_ids
     return df
 
 
