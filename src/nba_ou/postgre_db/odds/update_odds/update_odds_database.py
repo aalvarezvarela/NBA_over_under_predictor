@@ -8,6 +8,9 @@ It combines season-wide updates with game-by-game verification.
 import pandas as pd
 from nba_api.stats.endpoints import LeagueGameFinder
 from nba_ou.config.constants import SEASON_TYPE_MAP
+from nba_ou.data_preparation.team.merge_teams_df_with_odds import (
+    merge_teams_df_with_odds,
+)
 from nba_ou.fetch_data.fetch_odds_data.get_odds_date import process_odds_date
 from nba_ou.postgre_db.config.db_loader import load_games_from_db
 from nba_ou.postgre_db.odds.create.create_nba_odds_db import (
@@ -44,6 +47,61 @@ def normalize_odds_game_date_and_season_year(
 
     df["season_year"] = int(season_year)
     return df
+
+
+def find_missing_odds_dates_merged_df(df_merged: pd.DataFrame) -> list:
+    """
+    Find game dates where TOTAL_OVER_UNDER_LINE is missing.
+    Also includes the next day for each missing date to handle UTC timezone differences.
+
+    Args:
+        df_merged (pd.DataFrame): Merged dataframe with games and odds
+
+    Returns:
+        list: List of unique dates where odds are missing (including next days)
+    """
+    # Find rows where TOTAL_OVER_UNDER_LINE is NaN/null
+    missing_odds_mask = df_merged["TOTAL_OVER_UNDER_LINE"].isna()
+
+    # Get unique dates where odds are missing
+    missing_dates = df_merged.loc[missing_odds_mask, "GAME_DATE"].unique()
+
+    # Convert to string format YYYY-MM-DD and collect both original and next day
+    missing_dates_str = set()  # Use set to automatically handle duplicates
+
+    for date in missing_dates:
+        if pd.isna(date):
+            continue
+
+        # Convert to datetime if not already
+        if isinstance(date, str):
+            date_dt = pd.to_datetime(date)
+        else:
+            date_dt = pd.to_datetime(date)
+
+        # Add original date
+        original_date_str = date_dt.strftime("%Y-%m-%d")
+        missing_dates_str.add(original_date_str)
+
+        # Add next day (for UTC timezone differences)
+        next_day_dt = date_dt + pd.Timedelta(days=1)
+        next_day_str = next_day_dt.strftime("%Y-%m-%d")
+        missing_dates_str.add(next_day_str)
+
+    # # Filter out dates before October 22 (remove July, August, September, and October 1-21)
+    filtered_dates = []
+    for date_str in missing_dates_str:
+        date_dt = pd.to_datetime(date_str)
+        #     month = date_dt.month
+        #     day = date_dt.day
+
+        #     # Skip dates from July (7), August (8), September (9), and October 1-21
+        #     if month in [7, 8, 9] or (month == 10 and day < 22):
+        #         continue
+
+        filtered_dates.append(date_str)
+
+    return sorted(filtered_dates)
 
 
 def _find_missing_odds_dates_from_games(
@@ -110,6 +168,10 @@ def _fetch_missing_odds(
 
     # Exclude dates with no data
     filtered_dates = [d for d in missing_dates if d not in ODDS_NO_DATA_DATES]
+    #Exclude also todays date
+    today_str = pd.Timestamp.today().strftime("%Y-%m-%d")
+    filtered_dates = [d for d in filtered_dates if d != today_str]
+
     if not filtered_dates:
         print("No missing dates to fetch after excluding known no-data dates.")
         return pd.DataFrame()
@@ -193,7 +255,52 @@ def update_odds_database(
         if name in ["All Star", "Preseason"]
     ]
 
-    if not check_missing_by_game:
+    if check_missing_by_game:
+        # Use database to get games and perform game-by-game verification
+        print("Loading games from database for game-by-game verification...")
+        games_df = load_games_from_db(seasons=[season_year])
+
+        if games_df is None or games_df.empty:
+            print(f"Warning: No games found in database for season {season_year}")
+            print(f"Total odds records: {len(df_odds)}")
+            return df_odds
+
+        # Ensure column names are uppercase for consistency
+        games_df.columns = games_df.columns.str.upper()
+
+        if "GAME_ID" in games_df.columns:
+            games_df = games_df[
+                ~games_df["GAME_ID"].astype(str).str[0:3].isin(excluded_types)
+            ].copy()
+            print(
+                f"Filtered to {len(games_df)} games (excluded All Star and Preseason)"
+            )
+
+        df_merged = merge_teams_df_with_odds(df_odds=df_odds, df_team=games_df)
+        missing_odds_dates = find_missing_odds_dates_merged_df(df_merged)
+
+        if missing_odds_dates:
+            print(f"Found {len(missing_odds_dates)} dates with missing game odds")
+            new_odds = _fetch_missing_odds(
+                missing_odds_dates,
+                BASE_URL,
+                HEADERS,
+                save_pickle=save_pickle,
+                pickle_path=pickle_path,
+            )
+            # Normalize `game_date` and add `season_year` using helper
+            new_odds = normalize_odds_game_date_and_season_year(
+                new_odds, season_year=season_year, date_col="game_date"
+            )
+
+            if not new_odds.empty:
+                print("Updating database with missing game odds...")
+                upload_to_odds_db(new_odds)
+        else:
+            print("No missing game odds found")
+            return False
+
+    elif not check_missing_by_game:
         # Use NBA API to get games and find missing dates
         print("Loading games from NBA API...")
         game_finder = LeagueGameFinder(
@@ -264,50 +371,6 @@ def update_odds_database(
                 print("No odds data could be fetched")
         else:
             print("No missing dates found in initial check")
-    if check_missing_by_game:
-        # Use database to get games and perform game-by-game verification
-        print("Loading games from database for game-by-game verification...")
-        games_df = load_games_from_db(seasons=[season_year])
-
-        if games_df is None or games_df.empty:
-            print(f"Warning: No games found in database for season {season_year}")
-            print(f"Total odds records: {len(df_odds)}")
-            return df_odds
-
-        # Ensure column names are uppercase for consistency
-        games_df.columns = games_df.columns.str.upper()
-
-        if "GAME_ID" in games_df.columns:
-            games_df = games_df[
-                ~games_df["GAME_ID"].astype(str).str[0:3].isin(excluded_types)
-            ].copy()
-            print(
-                f"Filtered to {len(games_df)} games (excluded All Star and Preseason)"
-            )
-
-        print("\nPerforming game-by-game missing odds verification...")
-        missing_odds_dates = _find_missing_odds_dates_from_games(games_df, df_odds)
-
-        if missing_odds_dates:
-            print(f"Found {len(missing_odds_dates)} dates with missing game odds")
-            new_odds = _fetch_missing_odds(
-                missing_odds_dates,
-                BASE_URL,
-                HEADERS,
-                save_pickle=save_pickle,
-                pickle_path=pickle_path,
-            )
-            # Normalize `game_date` and add `season_year` using helper
-            new_odds = normalize_odds_game_date_and_season_year(
-                new_odds, season_year=season_year, date_col="game_date"
-            )
-
-            if not new_odds.empty:
-                print("Updating database with missing game odds...")
-                upload_to_odds_db(new_odds)
-        else:
-            print("No missing game odds found")
-            return False
 
     return True
 

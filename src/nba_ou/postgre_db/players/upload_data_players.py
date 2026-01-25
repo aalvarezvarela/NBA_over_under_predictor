@@ -125,11 +125,8 @@ def upload_players_data_to_db(
         conn = connect_nba_db()
         close_conn = True
 
-    if not database_exists(conn):
-        raise ValueError(
-            "Database does not exist. Please create it first using create_database()."
-        )
-    if not schema_exists(conn, schema):
+
+    if not schema_exists(schema):
         raise ValueError(
             f"Schema '{schema}' does not exist. Please create it first using create_players_schema()."
         )

@@ -153,11 +153,6 @@ def upload_to_odds_db(df_odds: pd.DataFrame) -> bool:
         print("No odds data to upload to PostgreSQL.")
         return False
 
-    # Safety check: verify database exists
-    if not database_exists():
-        raise RuntimeError(
-            "Database does not exist. Please create the database first using create_nba_odds_db.py"
-        )
 
     # Safety check: verify schema exists
     if not schema_exists():

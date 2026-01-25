@@ -298,24 +298,20 @@ def apply_missing_policy(
 
     # 4) IMPLIED POINTS (optional; assumes SPREAD is home perspective with standard sign)
     if (
-        current_total_line_col
+        len(IMPLIED_PTS_COLS) == 2
+        and current_total_line_col
         and current_total_line_col in out.columns
         and "SPREAD" in out.columns
     ):
+        home_col, away_col = IMPLIED_PTS_COLS
         total = out[current_total_line_col]
         spread = out["SPREAD"]
-        # if IMPLIED_PTS_COLS[0] in out.columns and is_numeric_dtype(
-        #     out[IMPLIED_PTS_COLS[0]]
-        # ):
-        #     out[IMPLIED_PTS_COLS[0]] = out[IMPLIED_PTS_COLS[0]].fillna(
-        #         total / 2.0 - spread / 2.0
-        #     )
-        # if IMPLIED_PTS_COLS[1] in out.columns and is_numeric_dtype(
-        #     out[IMPLIED_PTS_COLS[1]]
-        # ):
-        #     out[IMPLIED_PTS_COLS[1]] = out[IMPLIED_PTS_COLS[1]].fillna(
-        #         total / 2.0 + spread / 2.0
-        #     )
+
+        if home_col in out.columns and is_numeric_dtype(out[home_col]):
+            out.loc[:, home_col] = out[home_col].fillna(total / 2.0 - spread / 2.0)
+
+        if away_col in out.columns and is_numeric_dtype(out[away_col]):
+            out.loc[:, away_col] = out[away_col].fillna(total / 2.0 + spread / 2.0)
 
     # 5) FINAL FALLBACK: TRAIN MEDIANS
     if train_medians is not None:

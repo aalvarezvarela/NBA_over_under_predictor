@@ -53,7 +53,7 @@ def database_exists() -> bool:
         return False
 
 
-def schema_exists(schema_name: str = None) -> bool:
+def schema_exists( schema_name: str = None, ) -> bool:
     """Check if the schema exists in the database."""
     try:
         if schema_name is None:
