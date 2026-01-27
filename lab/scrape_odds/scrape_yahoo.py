@@ -35,8 +35,6 @@ from playwright.async_api import Page, async_playwright
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from tqdm import tqdm
 
-print("Waiting 6 hours before starting scraper to avoid rate limits...")
-time.sleep(60 * 60 * 6)
 # =========================
 # CONFIG
 # =========================
@@ -46,10 +44,12 @@ TIMEOUT_MS: int = 45_000
 
 # Define the season window you want to scrape (inclusive).
 # Example: 2022 season (2022-2023 NBA season) roughly runs Oct 2022 to Jun 2023.
-SEASON_START_DATE: date = date(2020, 10, 19)
-SEASON_END_DATE: date = date(2021, 9, 30)
+SEASON_START_DATE: date = date(2020, 9, 30)
+SEASON_END_DATE: date = date(2020, 10, 13)
 
-OUT_DIR: Path = Path("/media/adrian_alvarez/TOSHIBA EXT/NBA_yahoo_odds/")
+OUT_DIR: Path = Path(
+    "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/yahoo_odds"
+)
 SAVE_HTML: bool = True
 SAVE_CSV: bool = True
 
@@ -71,7 +71,9 @@ class RunPaths:
 
 def season_year_for_date(d: date) -> int:
     # Yahoo "season" param uses the season start year. NBA seasons start around Oct.
-    return d.year if d.month >= 10 else (d.year - 1)
+    # Exception: for the 2020 season use November as the threshold
+    month_threshold = 11 if d.year == 2020 else 10
+    return d.year if d.month >= month_threshold else (d.year - 1)
 
 
 def build_schedule_url(season_year: int, d: date) -> str:

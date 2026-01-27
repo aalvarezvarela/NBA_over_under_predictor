@@ -118,6 +118,8 @@ def get_schema_name_games() -> str:
 def get_schema_name_players() -> str:
     return get_config().get("Database", "SCHEMA_NAME_PLAYERS")
 
+def get_schema_name_odds_mgm() -> str:
+    return get_config().get("Database", "SCHEMA_NAME_ODDS_MGM")
 
 def get_schema_name_odds() -> str:
     return get_config().get("Database", "SCHEMA_NAME_ODDS")
