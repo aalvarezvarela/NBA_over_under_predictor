@@ -66,8 +66,8 @@ def build_mgm_odds_df_from_events(
         )
 
         row: dict[str, Any] = {
-            "game_date": game_date_utc,  # TIMESTAMPTZ-compatible
-            "game_date_local": game_date_local,  # local PT calendar day
+            "game_date_captured": game_date_utc,  # UTC capture time
+            "game_date": game_date_local,  # local PT calendar day
             "team_home": team_home,
             "team_away": team_away,
             "team_home_original": team_home_original,
@@ -87,60 +87,65 @@ def build_mgm_odds_df_from_events(
         if isinstance(lines, dict):
             mgm_block = lines.get("22") or lines.get(22)
 
-        if isinstance(mgm_block, dict):
-            total_over_delta = _safe_get(mgm_block, "total", "total_over_delta")
-            total_under_delta = _safe_get(mgm_block, "total", "total_under_delta")
-            row["mgm_total_line"] = (
-                abs(total_over_delta)
-                if total_over_delta is not None
-                else total_under_delta
-            )
+        if not isinstance(mgm_block, dict):
+            continue
 
-            row["mgm_moneyline_home"] = _safe_get(
-                mgm_block, "moneyline", "moneyline_home_delta"
-            )
-            row["mgm_moneyline_away"] = _safe_get(
-                mgm_block, "moneyline", "moneyline_away_delta"
-            )
+        total_over_delta = _safe_get(mgm_block, "total", "total_over_delta")
+        total_under_delta = _safe_get(mgm_block, "total", "total_under_delta")
+        row["mgm_total_line"] = (
+            abs(total_over_delta)
+            if total_over_delta is not None
+            else total_under_delta
+        )
 
-            row["mgm_spread_home"] = _safe_get(
-                mgm_block, "spread", "point_spread_home_delta"
-            )
-            row["mgm_spread_away"] = _safe_get(
-                mgm_block, "spread", "point_spread_away_delta"
-            )
+        if row["mgm_total_line"] is None or row["mgm_total_line"] < 100:
+            continue
 
-            row["mgm_total_over_money"] = _safe_get(
-                mgm_block, "total", "total_over_money_delta"
-            )
-            row["mgm_total_under_money"] = _safe_get(
-                mgm_block, "total", "total_under_money_delta"
-            )
+        row["mgm_moneyline_home"] = _safe_get(
+            mgm_block, "moneyline", "moneyline_home_delta"
+        )
+        row["mgm_moneyline_away"] = _safe_get(
+            mgm_block, "moneyline", "moneyline_away_delta"
+        )
+
+        row["mgm_spread_home"] = _safe_get(
+            mgm_block, "spread", "point_spread_home_delta"
+        )
+        row["mgm_spread_away"] = _safe_get(
+            mgm_block, "spread", "point_spread_away_delta"
+        )
+
+        row["mgm_total_over_money"] = _safe_get(
+            mgm_block, "total", "total_over_money_delta"
+        )
+        row["mgm_total_under_money"] = _safe_get(
+            mgm_block, "total", "total_under_money_delta"
+        )
 
         rows.append(row)
 
-    df = pd.DataFrame(rows)
-
-    df = df[
-        [
-            "game_date",
-            "game_date_local",
-            "team_home",
-            "team_away",
-            "team_home_original",
-            "team_away_original",
-            "season_year",
-            "mgm_total_line",
-            "mgm_moneyline_home",
-            "mgm_moneyline_away",
-            "mgm_spread_home",
-            "mgm_spread_away",
-            "mgm_total_over_money",
-            "mgm_total_under_money",
-        ]
+    columns = [
+        "game_date_captured",
+        "game_date",
+        "team_home",
+        "team_away",
+        "team_home_original",
+        "team_away_original",
+        "season_year",
+        "mgm_total_line",
+        "mgm_moneyline_home",
+        "mgm_moneyline_away",
+        "mgm_spread_home",
+        "mgm_spread_away",
+        "mgm_total_over_money",
+        "mgm_total_under_money",
     ]
 
-    return df
+    if not rows:
+        return pd.DataFrame(columns=columns)
+
+    df = pd.DataFrame(rows)
+    return df[columns]
 
 
 def load_events_from_json(json_path: str | Path) -> list[dict[str, Any]]:
@@ -158,9 +163,10 @@ def load_events_from_json(json_path: str | Path) -> list[dict[str, Any]]:
     )
 
 
-# Example:
-events = load_events_from_json(
-    "/home/adrian_alvarez/gdrive/NBA_data/TheRundownApi_data/2023-03-29.json"
-)
-df_mgm = build_mgm_odds_df_from_events(events)  # PT by default
-print(df_mgm.head(1))
+if __name__ == "__main__":
+    # Example usage
+    events = load_events_from_json(
+        "/home/adrian_alvarez/gdrive/NBA_data/TheRundownApi_data/2023-03-29.json"
+    )
+    df_mgm = build_mgm_odds_df_from_events(events)  # PT by default
+    print(df_mgm.head(1))
