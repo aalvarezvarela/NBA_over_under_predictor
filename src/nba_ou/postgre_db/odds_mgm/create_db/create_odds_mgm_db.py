@@ -325,20 +325,8 @@ def upsert_odds_mgm_df(
         VALUES (
             %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
         )
-        ON CONFLICT (game_date, team_home, team_away)
-        DO UPDATE SET
-            game_id = EXCLUDED.game_id,
-            game_date_captured = EXCLUDED.game_date_captured,
-            team_home_original = EXCLUDED.team_home_original,
-            team_away_original = EXCLUDED.team_away_original,
-            season_year = EXCLUDED.season_year,
-            mgm_total_line = EXCLUDED.mgm_total_line,
-            mgm_moneyline_home = EXCLUDED.mgm_moneyline_home,
-            mgm_moneyline_away = EXCLUDED.mgm_moneyline_away,
-            mgm_spread_home = EXCLUDED.mgm_spread_home,
-            mgm_spread_away = EXCLUDED.mgm_spread_away,
-            mgm_total_over_money = EXCLUDED.mgm_total_over_money,
-            mgm_total_under_money = EXCLUDED.mgm_total_under_money
+        ON CONFLICT (game_id)
+        DO NOTHING
         """
     ).format(sql.Identifier(schema), sql.Identifier(table))
 
