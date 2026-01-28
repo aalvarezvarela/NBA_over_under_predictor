@@ -14,6 +14,7 @@ from nba_ou.postgre_db.odds_mgm.create_db.create_odds_mgm_db import (
     load_games_for_season_years,
 )
 from psycopg import sql
+from tqdm import tqdm
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_JSON_DIR = PROJECT_ROOT / "data" / "TheRundownApi_data"
@@ -77,9 +78,7 @@ def get_missing_game_dates(missing_games_df: pd.DataFrame) -> list[str]:
         date_set.add((dt + pd.Timedelta(days=1)).date().isoformat())
 
     cutoff = pd.Timestamp("2023-03-15")
-    filtered = [
-        d for d in date_set if pd.Timestamp(d) >= cutoff
-    ]
+    filtered = [d for d in date_set if pd.Timestamp(d) >= cutoff]
     missing_dates = sorted(filtered)
     return missing_dates
 
@@ -128,12 +127,17 @@ def fetch_and_save_missing_json(
     json_dir: str | Path,
     base_url: str,
     headers: dict[str, str],
+    *,
+    skip_if_exists: bool = True,
 ) -> dict[str, int]:
     json_dir = Path(json_dir)
     results = {"fetched": 0, "skipped_empty": 0, "errors": 0}
 
-    for date_str in missing_json_dates:
+    for date_str in tqdm(missing_json_dates):
         json_path = json_dir / f"{date_str}.json"
+        if skip_if_exists and json_path.exists():
+            print(f"Skipping existing JSON for {date_str}")
+            continue
         try:
             events = fetch_events_for_date(
                 date_str=date_str, base_url=base_url, headers=headers
@@ -143,6 +147,7 @@ def fetch_and_save_missing_json(
                 continue
 
             save_events_json(events, json_path)
+            time.sleep(0.25)
             results["fetched"] += 1
         except Exception as exc:
             results["errors"] += 1

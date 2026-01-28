@@ -97,7 +97,7 @@ def create_odds_mgm_table(drop_existing: bool = False):
                 )
             )
             cur.execute(
-                sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {}.{}(game_id)").format(
+                sql.SQL("CREATE UNIQUE INDEX IF NOT EXISTS {} ON {}.{}(game_id)").format(
                     sql.Identifier("idx_odds_game_id"),
                     sql.Identifier(schema),
                     sql.Identifier(table),
@@ -150,6 +150,8 @@ def load_odds_mgm_df_from_json_dir(json_dir: str | Path) -> pd.DataFrame:
     for json_path in json_paths:
         events = load_events_from_json(json_path)
         df = build_mgm_odds_df_from_events(events)
+        if df.empty:
+            continue
         if not df.empty:
             dfs.append(df)
 
@@ -166,10 +168,10 @@ def load_odds_mgm_df_from_json_dir(json_dir: str | Path) -> pd.DataFrame:
 
     df_all["team_home"] = df_all["team_home"].map(
         TEAM_NAME_STANDARDIZATION
-    ).fillna(df_all["team_home"])
+    )
     df_all["team_away"] = df_all["team_away"].map(
         TEAM_NAME_STANDARDIZATION
-    ).fillna(df_all["team_away"])
+    )
 
     df_all = df_all.dropna(
         subset=["game_date_captured", "game_date", "team_home", "team_away"]
@@ -370,11 +372,23 @@ def get_missing_bets_dates(
     if games_df.empty:
         return []
 
-    games_dates = pd.to_datetime(games_df["game_date"], errors="coerce").dt.date
-    odds_dates = pd.to_datetime(odds_df["game_date"], errors="coerce").dt.date
+    games_ids = set(games_df["game_id"].dropna().astype(str))
+    odds_ids = set(odds_df["game_id"].dropna().astype(str))
 
-    missing = sorted(set(games_dates.dropna()) - set(odds_dates.dropna()))
-    return [d.isoformat() for d in missing]
+    missing_ids = sorted(games_ids - odds_ids)
+    if not missing_ids:
+        return []
+
+    missing_rows = games_df[games_df["game_id"].astype(str).isin(missing_ids)]
+    missing_dates = (
+        pd.to_datetime(missing_rows["game_date"], errors="coerce")
+        .dt.date.dropna()
+    )
+
+    unique_dates = sorted({d.isoformat() for d in missing_dates})
+    print(f"Missing game IDs: {len(missing_ids)}")
+    print(f"Missing dates ({len(unique_dates)}): {unique_dates}")
+    return unique_dates
 
 
 def build_and_load_odds_mgm(
@@ -384,7 +398,10 @@ def build_and_load_odds_mgm(
     odds_df = load_odds_mgm_df_from_json_dir(json_dir)
     games_df = load_games_for_season_years(season_years)
     merged_df = merge_odds_with_games(odds_df, games_df)
-    assert len(merged_df) == len(odds_df), "Merged df row count mismatch"
+    #count and drop how many null in gam_id in merged_df
+    null_game_id_count = merged_df['game_id'].isnull().sum()
+    print(f"Number of rows with null game_id in merged_df: {null_game_id_count}")
+    merged_df = merged_df.dropna(subset=['game_id'])
     inserted = upsert_odds_mgm_df(merged_df)
     missing_dates = get_missing_bets_dates(games_df, merged_df)
 
@@ -401,7 +418,7 @@ if __name__ == "__main__":
     season_years = [2022, 2023, 2024, 2025]
 
     print("\nStep 1: Creating schema + nba_odds_mgm table...")
-    if not create_odds_mgm_table():
+    if not create_odds_mgm_table(True):
         raise SystemExit(1)
 
     print("\nStep 2: Building odds df and merging with games...")

@@ -80,6 +80,7 @@ TEAM_NAME_STANDARDIZATION = {
     # LA Clippers special cases
     "LA Clippers": "Los Angeles Clippers",
     "L.A. Clippers": "Los Angeles Clippers",
+    "LA": "Los Angeles Clippers",  # Common confusion
     # Historical team names
     "New Orleans/Oklahoma City Hornets": "New Orleans Hornets",
     "Charlotte Bobcats": "Charlotte Hornets",
@@ -128,6 +129,7 @@ TEAM_NAME_STANDARDIZATION = {
     "LA Lakers": "Los Angeles Lakers",
     "L.A. Lakers": "Los Angeles Lakers",
     "Los Angeles Lakers": "Los Angeles Lakers",
+    "Los Angeles" : "Los Angeles Lakers",
     # Memphis Grizzlies
     "MEM Grizzlies": "Memphis Grizzlies",
     "Memphis Grizzlies": "Memphis Grizzlies",

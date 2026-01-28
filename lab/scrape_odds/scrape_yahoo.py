@@ -27,7 +27,7 @@ import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 import pandas as pd
@@ -40,12 +40,12 @@ from tqdm import tqdm
 # =========================
 BASE: str = "https://sports.yahoo.com"
 HEADLESS: bool = False
-TIMEOUT_MS: int = 45_000
-
+TIMEOUT_MS: int = 6_000
+TIMEOUT_MS_PUBLIC: int = 500
 # Define the season window you want to scrape (inclusive).
 # Example: 2022 season (2022-2023 NBA season) roughly runs Oct 2022 to Jun 2023.
-SEASON_START_DATE: date = date(2020, 9, 30)
-SEASON_END_DATE: date = date(2020, 10, 13)
+SEASON_START_DATE: date = date(2021, 10, 19)
+SEASON_END_DATE: date = date(2022, 7, 1)
 
 OUT_DIR: Path = Path(
     "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/yahoo_odds"
@@ -216,6 +216,166 @@ async def extract_full_game_odds_df(page: Page, odds_url: str) -> pd.DataFrame:
     ]
 
 
+async def extract_full_game_public_bet_percentages(
+    page: Page,
+) -> Optional[Dict[str, object]]:
+    """
+    Extract Full Game Public Bet % table for Spread + Total + Money Line (12 values):
+      - spread_pct_bets_away, spread_pct_bets_home
+      - spread_pct_money_away, spread_pct_money_home
+      - total_pct_bets_over, total_pct_bets_under
+      - total_pct_money_over, total_pct_money_under
+      - moneyline_pct_bets_away, moneyline_pct_bets_home
+      - moneyline_pct_money_away, moneyline_pct_money_home
+    """
+    js = r"""
+    () => {
+      const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
+
+      const title = Array.from(document.querySelectorAll("span"))
+        .find(el => norm(el.textContent) === "Full Game Public Bet %");
+      if (!title) return null;
+
+      const section = title.closest("section") || title.closest("div");
+      if (!section) return null;
+
+      const tables = Array.from(section.querySelectorAll("table"));
+      if (!tables.length) return null;
+
+      const isPublicTable = (table) => {
+        const firstCell = table.querySelector("tbody tr td");
+        const txt = firstCell ? norm(firstCell.textContent) : "";
+        return txt.includes("% OF BETS") || txt.includes("% OF MONEY");
+      };
+
+      const table = tables.find(isPublicTable);
+      if (!table) return null;
+
+      const ths = Array.from(table.querySelectorAll("thead th"));
+
+      const extractSideLabels = (th) => {
+        const spans = Array.from(th.querySelectorAll("span"))
+          .map(s => norm(s.textContent))
+          .filter(Boolean);
+
+        const sideCandidates = spans.filter(t =>
+          /^([OU])\s*\d/.test(t) || /[+-]\d/.test(t)
+        );
+
+        if (sideCandidates.length >= 2) {
+          const left = sideCandidates[sideCandidates.length - 2];
+          const right = sideCandidates[sideCandidates.length - 1];
+          return { left, right };
+        }
+        return { left: null, right: null };
+      };
+
+      const spreadTh = ths[1] || null;
+      const totalTh  = ths[2] || null;
+
+      const spreadLabels = spreadTh ? extractSideLabels(spreadTh) : { left: null, right: null };
+      const totalLabels  = totalTh  ? extractSideLabels(totalTh)  : { left: null, right: null };
+
+      const rows = Array.from(table.querySelectorAll("tbody tr"));
+
+      const getRowKind = (tr) => {
+        const td0 = tr.querySelector("td");
+        const t = td0 ? norm(td0.textContent) : "";
+        if (t.includes("% OF BETS")) return "bets";
+        if (t.includes("% OF MONEY")) return "money";
+        return null;
+      };
+
+      const getTwoPercentsFromCell = (td) => {
+        if (!td) return [null, null];
+        const txt = norm(td.textContent);
+        const matches = Array.from(txt.matchAll(/(\d+(?:\.\d+)?)\s*%/g)).map(m => m[1]);
+        if (matches.length >= 2) {
+          return [matches[0], matches[1]];
+        }
+        const pctEls = Array.from(td.querySelectorAll("*"))
+          .map(el => norm(el.textContent))
+          .filter(t => /%$/.test(t));
+        const m2 = pctEls.map(t => (t.match(/(\d+(?:\.\d+)?)\s*%/) || [null, null])[1]).filter(Boolean);
+        if (m2.length >= 2) return [m2[0], m2[1]];
+        return [null, null];
+      };
+
+      const out = {
+        spread_pct_bets_away: null,
+        spread_pct_bets_home: null,
+        spread_pct_money_away: null,
+        spread_pct_money_home: null,
+
+        total_pct_bets_over: null,
+        total_pct_bets_under: null,
+        total_pct_money_over: null,
+        total_pct_money_under: null,
+
+        moneyline_pct_bets_away: null,
+        moneyline_pct_bets_home: null,
+        moneyline_pct_money_away: null,
+        moneyline_pct_money_home: null,
+      };
+
+      for (const tr of rows) {
+        const kind = getRowKind(tr);
+        if (!kind) continue;
+
+        const tds = Array.from(tr.querySelectorAll("td"));
+        const spreadCell = tds[1] || null;
+        const totalCell  = tds[2] || null;
+        const moneyCell  = tds[3] || null;
+
+        const [sL, sR] = getTwoPercentsFromCell(spreadCell);
+        const [tL, tR] = getTwoPercentsFromCell(totalCell);
+        const [mL, mR] = getTwoPercentsFromCell(moneyCell);
+
+        if (kind === "bets") {
+          out.spread_pct_bets_away = sL;
+          out.spread_pct_bets_home = sR;
+          out.total_pct_bets_over = tL;
+          out.total_pct_bets_under = tR;
+          out.moneyline_pct_bets_away = mL;
+          out.moneyline_pct_bets_home = mR;
+        } else if (kind === "money") {
+          out.spread_pct_money_away = sL;
+          out.spread_pct_money_home = sR;
+          out.total_pct_money_over = tL;
+          out.total_pct_money_under = tR;
+          out.moneyline_pct_money_away = mL;
+          out.moneyline_pct_money_home = mR;
+        }
+      }
+
+      return out;
+    }
+    """
+    data = await page.evaluate(js)
+    if not data:
+        return None
+
+    pct_keys = [
+        "spread_pct_bets_away",
+        "spread_pct_bets_home",
+        "spread_pct_money_away",
+        "spread_pct_money_home",
+        "total_pct_bets_over",
+        "total_pct_bets_under",
+        "total_pct_money_over",
+        "total_pct_money_under",
+        "moneyline_pct_bets_away",
+        "moneyline_pct_bets_home",
+        "moneyline_pct_money_away",
+        "moneyline_pct_money_home",
+    ]
+    for k in pct_keys:
+        v = data.get(k)
+        data[k] = float(v) if v is not None else None
+
+    return data
+
+
 def ensure_paths_for_season(season_year: int) -> RunPaths:
     season_root = OUT_DIR / f"{season_year}"
     csv_dir = season_root / "csv"
@@ -266,9 +426,19 @@ async def scrape_day(page: Page, d: date, paths: RunPaths) -> Optional[pd.DataFr
 
     for href, matchup_url in zip(matchup_hrefs, matchup_urls):
         odds_url = with_section_odds(matchup_url)
+        slug = href.strip("/").replace("/", "_")
+        html_day_dir = paths.html_dir / day_str
+        html_day_dir.mkdir(parents=True, exist_ok=True)
+        html_path = html_day_dir / f"{slug}__odds.html"
 
-        await random_sleep()
-        await page.goto(odds_url, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
+        loaded_from_html = False
+        if SAVE_HTML and html_path.exists():
+            html = html_path.read_text(encoding="utf-8")
+            await page.set_content(html, wait_until="domcontentloaded")
+            loaded_from_html = True
+        else:
+            await random_sleep()
+            await page.goto(odds_url, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
 
         # Ensure the Full Game odds board exists; if not, still save HTML but skip df
         has_board = True
@@ -278,19 +448,54 @@ async def scrape_day(page: Page, d: date, paths: RunPaths) -> Optional[pd.DataFr
             )
         except PlaywrightTimeoutError:
             has_board = False
+            if loaded_from_html:
+                await random_sleep()
+                await page.goto(odds_url, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
+                try:
+                    await page.wait_for_selector(
+                        f"#{BOARD_ID_FULL} table tbody tr", timeout=TIMEOUT_MS
+                    )
+                    has_board = True
+                    loaded_from_html = False
+                except PlaywrightTimeoutError:
+                    has_board = False
 
-        # Save FULL odds page HTML
-        if SAVE_HTML:
-            slug = href.strip("/").replace("/", "_")
-            html_day_dir = paths.html_dir / day_str
-            html_day_dir.mkdir(parents=True, exist_ok=True)
-            html_path = html_day_dir / f"{slug}__odds.html"
+        # Save FULL odds page HTML (only when loaded from live page)
+        if SAVE_HTML and not loaded_from_html:
             html_path.write_text(await page.content(), encoding="utf-8")
 
         # Extract df (only if odds table exists)
         if has_board:
             df_game = await extract_full_game_odds_df(page, odds_url)
             if not df_game.empty:
+                try:
+                    await page.wait_for_selector(
+                        "span:has-text('Full Game Public Bet %')", timeout=TIMEOUT_MS_PUBLIC
+                    )
+                except PlaywrightTimeoutError:
+                    pass
+
+                public = await extract_full_game_public_bet_percentages(page)
+                if public is None and loaded_from_html:
+                    await random_sleep()
+                    await page.goto(
+                        odds_url, wait_until="domcontentloaded", timeout=TIMEOUT_MS
+                    )
+                    loaded_from_html = False
+                    try:
+                        await page.wait_for_selector(
+                            "span:has-text('Full Game Public Bet %')",
+                            timeout=TIMEOUT_MS,
+                        )
+                    except PlaywrightTimeoutError:
+                        pass
+                    public = await extract_full_game_public_bet_percentages(page)
+                    if SAVE_HTML:
+                        html_path.write_text(await page.content(), encoding="utf-8")
+                if public:
+                    for k, v in public.items():
+                        df_game[k] = v
+
                 teams = (
                     df_game.get("team_name", pd.Series(dtype="string"))
                     .dropna()
@@ -301,9 +506,27 @@ async def scrape_day(page: Page, d: date, paths: RunPaths) -> Optional[pd.DataFr
                 df_game.insert(1, "season", season_year)
                 df_game.insert(2, "search_date", day_str)
                 df_game.insert(3, "matchup", matchup)
-                daily_dfs.append(df_game)
+                # append it if no nulls outside allowed public bet % columns
+                allowed_null_cols = {
+                    "spread_pct_bets_away",
+                    "spread_pct_bets_home",
+                    "spread_pct_money_away",
+                    "spread_pct_money_home",
+                    "total_pct_bets_over",
+                    "total_pct_bets_under",
+                    "total_pct_money_over",
+                    "total_pct_money_under",
+                    "moneyline_pct_bets_away",
+                    "moneyline_pct_bets_home",
+                    "moneyline_pct_money_away",
+                    "moneyline_pct_money_home",
+                }
+                cols_to_check = [c for c in df_game.columns if c not in allowed_null_cols]
+                if df_game[cols_to_check].isnull().sum().sum() == 0:
+                    daily_dfs.append(df_game)
 
-        await random_sleep()
+        if not loaded_from_html:
+            await random_sleep()
 
     if not daily_dfs:
         return None
@@ -311,8 +534,8 @@ async def scrape_day(page: Page, d: date, paths: RunPaths) -> Optional[pd.DataFr
     return pd.concat(daily_dfs, ignore_index=True)
 
 
-async def run_season() -> None:
-    all_days = daterange(SEASON_START_DATE, SEASON_END_DATE)
+async def run_season(dates: Optional[List[date]] = None) -> None:
+    all_days = dates if dates is not None else daterange(SEASON_START_DATE, SEASON_END_DATE)
     remaining_days: List[date] = []
 
     for d in all_days:
@@ -360,4 +583,6 @@ async def run_season() -> None:
         await browser.close()
 
 
-asyncio.run(run_season())
+if __name__ == "__main__":
+    all_days = daterange(SEASON_START_DATE, SEASON_END_DATE)
+    asyncio.run(run_season(all_days))
