@@ -121,6 +121,12 @@ def get_schema_name_players() -> str:
 def get_schema_name_odds_mgm() -> str:
     return get_config().get("Database", "SCHEMA_NAME_ODDS_MGM")
 
+def get_schema_name_odds_sportsbook() -> str:
+    return get_config().get("Database", "SCHEMA_NAME_ODDS_SPORTSBOOK")
+
+def get_schema_name_odds_yahoo() -> str:
+    return get_config().get("Database", "SCHEMA_NAME_ODDS_YAHOO")
+
 def get_schema_name_odds() -> str:
     return get_config().get("Database", "SCHEMA_NAME_ODDS")
 
@@ -211,6 +217,12 @@ def connect_players_db() -> psycopg.Connection:
 
 def connect_odds_db() -> psycopg.Connection:
     return connect_schema_db(get_schema_name_odds())
+
+def connect_odds_sportsbook_db() -> psycopg.Connection:
+    return connect_schema_db(get_schema_name_odds_sportsbook())
+
+def connect_odds_yahoo_db() -> psycopg.Connection:
+    return connect_schema_db(get_schema_name_odds_yahoo())
 
 
 def connect_predictions_db() -> psycopg.Connection:

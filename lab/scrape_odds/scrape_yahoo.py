@@ -40,8 +40,8 @@ from tqdm import tqdm
 # =========================
 BASE: str = "https://sports.yahoo.com"
 HEADLESS: bool = False
-TIMEOUT_MS: int = 6_000
-TIMEOUT_MS_PUBLIC: int = 500
+TIMEOUT_MS: int = 4_000
+TIMEOUT_MS_PUBLIC: int = 200
 # Define the season window you want to scrape (inclusive).
 # Example: 2022 season (2022-2023 NBA season) roughly runs Oct 2022 to Jun 2023.
 SEASON_START_DATE: date = date(2021, 10, 19)
