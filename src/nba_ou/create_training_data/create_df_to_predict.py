@@ -24,6 +24,9 @@ from nba_ou.data_preparation.merged_home_away_data.add_features_after_merging im
 from nba_ou.data_preparation.merged_home_away_data.merge_home_away import (
     merge_home_away_data,
 )
+from nba_ou.data_preparation.merged_home_away_data.odds_feature_engeneer import (
+    engineer_odds_features,
+)
 from nba_ou.data_preparation.merged_home_away_data.select_train_columns import (
     select_training_columns,
 )
@@ -42,8 +45,9 @@ from nba_ou.data_preparation.scheduled_games.merge_scheduled_with_existing_data 
 )
 from nba_ou.data_preparation.team.cleaning_teams import adjust_overtime, clean_team_data
 from nba_ou.data_preparation.team.filters import filter_valid_games
-from nba_ou.data_preparation.team.merge_teams_df_with_odds import (
-    merge_teams_df_with_odds,
+from nba_ou.data_preparation.team.merge_teams_df_with_odds_by_game_id import (
+    merge_remaining_odds_by_game_id,
+    merge_total_spread_moneyline_by_game_id,
 )
 from nba_ou.data_preparation.team.records import (
     add_last_season_playoff_games,
@@ -57,7 +61,9 @@ from nba_ou.postgre_db import load_all_nba_data_from_db
 from nba_ou.postgre_db.injuries_refs.fetch_injury_db.get_injury_data_from_db import (
     get_injury_data_from_db,
 )
-from nba_ou.postgre_db.odds.update_odds.upload_to_odds_db import load_odds_data
+from nba_ou.postgre_db.odds.merge_odds_data import (
+    load_and_merge_odds_yahoo_sportsbookreview,
+)
 from nba_ou.utils.filter_by_date_range import filter_by_date_range
 from nba_ou.utils.seasons import get_seasons_between_dates
 
@@ -87,9 +93,12 @@ def process_team_statistics_for_training(df, df_odds, scheduled_games=None):
     if scheduled_games is not None:
         df = standardize_and_merge_scheduled_games_to_team_data(df, scheduled_games)
 
-    df = merge_teams_df_with_odds(df_odds=df_odds, df_team=df)
+    df = merge_total_spread_moneyline_by_game_id(
+        df_odds=df_odds, df_team=df, book="bet365"
+    )
     df = compute_total_points_features(df)
     df = filter_valid_games(df)
+    
 
     df = add_last_season_playoff_games(df)
 
@@ -207,17 +216,19 @@ def create_df_to_predict(
             tz=ZoneInfo("US/Eastern")
         ) - pd.Timedelta(days=365 * 2)
     elif older_limit_to_include is None:
-        # Default to 2006 (start of 2006-07 season)
-        older_limit_to_include = pd.to_datetime("2006-10-01")
+        # Default to 2017 (start of 2017-18 season)
+        older_limit_to_include = pd.to_datetime("2017-10-01")
 
     older_limit_to_include = pd.to_datetime(older_limit_to_include, format="%Y-%m-%d")
 
     # Determine which seasons to load
     seasons = get_seasons_between_dates(older_limit_to_include, recent_limit_to_include)
 
-    df_odds = load_odds_data(season_years=seasons)
+    # Load and merge Yahoo and Sportsbook odds data
+    df_odds = load_and_merge_odds_yahoo_sportsbookreview(season_years=seasons)
 
     if df_odds_scheduled is not None:
+        # TODO: ensure columns match
         df_odds = pd.concat([df_odds, df_odds_scheduled], ignore_index=True)
         df_odds.sort_values(by="game_date", inplace=True, ascending=False)
         df_odds.reset_index(drop=True, inplace=True)
@@ -255,6 +266,12 @@ def create_df_to_predict(
     )
 
     df_merged = merge_home_away_data(df)
+
+    # Merge remaining odds data (Yahoo percentages, other sportsbooks, etc.)
+    df_merged = merge_remaining_odds_by_game_id(
+        df_odds=df_odds, df_merged=df_merged, exclude_books=["bet365"]
+    )
+    df_merged = engineer_odds_features(df_merged)
 
     df_merged = add_referee_features_to_training_data(
         seasons, df_merged, df_referees_scheduled=df_referees_scheduled

@@ -4,9 +4,10 @@ Handle missing data in NBA prediction DataFrames using a deterministic, quality-
 Core idea: make the NA policy explicit and auditable by categorizing columns upfront into:
 
 1) DROP ROWS if any of these are missing (high-signal, non-imputable, or indicates pipeline failure)
-2) ZERO-FILL these when missing (neutral constructs where 0 means "no effect" or "flat/undefined")
-3) INFER these when missing (rolling-window features inferred from season-to-date counterparts)
-4) FINAL FALLBACK to training medians (optional, recommended)
+2) KEEP NaN + add __is_missing flags (structurally missing market features for tree models)
+3) ZERO-FILL + add __is_missing flags (neutral constructs where 0 means "no effect")
+4) INFER from season averages when possible (rolling-window features)
+5) FINAL FALLBACK to training medians (optional, recommended, excludes market columns)
 
 Important:
 - This policy must be applied consistently at training and prediction time.
@@ -14,14 +15,14 @@ Important:
 
 Usage:
     # Training time
-    train_medians = compute_and_save_train_medians(df_train, "train_medians.csv")
+    df_clean, report = apply_missing_policy(df_train, mode="train")
+    train_medians = compute_train_medians(df_clean)
 
     # Prediction time
     df_clean, report = apply_missing_policy(
         df_predict,
         train_medians=train_medians,
-        current_total_line_col="TOTAL_OVER_UNDER_LINE",
-        drop_mode="strict",
+        mode="predict",
     )
 """
 
@@ -33,256 +34,243 @@ import pandas as pd
 from pandas.api.types import is_numeric_dtype
 
 # ------------------------------------------------------------------------------
-# 1) EXPLICIT COLUMN POLICY (DEFINE WHAT HAPPENS WHERE)
+# 0) STRUCTURAL MISSING COLUMNS (ADD __is_missing FLAGS)
+#    Paste your "NEW COLUMNS" list here for automatic flagging
 # ------------------------------------------------------------------------------
 
-# A) Columns for which we drop the entire row if missing (explicit lists + regex groups)
+STRUCTURAL_NA_COLS: list[str] = [
+    # Market/odds columns that are structurally missing and should be flagged
+    # Add any columns from your dataset that you want to flag when missing
+]
+
+# ------------------------------------------------------------------------------
+# 1) REQUIRED FEATURES, DROP ROW IF MISSING
+#    These should never be imputed because missing means data quality failure
+# ------------------------------------------------------------------------------
+
 DROP_IF_MISSING_EXACT = [
-    # Market odds (high signal, do not impute for quality-first)
     "SPREAD",
     "MONEYLINE_TEAM_HOME",
     "MONEYLINE_TEAM_AWAY",
-    # Note: current_total_line_col is appended dynamically in apply_missing_policy
 ]
 
-DROP_IF_MISSING_CORE_TEAM_STATS_EXACT = [
-    # Core season-to-date team strength and pace metrics
-    "OFF_RATING_SEASON_BEFORE_AVG_TEAM_HOME",
-    "OFF_RATING_SEASON_BEFORE_AVG_TEAM_AWAY",
-    "DEF_RATING_SEASON_BEFORE_AVG_TEAM_HOME",
-    "DEF_RATING_SEASON_BEFORE_AVG_TEAM_AWAY",
-    "PACE_PER40_SEASON_BEFORE_AVG_TEAM_HOME",
-    "PACE_PER40_SEASON_BEFORE_AVG_TEAM_AWAY",
-    "PTS_SEASON_BEFORE_AVG_TEAM_HOME",
-    "PTS_SEASON_BEFORE_AVG_TEAM_AWAY",
+# If you are training, also require the target
+TARGET_COL = "TOTAL_POINTS"
+
+# ------------------------------------------------------------------------------
+# 2) MARKET / BOOK / PUBLIC BETTING FEATURES
+#    Policy: keep NaN, add __is_missing flag, do NOT impute
+# ------------------------------------------------------------------------------
+
+MARKET_KEEP_NA_SUBSTRINGS = [
+    "pct_bets",
+    "pct_money",
+    "consensus_pct",
+    "consensus_opener",
+    "_betmgm_",
+    "_caesars_",
+    "_draftkings_",
+    "_fanduel_",
+    "_pinnacle_",
+    "_bovada_",
+    "_betonline_",
+    "_mybookie_",
 ]
 
-# TOP player columns: only TOP1-3 (non-injured) are critical for dropping
-# TOP1-3 missing = drop row (indicates data pipeline failure)
-# TOP4+ missing = zero-fill (legitimately may have fewer players)
-# TOP1 INJURED player columns = drop row (there should always be at least one injured/not playing)
-# TOP2+ INJURED player columns = zero-fill (may have fewer injured players)
-TOP_PLAYER_CRITICAL_REGEX = (
-    r"^TOP[1-3]_PLAYER_"
-    r"(MIN|PTS|OFF_RATING|DEF_RATING|TS_PCT|PACE_PER40)_"
-    r"BEFORE_TEAM_(HOME|AWAY)$"
-)
 
-TOP_PLAYER_NONCRITICAL_REGEX = (
-    r"^TOP[4-9]_PLAYER_"
-    r"(MIN|PTS|OFF_RATING|DEF_RATING|TS_PCT|PACE_PER40)_"
-    r"BEFORE_TEAM_(HOME|AWAY)$"
-)
+def _is_market_keep_na(col: str) -> bool:
+    c = col.lower()
+    return any(s in c for s in MARKET_KEEP_NA_SUBSTRINGS)
 
-# TOP1 injured player is critical (should always have at least one injured/not playing)
-TOP1_INJURED_PLAYER_REGEX = r"^TOP1_INJURED_PLAYER_"
 
-# TOP2+ injured players are optional
-TOP_INJURED_PLAYER_NONCRITICAL_REGEX = r"^TOP[2-9]_INJURED_PLAYER_"
+# ------------------------------------------------------------------------------
+# 3) ZERO FILL FEATURES (NO FLAGS)
+#    Policy: fill NaN with 0.0, but do NOT add __is_missing flag
+# ------------------------------------------------------------------------------
 
-# B) Columns we set to 0 when missing (explicit by pattern)
 ZERO_FILL_SUBSTRINGS = [
-    "TREND_SLOPE",
-    "FORM_Z",
-    "DIFF_HOME_MINUS_AWAY",
-    "DIFERENCE_",  # misspelling present in your features
-    "OFFDEF_MISMATCH",
-    "REF_TRIO_DIFFERENCE",
-]
-ZERO_FILL_EXACT = [
-    "STAR_PTS_PCT_DIFF_HOME_MINUS_AWAY",
-]
-ZERO_FILL_PREFIXES = [
-    "TRAVEL_RECENCY_RATIO_",
-]
-ZERO_FILL_SUBSTRINGS_2 = [
-    "_SEASON_BEFORE_STD_",  # STD often NaN with too-few samples; treat as 0 dispersion info
+    # injury and availability effects
+    "injury_",
+    "injured_",
+    "absence_effect",
+    "avg_injured",
+    "_injured",
+    "_absence",
 ]
 
-# TOP player columns that should be zero-filled
-ZERO_FILL_REGEXES = [
-    TOP_PLAYER_NONCRITICAL_REGEX,  # TOP4+ regular players
-    TOP_INJURED_PLAYER_NONCRITICAL_REGEX,  # TOP2+ injured player columns
-]
 
-# C) Columns we infer from season-to-date averages when missing (by naming convention)
-# We attempt to map rolling-window feature -> SEASON_BEFORE_AVG_TEAM_(HOME|AWAY)
-INFER_FROM_SEASON_AVG_SUFFIX = "_BEFORE_TEAM_"
+def _is_zero_fill_no_flag(col: str) -> bool:
+    """Check if column should be zero-filled without adding __is_missing flag."""
+    lc = col.lower()
+    return any(s in lc for s in ZERO_FILL_SUBSTRINGS)
+
+
+# ------------------------------------------------------------------------------
+# 4) INFER FROM SEASON AVERAGE WHEN POSSIBLE
+# ------------------------------------------------------------------------------
+
 INFER_ROLLING_PATTERNS_TO_REMOVE = (
-    r"_LAST_(HOME_AWAY|ALL)_5_MATCHES",
-    r"_LAST_HOME_AWAY_10_WMA",
-    r"_LAST_HOME_AWAY_5_WMA",
-    r"_LAST_10_WMA",
-    r"_LAST_5_WMA",
+    # any LAST_{HOME_AWAY|ALL}_{n}_MATCHES
+    r"_LAST_(HOME_AWAY|ALL)_[0-9]+_MATCHES",
+    # specific home_away patterns
+    r"_LAST_HOME_AWAY_[0-9]+_MATCHES",
+    r"_LAST_ALL_[0-9]+_MATCHES",
+    # weighted moving averages
+    r"_LAST_HOME_AWAY_[0-9]+_WMA",
+    r"_LAST_[0-9]+_WMA",
 )
-
-# D) Optional: compute implied points deterministically if total line + spread available
-# IMPLIED_PTS_COLS = ("IMPLIED_PTS_HOME", "IMPLIED_PTS_AWAY")
-IMPLIED_PTS_COLS = ()
-
-
-# ------------------------------------------------------------------------------
-# 2) POLICY OBJECT (RESOLVED AGAINST A GIVEN DF)
-# ------------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class MissingPolicy:
-    drop_cols: list[str]
-    zero_cols: list[str]
-    infer_pairs: list[tuple[str, str]]  # (col_to_fill, season_avg_fallback)
-
-
-def _existing(df: pd.DataFrame, cols: Iterable[str]) -> list[str]:
-    return [c for c in cols if c in df.columns]
-
-
-def _resolve_top_player_critical_cols(df: pd.DataFrame) -> list[str]:
-    """
-    Return TOP1-3 regular player columns + TOP1 injured player columns that should trigger row drop if missing.
-    """
-    cols = df.filter(regex=TOP_PLAYER_CRITICAL_REGEX).columns.tolist()
-    cols += df.filter(regex=TOP1_INJURED_PLAYER_REGEX).columns.tolist()
-    return cols
-
-
-def _resolve_top_player_zerofill_cols(df: pd.DataFrame) -> list[str]:
-    """
-    Return TOP4+ regular players and TOP2+ injured player columns for zero-fill.
-    """
-    cols = []
-    for regex in ZERO_FILL_REGEXES:
-        cols.extend(df.filter(regex=regex).columns.tolist())
-    return cols
-
-
-def _is_zero_fill_col(col: str) -> bool:
-    if col in ZERO_FILL_EXACT:
-        return True
-    if any(col.startswith(p) for p in ZERO_FILL_PREFIXES):
-        return True
-    if any(s in col for s in ZERO_FILL_SUBSTRINGS):
-        return True
-    if any(s in col for s in ZERO_FILL_SUBSTRINGS_2):
-        return True
-    # Check regex patterns for TOP players
-    for regex in ZERO_FILL_REGEXES:
-        if re.match(regex, col):
-            return True
-    return False
 
 
 def _build_season_avg_fallback(col: str) -> str | None:
     """
-    Map a rolling window feature to SEASON_BEFORE_AVG_TEAM_{HOME|AWAY}.
+    Map rolling window feature to *_SEASON_BEFORE_AVG_TEAM_{HOME|AWAY} when feasible.
 
     Example:
-      FG_PCT_LAST_HOME_AWAY_5_MATCHES_BEFORE_TEAM_HOME
-        -> FG_PCT_SEASON_BEFORE_AVG_TEAM_HOME
+      TOTAL_OVER_UNDER_LINE_LAST_HOME_AWAY_10_MATCHES_BEFORE_TEAM_HOME
+        -> TOTAL_OVER_UNDER_LINE_SEASON_BEFORE_AVG_TEAM_HOME
     """
     m = re.search(r"_BEFORE_TEAM_(HOME|AWAY)$", col)
     if not m:
         return None
     side = m.group(1)
 
-    # Remove the trailing side marker
     col_core = re.sub(r"_BEFORE_TEAM_(HOME|AWAY)$", "", col)
 
-    # Remove rolling suffix markers
     for pat in INFER_ROLLING_PATTERNS_TO_REMOVE:
         col_core = re.sub(pat, "", col_core)
 
-    # If still indicates "LAST" then mapping is ambiguous; skip
+    # If it still has LAST, mapping is ambiguous
     if "LAST" in col_core:
         return None
 
     return f"{col_core}_SEASON_BEFORE_AVG_TEAM_{side}"
 
 
+# ------------------------------------------------------------------------------
+# 5) POLICY OBJECT
+# ------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class MissingPolicy:
+    drop_cols: list[str]
+    keep_na_cols: list[str]
+    zero_fill_cols: list[str]  # zero-fill without flags (injury/absence)
+    infer_pairs: list[tuple[str, str]]  # (col_to_fill, season_avg_fallback)
+    flag_cols: list[str]  # cols that will get __is_missing (ONLY market cols)
+
+
+def _existing(df: pd.DataFrame, cols: Iterable[str]) -> list[str]:
+    return [c for c in cols if c in df.columns]
+
+
 def resolve_policy(
     df: pd.DataFrame,
     *,
     current_total_line_col: str | None,
-    drop_mode: Literal["strict", "moderate", "lenient"],
+    mode: Literal["train", "predict"] = "train",
 ) -> MissingPolicy:
-    """
-    Resolve policy lists for a specific DataFrame (only keep columns that exist).
-    """
-    # Drop columns: odds + core team stats + TOP1-3 regular players + TOP1 injured player
+    # 1) DROP columns
     drop_cols = []
     drop_cols += _existing(df, DROP_IF_MISSING_EXACT)
     if current_total_line_col:
         drop_cols += _existing(df, [current_total_line_col])
-    drop_cols += _existing(df, DROP_IF_MISSING_CORE_TEAM_STATS_EXACT)
-    drop_cols += _resolve_top_player_critical_cols(df)  # TOP1-3 regular + TOP1 injured
+    if mode == "train":
+        drop_cols += _existing(df, [TARGET_COL])
 
-    # Zero-fill columns: by explicit pattern rules, numeric only is enforced later
-    zero_cols = [c for c in df.columns if _is_zero_fill_col(c)]
+    # 2) keep-na market cols (only those that exist)
+    keep_na_cols = [c for c in df.columns if _is_market_keep_na(c)]
 
-    # Infer pairs: for columns with a known season average fallback present in df
+    # 3) zero-fill cols (injury/absence - no flags)
+    zero_fill_cols = [c for c in df.columns if _is_zero_fill_no_flag(c)]
+
+    # 4) infer pairs (exclude keep_na, drop, and zero_fill)
+    drop_set = set(drop_cols)
+    keep_na_set = set(keep_na_cols)
+    zero_fill_set = set(zero_fill_cols)
+
     infer_pairs: list[tuple[str, str]] = []
     for c in df.columns:
+        if c in drop_set or c in keep_na_set or c in zero_fill_set:
+            continue
         fb = _build_season_avg_fallback(c)
         if fb and fb in df.columns:
             infer_pairs.append((c, fb))
 
-    # Ensure no overlap confusion: if a col is in drop, it should not be in zero/infer.
-    drop_set = set(drop_cols)
-    zero_cols = [c for c in zero_cols if c not in drop_set]
+    # 5) missing flags: ONLY for market keep-na cols
+    flag_cols = sorted(set(keep_na_cols))
+
+    # remove drop cols from other sets
+    zero_fill_cols = [c for c in zero_fill_cols if c not in drop_set]
+    keep_na_cols = [c for c in keep_na_cols if c not in drop_set]
     infer_pairs = [(c, fb) for (c, fb) in infer_pairs if c not in drop_set]
 
     return MissingPolicy(
         drop_cols=sorted(set(drop_cols)),
-        zero_cols=sorted(set(zero_cols)),
+        keep_na_cols=sorted(set(keep_na_cols)),
+        zero_fill_cols=sorted(set(zero_fill_cols)),
         infer_pairs=infer_pairs,
+        flag_cols=flag_cols,
     )
 
 
 # ------------------------------------------------------------------------------
-# 3) APPLY POLICY
+# 6) APPLY POLICY
 # ------------------------------------------------------------------------------
 
 
 def apply_missing_policy(
     df: pd.DataFrame,
     *,
-    train_medians: pd.Series | None = None,
-    current_total_line_col: str | None = None,
-    drop_mode: Literal["strict", "moderate", "lenient"] = "strict",
-) -> tuple[pd.DataFrame, dict]:
+    current_total_line_col: str | None = "TOTAL_OVER_UNDER_LINE",
+    mode: Literal["train", "predict"] = "train",
+    drop_all_nas_rows: bool = False,
+) -> pd.DataFrame:
     """
-    Apply the deterministic policy:
-      1) Drop rows missing in DROP set
-      2) Zero-fill in ZERO set (numeric columns only)
-      3) Infer rolling features from season averages using INFER pairs
-      4) Compute implied points (optional)
-      5) Final fallback to train medians (optional)
+    Apply the deterministic missing data policy:
+      1) Drop rows missing required cols
+      2) Add __is_missing flags for structural missing columns
+      3) Infer rolling features from season averages
+      4) Zero-fill neutral features + add flags
+      5) Final fallback to train medians (excludes market keep-na cols)
     """
     out = df.copy()
     before_rows = int(len(out))
 
+    # Compute medians from the data
+    train_medians = compute_train_medians(out)
+
     policy = resolve_policy(
-        out, current_total_line_col=current_total_line_col, drop_mode=drop_mode
+        out, current_total_line_col=current_total_line_col, mode=mode
     )
 
-    # 1) DROP
+    # A) DROP rows missing required cols
     dropped_reasons: dict[str, int] = {}
     if policy.drop_cols:
         drop_mask = out[policy.drop_cols].isna().any(axis=1)
-        dropped_reasons["missing_drop_cols_any"] = int(drop_mask.sum())
+        dropped_reasons["missing_required_any"] = int(drop_mask.sum())
         out = out.loc[~drop_mask].copy()
-    dropped = before_rows - int(len(out))
 
-    # 2) ZERO-FILL (numeric only)
-    zero_cols_numeric = [
-        c for c in policy.zero_cols if c in out.columns and is_numeric_dtype(out[c])
-    ]
-    if zero_cols_numeric:
-        out.loc[:, zero_cols_numeric] = out.loc[:, zero_cols_numeric].fillna(0.0)
+    # B) ADD __is_missing FLAGS (after dropping)
+    # Use pd.concat to avoid DataFrame fragmentation
+    flags_created = 0
+    if not drop_all_nas_rows:
+        missing_flags = {}
+        for c in policy.flag_cols:
+            if c in out.columns:
+                missing_flags[f"{c}__is_missing"] = out[c].isna().astype("int8")
 
-    # 3) INFER from season average (only for numeric columns; do not coerce objects)
+        if missing_flags:
+            out = pd.concat([out, pd.DataFrame(missing_flags, index=out.index)], axis=1)
+
+        flags_created = len(missing_flags)
+
+    # C) INFER FROM SEASON AVERAGES (exclude market keep-na cols)
     infer_applied = 0
+    keep_na_set = set(policy.keep_na_cols)
     for c, fb in policy.infer_pairs:
+        if c in keep_na_set:
+            continue
         if (
             c in out.columns
             and fb in out.columns
@@ -296,89 +284,74 @@ def apply_missing_policy(
                 if after_na < before_na:
                     infer_applied += 1
 
-    # 4) IMPLIED POINTS (optional; assumes SPREAD is home perspective with standard sign)
-    if (
-        len(IMPLIED_PTS_COLS) == 2
-        and current_total_line_col
-        and current_total_line_col in out.columns
-        and "SPREAD" in out.columns
-    ):
-        home_col, away_col = IMPLIED_PTS_COLS
-        total = out[current_total_line_col]
-        spread = out["SPREAD"]
+    # D) ZERO FILL FEATURES (injury/absence - numeric only, NO FLAGS)
+    zero_cols_numeric = [
+        c
+        for c in policy.zero_fill_cols
+        if c in out.columns and is_numeric_dtype(out[c])
+    ]
+    if zero_cols_numeric:
+        out.loc[:, zero_cols_numeric] = out.loc[:, zero_cols_numeric].fillna(0.0)
 
-        if home_col in out.columns and is_numeric_dtype(out[home_col]):
-            out.loc[:, home_col] = out[home_col].fillna(total / 2.0 - spread / 2.0)
-
-        if away_col in out.columns and is_numeric_dtype(out[away_col]):
-            out.loc[:, away_col] = out[away_col].fillna(total / 2.0 + spread / 2.0)
-
-    # 5) FINAL FALLBACK: TRAIN MEDIANS
+    # E) FINAL FALLBACK: TRAIN MEDIANS
+    # Do NOT fill market keep-na cols, you want NaN + flag there.
     if train_medians is not None:
         common = [
             c
             for c in out.columns
-            if c in train_medians.index and is_numeric_dtype(out[c])
+            if c in train_medians.index
+            and is_numeric_dtype(out[c])
+            and c not in keep_na_set
         ]
         if common:
             out.loc[:, common] = out.loc[:, common].fillna(train_medians[common])
 
+    # Calculate summary statistics
+    rows_dropped = int(before_rows - len(out))
+    drop_rate_pct = (
+        round(100 * rows_dropped / before_rows, 2) if before_rows > 0 else 0.0
+    )
+
     report = {
+        "mode": mode,
         "rows_in": before_rows,
-        "rows_dropped": int(dropped),
         "rows_out": int(len(out)),
-        "drop_rate_pct": round(100.0 * dropped / before_rows, 2)
-        if before_rows
-        else 0.0,
+        "rows_dropped": rows_dropped,
+        "drop_rate_pct": drop_rate_pct,
         "drop_cols_count": int(len(policy.drop_cols)),
+        "keep_na_cols_count": int(len(policy.keep_na_cols)),
         "zero_cols_count": int(len(zero_cols_numeric)),
         "infer_pairs_count": int(len(policy.infer_pairs)),
         "infer_cols_applied_count": int(infer_applied),
+        "missing_flags_created": int(flags_created),
         "remaining_na_cells": int(out.isna().sum().sum()),
         "dropped_reasons": dropped_reasons,
-        # Make the policy auditable:
         "drop_cols": policy.drop_cols,
-        "zero_cols": zero_cols_numeric,
-        "infer_pairs_sample": policy.infer_pairs[:25],  # keep report reasonably sized
+        "keep_na_cols_sample": policy.keep_na_cols[:25],
+        "zero_fill_cols_sample": zero_cols_numeric[:25],
+        "infer_pairs_sample": policy.infer_pairs[:25],
     }
 
-    return out, report
-
-
-# ------------------------------------------------------------------------------
-# 4) UTILITIES
-# ------------------------------------------------------------------------------
-
-
-def compute_and_save_train_medians(df_train: pd.DataFrame) -> pd.Series:
-    """
-    Compute medians from training data (numeric only) and save as a 1-column CSV.
-    """
-    med = df_train.median(numeric_only=True)
-    return med
-
-
-def load_train_medians(path: str) -> pd.Series:
-    """
-    Load medians saved by compute_and_save_train_medians.
-    """
-    df = pd.read_csv(path, index_col=0)
-    if df.shape[1] != 1:
-        raise ValueError(f"Expected 1 column in medians CSV, got {df.shape[1]}")
-    return df.iloc[:, 0]
-
-
-def diagnose_missing_data(df: pd.DataFrame, top_n: int = 30) -> pd.DataFrame:
-    """
-    Return a DataFrame with missing_count and missing_pct per column (top_n by count).
-    """
-    na_counts = df.isna().sum()
-    na_pct = 100.0 * na_counts / len(df) if len(df) else 0.0
-
-    rep = (
-        pd.DataFrame({"missing_count": na_counts, "missing_pct": na_pct})
-        .loc[lambda x: x["missing_count"] > 0]
-        .sort_values("missing_count", ascending=False)
-        .head(top_n)
+    # Print summary report
+    print("\nMissing Data Policy Report:")
+    print(f"  Rows dropped: {report['rows_dropped']} ({report['drop_rate_pct']}%)")
+    print(f"  Critical columns requiring data: {report['drop_cols_count']}")
+    print(f"  Columns zero-filled: {report['zero_cols_count']}")
+    print(
+        f"  Infer pairs applied: {report['infer_cols_applied_count']}/{report['infer_pairs_count']}"
     )
-    return rep
+    print(f"  Remaining NaN cells: {report['remaining_na_cells']}")
+
+    return out
+
+
+# ------------------------------------------------------------------------------
+# 7) TRAIN MEDIANS UTILS
+# ------------------------------------------------------------------------------
+
+
+def compute_train_medians(df_train: pd.DataFrame) -> pd.Series:
+    """
+    Compute medians from training data (numeric only).
+    """
+    return df_train.median(numeric_only=True)

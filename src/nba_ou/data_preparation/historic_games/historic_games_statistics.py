@@ -1,6 +1,5 @@
 import numpy as np
 import pandas as pd
-from scipy.stats import linregress
 
 
 def compute_differences_in_points_conceeded_annotated(df: pd.DataFrame) -> pd.DataFrame:
@@ -31,63 +30,6 @@ def compute_differences_in_points_conceeded_annotated(df: pd.DataFrame) -> pd.Da
 
     out.sort_values("GAME_DATE", ascending=False, inplace=True)
     return out
-
-
-def compute_trend_slope(df, parameter="PTS", window=10):
-    """
-    Computes the slope of a linear regression line over the last `window` games
-    to determine whether a team's performance is increasing, decreasing, or stable.
-
-    Args:
-        df (pd.DataFrame): Must contain columns "TEAM_ID_TEAM_HOME", "GAME_DATE", and `param`.
-        param (str): The statistic to analyze (e.g., "PTS").
-        window (int): Number of last games to consider.
-
-    Returns:
-        pd.DataFrame: A modified DataFrame with a new column:
-            - f"{param}_TREND_SLOPE_LAST_{window}_GAMES"
-    """
-
-    def calculate_slope(series):
-        """Applies linear regression to compute the trend slope."""
-        # Remove NaN and None values with a simple loop
-        clean_series = [x for x in series if x is not None and not np.isnan(x)]
-
-        if len(clean_series) < 2:
-            return 0  # Not enough data for a trend, so we assign 0
-
-        X = np.arange(1, len(clean_series) + 1)  # Time index [1, 2, ..., N]
-        Y = np.array(clean_series)  # Convert to array for linregress
-
-        slope, _, _, _, _ = linregress(X, Y)
-        return slope
-
-    for field in ["TEAM_HOME", "TEAM_AWAY"]:
-        param = f"{parameter}_{field}"
-
-        trend_col = f"{param}_TREND_SLOPE_LAST_{window}_GAMES_BEFORE"
-
-        # Sort games by date in ascending order
-        df = df.sort_values([f"TEAM_ID_{field}", "GAME_DATE"], ascending=True)
-
-        # Apply the function per team, shifting by 1 to exclude the current game
-        trend_series = (
-            df.groupby(f"TEAM_ID_{field}")[param]
-            .apply(
-                lambda s: s.shift(1)
-                .rolling(window, min_periods=2)
-                .apply(calculate_slope, raw=True)
-            )
-            .reset_index(level=0, drop=True)
-        )  # Reset index to align with df
-
-        # Assign the result back to the DataFrame
-        df[trend_col] = trend_series
-    df[f"{parameter}_COMBINED_TREND_SLOPE_LAST_{window}_GAMES_BEFORE"] = (
-        df[f"{parameter}_TEAM_HOME_TREND_SLOPE_LAST_{window}_GAMES_BEFORE"]
-        + df[f"{parameter}_TEAM_AWAY_TREND_SLOPE_LAST_{window}_GAMES_BEFORE"]
-    )
-    return df
 
 
 def get_last_5_matchup_excluding_current(row, df):

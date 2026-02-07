@@ -959,6 +959,7 @@ async def run_season(dates: Optional[List[date]] = None) -> None:
             and moneyline_csv_path.exists()
             and spread_csv_path.exists()
         ):
+            print(f"Skipping {d.isoformat()} - all CSVs exist")
             continue
         remaining_days.append(d)
 
@@ -1006,8 +1007,8 @@ async def run_season(dates: Optional[List[date]] = None) -> None:
 
 
 if __name__ == "__main__":
-    SEASON_START_DATE: date = date(2019, 5, 1)
-    SEASON_END_DATE: date = date(2019, 6, 1)
+    SEASON_START_DATE: date = date(2025, 12, 5)
+    SEASON_END_DATE: date = date(2026, 2, 4)
     all_days = daterange(SEASON_START_DATE, SEASON_END_DATE)
     # To run for a single specific date, set `specific_day` to that date.
     # Example: date.fromisoformat("2025-10-10")

@@ -26,13 +26,13 @@ def main(limit_date_to_train: str = "2026-01-10") -> None:
         injury_dict_scheduled=None,
         df_odds_scheduled=None,
         recent_limit_to_include=limit_date_to_train,
-        older_limit_to_include=None,
-    )
+        older_limit_to_include='2025-11-11'
+        )
 
     output_path = (
         "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/train_data"
     )
-    output_name = f"{output_path}/training_data_until_{pd.to_datetime(limit_date_to_train).strftime('%Y%m%d')}.csv"
+    output_name = f"{output_path}/all_odds_training_data_until_{pd.to_datetime(limit_date_to_train).strftime('%Y%m%d')}.csv"
 
     # Save to CSV
     df_train.to_csv(output_name, index=False)

@@ -3,10 +3,72 @@ import pandas as pd
 from nba_ou.data_preparation.historic_games.historic_games_statistics import (
     compute_differences_in_points_conceeded_annotated,
     compute_home_points_conceded_avg,
-    compute_trend_slope,
     get_last_5_matchup_excluding_current,
 )
 from tqdm import tqdm
+
+
+def deduplicate_game_level_columns(df_merged):
+    """
+    Deduplicate columns that are game-level (same for both teams) after home/away merge.
+
+    These columns get duplicated with _TEAM_HOME and _TEAM_AWAY suffixes but contain
+    the same value since they're game-level, not team-level data.
+
+    Only deduplicates the actual total line values, not derived statistics like
+    rolling averages or trends which are team-specific.
+
+    Args:
+        df_merged (pd.DataFrame): Merged home/away dataframe
+
+    Returns:
+        pd.DataFrame: Dataframe with deduplicated game-level columns
+    """
+    # Keywords that indicate team-specific derived statistics (not game-level)
+    team_specific_keywords = [
+        "_BEFORE_",
+        "_AVG",
+        "_TREND_",
+        "_STD",
+        "_LAST_",
+        "_WEIGHTED_",
+        "_SEASON_",
+    ]
+
+    # Find all pairs of duplicated columns
+    home_suffix = "_TEAM_HOME"
+    away_suffix = "_TEAM_AWAY"
+
+    columns_to_deduplicate = []
+    for col in df_merged.columns:
+        if col.endswith(home_suffix):
+            base_col = col[: -len(home_suffix)]
+            away_col = base_col + away_suffix
+
+            # Check if this should be deduplicated
+            # 1. Must be a total line column
+            is_total_line = base_col == "TOTAL_OVER_UNDER_LINE" or base_col.startswith(
+                "TOTAL_LINE_"
+            )
+
+            # 2. Must NOT contain team-specific keywords
+            is_team_specific = any(
+                keyword in base_col for keyword in team_specific_keywords
+            )
+
+            # Deduplicate only if it's a total line AND not a derived team-specific stat
+            if is_total_line and not is_team_specific and away_col in df_merged.columns:
+                columns_to_deduplicate.append((col, away_col, base_col))
+
+    # Deduplicate: keep home version, drop away version, rename to base name
+    for home_col, away_col, base_col in columns_to_deduplicate:
+        df_merged[base_col] = df_merged[home_col]
+        df_merged = df_merged.drop(columns=[home_col, away_col])
+
+    if columns_to_deduplicate:
+        print(f"Deduplicated {len(columns_to_deduplicate)} game-level column(s)")
+
+    return df_merged
 
 
 def merge_home_away_data(df):
@@ -77,17 +139,22 @@ def merge_home_away_data(df):
         how="inner",
         suffixes=("_TEAM_HOME", "_TEAM_AWAY"),
     )
-    #Compute Totals
+
+    # Deduplicate game-level columns (same value for both teams)
+    df_merged = deduplicate_game_level_columns(df_merged)
+
+    # Set unified SPREAD column (home team's perspective is standard)
+    if "SPREAD_TEAM_HOME" in df_merged.columns:
+        df_merged["SPREAD"] = df_merged["SPREAD_TEAM_HOME"]
+
+    # Compute Totals
     df_merged["TOTAL_POINTS"] = df_merged.PTS_TEAM_HOME + df_merged.PTS_TEAM_AWAY
     df_merged["TOTAL_PF"] = df_merged.PF_TEAM_HOME + df_merged.PF_TEAM_AWAY
-    
+
     # IS_PLAYOFF_GAME based on SEASON_TYPE
     df_merged["IS_PLAYOFF_GAME"] = (
         df_merged["SEASON_TYPE"].str.contains("Playoff", case=False, na=False)
     ).astype(int)
-
-    df_merged["TOTAL_OVER_UNDER_LINE"] = df_merged["TOTAL_OVER_UNDER_LINE_TEAM_HOME"]
-    df_merged["SPREAD"] = df_merged["SPREAD_TEAM_HOME"]
 
     # Apply function
     df_merged = compute_home_points_conceded_avg(df_merged)
@@ -119,16 +186,6 @@ def merge_home_away_data(df):
     df_merged = pd.concat([df_merged, results_df], axis=1)
     df_merged.sort_values(["TEAM_ID_TEAM_HOME", "GAME_DATE"], ascending=True)
 
-    # Compute trends using linear regression
-    df_merged = compute_trend_slope(df_merged, parameter="PTS", window=5)
-    df_merged = compute_trend_slope(df_merged, parameter="TS_PCT", window=5)
-    df_merged = compute_trend_slope(
-        df_merged, parameter="TOTAL_OVER_UNDER_LINE", window=5
-    )
-    df_merged = compute_trend_slope(
-        df_merged, parameter="IS_OVER_LINE", window=5
-    )
     df_merged = df_merged.sort_values(by="GAME_DATE", ascending=False)
-
 
     return df_merged
