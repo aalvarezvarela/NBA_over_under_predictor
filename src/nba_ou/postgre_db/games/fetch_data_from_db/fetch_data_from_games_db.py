@@ -1,4 +1,5 @@
 import pandas as pd
+from nba_ou.data_preparation.team.cleaning_teams import fix_home_away_parsing_errors
 from nba_ou.postgre_db.config.db_config import (
     connect_nba_db,
     get_schema_name_games,
@@ -50,3 +51,38 @@ def load_games_from_db(seasons=None) -> pd.DataFrame | None:
     finally:
         if conn is not None:
             conn.close()
+
+
+def load_cleaned_games_for_odds(
+    season_year: str | int | None = None,
+) -> pd.DataFrame:
+    """
+    Load games from DB, filter out All Star and Preseason games, and fix home/away issues.
+
+    Args:
+        season_year: Optional season start year (e.g., 2025 for 2025-26 season).
+                     If None, loads all seasons.
+
+    Returns:
+        Cleaned DataFrame with regular season and playoff games only.
+    """
+    # Load games from database
+    if season_year is not None:
+        season_str = f"{season_year}-{str(int(season_year) + 1)[-2:]}"
+        df = load_games_from_db(seasons=[season_str])
+    else:
+        df = load_games_from_db(seasons=None)
+
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    # Filter out All Star and Preseason games
+    if "season_type" in df.columns:
+        df = df[~df["season_type"].isin(["All Star", "Preseason"])]
+
+    # Fix home/away parsing errors
+    df = fix_home_away_parsing_errors(df)
+
+    df = df.drop_duplicates(keep ="first").reset_index(drop=True)
+
+    return df

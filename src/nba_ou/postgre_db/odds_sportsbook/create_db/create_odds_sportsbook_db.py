@@ -169,10 +169,7 @@ def load_all_games_from_db() -> pd.DataFrame:
         return pd.DataFrame()
 
     if "season_type" in df.columns:
-        season_type = df["season_type"].astype("string").str.lower()
-        mask_pre = season_type.str.contains("pre", na=False)
-        mask_allstar = season_type.str.contains("all", na=False)
-        df = df[~(mask_pre | mask_allstar)]
+        df = df[~df["season_type"].isin(["All Star", "Preseason"])]
 
     return df
 
@@ -215,6 +212,9 @@ def upsert_odds_sportsbook_df(
     col_defs = _sportsbook_columns()
     cols = [c for c, _ in col_defs]
     odds_df = _ensure_columns(odds_df, cols)
+
+    # Convert pd.NA to None for database compatibility
+    odds_df = odds_df.where(pd.notna(odds_df), None)
 
     rows = [tuple(row) for row in odds_df[cols].itertuples(index=False, name=None)]
 
