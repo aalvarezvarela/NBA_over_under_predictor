@@ -17,6 +17,7 @@ def merge_total_spread_moneyline_by_game_id(
     book: str = "bet365",
     total_lines_mode: Literal["selected", "all", "none"] = "all",
     debug: bool = False,
+    exclude_yahoo: bool = False,
 ) -> pd.DataFrame:
     """
     Merge team dataframe with odds data using game_id.
@@ -25,6 +26,9 @@ def merge_total_spread_moneyline_by_game_id(
       - "none": do not merge any total line
       - "selected": merge TOTAL_OVER_UNDER_LINE from the selected `book` only
       - "all": merge total lines for all known books into TOTAL_LINE_<book> columns
+
+    exclude_yahoo: If True, exclude Yahoo-specific betting columns (pct_bets, pct_money)
+                   but keep metadata columns (game_date, teams, etc.)
     """
     if df_odds.empty:
         print("Warning: Odds dataframe is empty")
@@ -114,6 +118,28 @@ def merge_total_spread_moneyline_by_game_id(
     # Subset odds
     df_odds_subset = df_odds[required_cols].copy()
 
+    # Filter out Yahoo-specific columns if requested
+    if exclude_yahoo:
+        yahoo_cols = [
+            "total_pct_bets_over",
+            "total_pct_bets_under",
+            "total_pct_money_over",
+            "total_pct_money_under",
+            "spread_pct_bets_away",
+            "spread_pct_bets_home",
+            "spread_pct_money_away",
+            "spread_pct_money_home",
+            "moneyline_pct_bets_away",
+            "moneyline_pct_bets_home",
+            "moneyline_pct_money_away",
+            "moneyline_pct_money_home",
+        ]
+        yahoo_cols_to_drop = [
+            col for col in yahoo_cols if col in df_odds_subset.columns
+        ]
+        if yahoo_cols_to_drop:
+            df_odds_subset = df_odds_subset.drop(columns=yahoo_cols_to_drop)
+
     # Rename
     rename_map = {
         "game_id": "GAME_ID",
@@ -123,7 +149,6 @@ def merge_total_spread_moneyline_by_game_id(
         ml_away_col: "MONEYLINE_AWAY",
     }
 
-    
     rename_map[f"total_{book}_line_over"] = "TOTAL_OVER_UNDER_LINE"
 
     if total_lines_mode == "all":
@@ -163,7 +188,8 @@ def merge_total_spread_moneyline_by_game_id(
     )
 
     print(
-        f"Merged {len(df_merged)} rows with odds data from {book} (total_lines_mode={total_lines_mode})"
+        f"Merged {len(df_merged)} rows with odds data from {book} "
+        f"(total_lines_mode={total_lines_mode}, exclude_yahoo={exclude_yahoo})"
     )
     return df_merged
 
@@ -172,6 +198,7 @@ def merge_remaining_odds_by_game_id(
     df_odds: pd.DataFrame,
     df_merged: pd.DataFrame,
     exclude_books: list[str] | None = ["bet365"],
+    exclude_yahoo: bool = False,
 ) -> pd.DataFrame:
     """
     Merge all remaining odds data with merged home/away dataframe using game_id.
@@ -186,6 +213,8 @@ def merge_remaining_odds_by_game_id(
         exclude_books: List of books to exclude specific columns for (default: ["bet365"])
             This will exclude total_X_line_over/under, spread_X_line_home/away,
             ml_X_price_home/away for each book in the list.
+        exclude_yahoo: If True, exclude Yahoo-specific betting columns (pct_bets, pct_money)
+                       but keep metadata columns (game_date, teams, etc.)
 
     Returns:
         pd.DataFrame: Merged dataframe with all remaining odds columns added
@@ -234,6 +263,24 @@ def merge_remaining_odds_by_game_id(
         ]
     )
 
+    # Exclude Yahoo-specific betting columns if requested
+    if exclude_yahoo:
+        yahoo_cols = [
+            "total_pct_bets_over",
+            "total_pct_bets_under",
+            "total_pct_money_over",
+            "total_pct_money_under",
+            "spread_pct_bets_away",
+            "spread_pct_bets_home",
+            "spread_pct_money_away",
+            "spread_pct_money_home",
+            "moneyline_pct_bets_away",
+            "moneyline_pct_bets_home",
+            "moneyline_pct_money_away",
+            "moneyline_pct_money_home",
+        ]
+        columns_to_exclude.update(yahoo_cols)
+
     # Select columns from odds to merge (all except excluded)
     cols_to_merge = ["game_id"]  # Always include game_id
     for col in df_odds.columns:
@@ -259,7 +306,8 @@ def merge_remaining_odds_by_game_id(
     )
 
     print(
-        f"Merged {len(cols_to_merge) - 1} remaining odds columns to {len(df_result)} rows"
+        f"Merged {len(cols_to_merge) - 1} remaining odds columns to {len(df_result)} rows "
+        f"(exclude_yahoo={exclude_yahoo})"
     )
 
     return df_result

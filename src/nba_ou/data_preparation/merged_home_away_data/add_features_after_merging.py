@@ -321,7 +321,7 @@ def add_high_value_features_for_team_points(df: pd.DataFrame) -> pd.DataFrame:
     # ---------------------------------------------------------------------
     # 4) Fatigue and travel compression
     # ---------------------------------------------------------------------
-    # NOTE: Do NOT add IS_BACK_TO_BACK because BACK_TO_BACK already exists (redundant).
+
 
     # Travel intensity: concentration of travel in last 2 vs 14 days
     if _has(

@@ -45,7 +45,7 @@ from nba_ou.data_preparation.scheduled_games.merge_scheduled_with_existing_data 
 )
 from nba_ou.data_preparation.team.cleaning_teams import adjust_overtime, clean_team_data
 from nba_ou.data_preparation.team.filters import filter_valid_games
-from nba_ou.data_preparation.team.merge_teams_df_with_odds_by_game_id import (
+from nba_ou.data_preparation.team.merge_game_df_with_odds_by_game_id import (
     merge_remaining_odds_by_game_id,
     merge_total_spread_moneyline_by_game_id,
 )
@@ -269,15 +269,17 @@ def create_df_to_predict(
 
     # Merge remaining odds data (Yahoo percentages, other sportsbooks, etc.)
     df_merged = merge_remaining_odds_by_game_id(
-        df_odds=df_odds, df_merged=df_merged, exclude_books=["bet365"]
+        df_odds=df_odds, df_merged=df_merged, exclude_books=["bet365"], exclude_yahoo=False
     )
-    df_merged = engineer_odds_features(df_merged)
 
     df_merged = add_referee_features_to_training_data(
         seasons, df_merged, df_referees_scheduled=df_referees_scheduled
     )
 
     df_training = select_training_columns(df_merged, original_columns)
+    
+    df_training = engineer_odds_features(df_training)
+    
     df_training = add_derived_features_after_computed_stats(df_training)
 
     df_training = add_top3_absence_effect_features_for_columns(

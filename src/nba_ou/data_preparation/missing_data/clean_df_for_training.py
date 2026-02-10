@@ -71,7 +71,11 @@ def basic_cleaning(df: pd.DataFrame, verbose: int = 1) -> pd.DataFrame:
 
 
 def advanced_column_cleaning(
-    df: pd.DataFrame, nan_threshold: float = 50.0, verbose: int = 1
+    df: pd.DataFrame, 
+    nan_threshold: float = 50.0, 
+    corr_threshold: float = 0.99, 
+    keep_columns: list[str] | None = None,
+    verbose: int = 1
 ) -> pd.DataFrame:
     """
     Perform advanced column cleaning on the training dataframe.
@@ -89,6 +93,10 @@ def advanced_column_cleaning(
         df (pd.DataFrame): Training dataframe to clean
         nan_threshold (float): Percentage threshold for NaN values above which
             a column will be removed (e.g., 40.0 means 40%). Default: 50.0
+        corr_threshold (float): Correlation threshold above which columns will be considered highly similar
+            and one will be removed. Default: 0.99
+        keep_columns (list[str] | None): List of column names to always keep regardless of type or quality.
+            Useful for preserving date columns or other important non-numeric columns. Default: None
         verbose (int): Verbosity level (0=silent, 1=basic, 2=detailed). Default: 1
 
     Returns:
@@ -98,6 +106,11 @@ def advanced_column_cleaning(
     if verbose >= 1:
         print(f"Starting advanced column cleaning with {initial_cols} columns")
     columns_to_drop = set()
+    
+    # Set of columns to always keep
+    keep_columns_set = set(keep_columns) if keep_columns else set()
+    if keep_columns_set and verbose >= 2:
+        print(f"\nProtected columns (will not be removed): {sorted(keep_columns_set)}")
 
     # 1. Remove columns that are purely string (object/string dtype and all non-null values are str)
     if verbose >= 2:
@@ -106,6 +119,9 @@ def advanced_column_cleaning(
     string_cols = []
 
     for col in df.columns:
+        # Skip protected columns
+        if col in keep_columns_set:
+            continue
         dtype = df[col].dtype
 
         # Only object / string columns are candidates
@@ -134,7 +150,7 @@ def advanced_column_cleaning(
     # 2. Remove columns containing 'ID' in the name
     if verbose >= 2:
         print("\n2. Checking for ID columns...")
-    id_cols = [col for col in df.columns if "_ID" in col.upper()]
+    id_cols = [col for col in df.columns if "_ID" in col.upper() and col not in keep_columns_set]
     if id_cols:
         if verbose >= 2:
             print(f"   Removing {len(id_cols)} _ID columns: {id_cols}")
@@ -145,7 +161,7 @@ def advanced_column_cleaning(
     # 3. Remove columns containing '_NAME' in the name
     if verbose >= 2:
         print("\n3. Checking for _NAME columns...")
-    name_cols = [col for col in df.columns if "_NAME" in col.upper()]
+    name_cols = [col for col in df.columns if "_NAME" in col.upper() and col not in keep_columns_set]
     if name_cols:
         if verbose >= 2:
             print(f"   Removing {len(name_cols)} _NAME columns: {name_cols}")
@@ -158,7 +174,7 @@ def advanced_column_cleaning(
         print(f"\n4. Checking for high-NaN columns (>{nan_threshold}%)...")
     high_nan_cols = []
     for col in df.columns:
-        if col in columns_to_drop:
+        if col in columns_to_drop or col in keep_columns_set:
             continue
         nan_pct = df[col].isna().sum() / len(df) * 100
         if nan_pct > nan_threshold:
@@ -181,7 +197,7 @@ def advanced_column_cleaning(
         print("\n5. Checking for constant columns...")
     constant_cols = []
     for col in df.columns:
-        if col in columns_to_drop:
+        if col in columns_to_drop or col in keep_columns_set:
             continue
         if df[col].nunique(dropna=False) == 1:
             constant_cols.append(col)
@@ -234,7 +250,7 @@ def advanced_column_cleaning(
     # Find columns with correlation > 0.99
     similar_pairs = []
     for col in upper.columns:
-        high_corr_cols = upper[col][upper[col] > 0.995].index.tolist()
+        high_corr_cols = upper[col][upper[col] > corr_threshold].index.tolist()
         for corr_col in high_corr_cols:
             similar_pairs.append((col, corr_col, upper.loc[corr_col, col]))
 
@@ -294,8 +310,12 @@ def advanced_column_cleaning(
 
 def clean_dataframe_for_training(
     df: pd.DataFrame,
-    nan_threshold: float = 50.0,
+    nan_threshold: float = 5.0,
+    corr_threshold: float = 0.99,
     drop_all_na_rows: bool = False,
+    drop_2017_na_rows: bool = True,
+    create_missing_flags: bool = False,
+    keep_columns: list[str] | None = None,
     verbose: int = 1,
 ) -> tuple[pd.DataFrame, dict] | pd.DataFrame:
     """
@@ -304,13 +324,16 @@ def clean_dataframe_for_training(
     Applies:
     1. Basic row filtering
     2. Advanced column cleaning
-    3. Missing data policy (drop critical rows, zero-fill, infer, fallback to medians)
+    3. Optional: Drop NA rows for 2017 season year
+    4. Missing data policy (drop critical rows, zero-fill, infer, fallback to medians)
 
     Args:
         df (pd.DataFrame): Raw training dataframe
         nan_threshold (float): Percentage threshold for NaN values above which
             a column will be removed. Default: 50.0
         drop_all_na_rows (bool): If True, drop rows that are all NaN. Default: False
+        drop_2017_na_rows (bool): If True, drop rows with any NaN values where
+            SEASON_YEAR is 2017. Default: False
         verbose (int): Verbosity level (0=silent, 1=basic, 2=detailed). Default: 1
 
     Returns:
@@ -326,8 +349,34 @@ def clean_dataframe_for_training(
 
     # Advanced column cleaning
     df_cleaned = advanced_column_cleaning(
-        df_cleaned, nan_threshold=nan_threshold, verbose=verbose
+        df_cleaned,
+        nan_threshold=nan_threshold,
+        corr_threshold=corr_threshold,
+        keep_columns=keep_columns,
+        verbose=verbose,
     )
+
+    # Drop NA rows for 2017 season year if requested
+    if drop_2017_na_rows and "SEASON_YEAR" in df_cleaned.columns:
+        if verbose >= 1:
+            print("\nDropping NA rows for SEASON_YEAR 2017...")
+
+        initial_rows = len(df_cleaned)
+        mask_2017 = df_cleaned["SEASON_YEAR"] == 2017
+        rows_2017_before = mask_2017.sum()
+
+        # Drop rows where SEASON_YEAR is 2017 and there are any NaN values
+        df_cleaned = df_cleaned[~(mask_2017 & df_cleaned.isna().any(axis=1))]
+
+        rows_2017_after = (df_cleaned["SEASON_YEAR"] == 2017).sum()
+        rows_removed = initial_rows - len(df_cleaned)
+
+        if verbose >= 2:
+            print(f"   2017 rows before: {rows_2017_before}")
+            print(f"   2017 rows after: {rows_2017_after}")
+            print(f"   Total rows removed: {rows_removed}")
+        elif verbose >= 1:
+            print(f"   Removed {rows_removed} rows with NaN values from 2017 season")
 
     # Apply missing data policy
     if verbose >= 1:
@@ -335,16 +384,15 @@ def clean_dataframe_for_training(
     df_cleaned = apply_missing_policy(
         df_cleaned,
         current_total_line_col="TOTAL_OVER_UNDER_LINE",
-        drop_all_nas_rows=drop_all_na_rows,
+        create_missing_flags=create_missing_flags,
     )
     if drop_all_na_rows:
-        
         if verbose >= 1:
             print("\nDropping rows that are all NaN...")
-        
+
         initial_rows = len(df_cleaned)
         df_cleaned = df_cleaned.dropna()
-        
+
         if verbose >= 2:
             print(f"Removed {initial_rows - len(df_cleaned)} all-NaN rows")
 

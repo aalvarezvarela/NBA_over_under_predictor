@@ -26,7 +26,7 @@ def main(limit_date_to_train: str = "2026-01-10") -> None:
         injury_dict_scheduled=None,
         df_odds_scheduled=None,
         recent_limit_to_include=limit_date_to_train,
-        older_limit_to_include='2025-11-11'
+        older_limit_to_include=None
         )
 
     output_path = (
@@ -49,7 +49,7 @@ if __name__ == "__main__":
         "--limit",
         "-l",
         dest="limit",
-        default="2026-01-10",
+        default="2026-01-20",
         help="Limit date to train (YYYY-MM-DD). Defaults to 2026-01-10",
     )
 

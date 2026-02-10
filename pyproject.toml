@@ -47,7 +47,7 @@ pyparsing = "3.2.1"
 python-dateutil = "2.9.0.post0"
 pytz = "2025.1"
 pyzmq = "26.2.1"
-requests = "2.32.3"
+requests = ">=2.32.5,<3.0"
 scikit-learn = "1.6.1"
 scipy = "1.15.2"
 six = "1.17.0"
@@ -74,9 +74,13 @@ optuna = "^4.7.0"
 [tool.poetry.group.dev.dependencies]
 black = "^24.0.0"
 isort = "^5.13.0"
-ruff = "^0.6.0"
+ruff = ">=0.11.6"
 mypy = "^1.11.0"
 playwright = "^1.57.0"
+
+
+[tool.poetry.group.timeseries.dependencies]
+tabpfn-time-series = "^1.0.8"
 
 [build-system]
 requires = ["poetry-core"]

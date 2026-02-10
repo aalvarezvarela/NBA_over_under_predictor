@@ -133,13 +133,14 @@ FORBIDDEN_COLUMNS = [
 ]
 
 
-def select_training_columns(df_merged, original_columns):
+def select_training_columns(df_merged, original_columns, debug=True):
     """
     Select and organize columns for training dataset.
 
     Args:
         df_merged (pd.DataFrame): Merged home/away DataFrame with all features
         original_columns (list): List of original column names to check against
+        debug (bool): If True, print information about deleted columns
 
     Returns:
         pd.DataFrame: DataFrame with selected columns for training
@@ -166,6 +167,11 @@ def select_training_columns(df_merged, original_columns):
         [col for col in df_merged.columns if col.startswith("odds_")]
     )
 
+    # Add any columns that start with "TOTAL_LINE_" prefix
+    columns_info_before.extend(
+        [col for col in df_merged.columns if col.startswith("TOTAL_LINE_")]
+    )
+
     # Filter to only include columns that actually exist in df_merged
     columns_to_select = [col for col in columns_info_before if col in df_merged.columns]
 
@@ -173,13 +179,32 @@ def select_training_columns(df_merged, original_columns):
     if TARGET_COLUMN in df_merged.columns:
         columns_to_select.append(TARGET_COLUMN)
 
+    if debug:
+        excluded_columns = [
+            col for col in df_merged.columns if col not in columns_to_select
+        ]
+        if excluded_columns:
+            print(f"Debug: {len(excluded_columns)} columns not selected for training:")
+            for col in excluded_columns:
+                print(f"  - {col}")
+
     df_training = df_merged[columns_to_select].copy()
     # Drop any forbidden columns if they exist
     columns_to_drop = [col for col in FORBIDDEN_COLUMNS if col in df_training.columns]
-    # add to columns to discard anythong that contains "DIFF_FROM"
-    columns_to_drop.extend([col for col in df_training.columns if "DIFF_FROM" in col])
-    
+    # add to columns to discard anything that contains "DIFF_FROM" (unless it also contains "BEFORE")
+    columns_to_drop.extend(
+        [
+            col
+            for col in df_training.columns
+            if "DIFF_FROM" in col and "_BEFORE" not in col
+        ]
+    )
+
     if columns_to_drop:
+        if debug:
+            print(f"Debug: Dropping {len(columns_to_drop)} forbidden columns:")
+            for col in columns_to_drop:
+                print(f"  - {col}")
         df_training = df_training.drop(columns=columns_to_drop)
 
     # Safety check: Ensure no disallowed original columns are present
@@ -198,7 +223,7 @@ def select_training_columns(df_merged, original_columns):
         # Skip columns with BEFORE (they are temporal features)
         # Skip columns that start with "odds_" (they are odds features)
         if (
-            "BEFORE" not in col
+            "_BEFORE" not in col
             and not col.startswith("odds_")
             and col not in allowed_columns
             and col in original_columns
