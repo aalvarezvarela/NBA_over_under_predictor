@@ -161,7 +161,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--season-year",
         type=int,
-        default=2025,
+        default=2018,
         help="Optional season start year filter (e.g., 2025 for 2025-26 season)",
     )
     parser.add_argument(
