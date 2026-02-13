@@ -19,6 +19,20 @@ def filter_by_date_range(
     Returns:
         pd.DataFrame: Filtered DataFrame
     """
+    # Convert timezone-aware datetimes to timezone-naive for comparison
+    if (
+        older_date_to_include is not None
+        and hasattr(older_date_to_include, "tz")
+        and older_date_to_include.tz is not None
+    ):
+        older_date_to_include = older_date_to_include.tz_localize(None)
+
+    if (
+        hasattr(most_recent_date_to_include, "tz")
+        and most_recent_date_to_include.tz is not None
+    ):
+        most_recent_date_to_include = most_recent_date_to_include.tz_localize(None)
+
     if older_date_to_include is not None:
         df = df[
             (df["GAME_DATE"] >= older_date_to_include)

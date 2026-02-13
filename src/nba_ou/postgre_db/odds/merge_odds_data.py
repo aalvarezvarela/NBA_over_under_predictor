@@ -178,6 +178,11 @@ def merge_yahoo_sportsbook_odds(
     if cols_to_drop_existing:
         df_merged = df_merged.drop(columns=cols_to_drop_existing)
 
+    # convert odds to numeric, coerce errors to NaN
+    price_cols = [c for c in df_merged.columns if "_price" in c]
+    for col in price_cols:
+        df_merged[col] = american_to_decimal_series(df_merged[col])
+    
     return df_merged
 
 
@@ -240,11 +245,6 @@ def load_and_merge_odds_yahoo_sportsbookreview(
     df_odds_merged = merge_yahoo_sportsbook_odds(df_yahoo, df_sportsbook)
 
     print(f"Final merged odds: {len(df_odds_merged)} rows")
-
-    # convert odds to numeric, coerce errors to NaN
-    price_cols = [c for c in df_odds_merged.columns if "_price" in c]
-    for col in price_cols:
-        df_odds_merged[col] = american_to_decimal_series(df_odds_merged[col])
 
     return df_odds_merged
 

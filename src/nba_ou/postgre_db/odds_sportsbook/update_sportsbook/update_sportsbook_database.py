@@ -7,12 +7,12 @@ from nba_ou.config.constants import TEAM_NAME_STANDARDIZATION
 from nba_ou.fetch_data.odds_sportsbook.process_total_lines_data import (
     merge_sportsbook_with_games,
 )
+from nba_ou.fetch_data.odds_sportsbook.scrape_sportsbook import (
+    scrape_sportsbook_days,
+)
 from nba_ou.postgre_db.odds_sportsbook.create_db.create_odds_sportsbook_db import (
     create_odds_sportsbook_table,
     upsert_odds_sportsbook_df,
-)
-from nba_ou.postgre_db.odds_sportsbook.update_sportsbook.scrape_sportsbook import (
-    scrape_sportsbook_days,
 )
 from nba_ou.postgre_db.odds_sportsbook.update_sportsbook.update_database_utils import (
     get_dates_for_game_ids,

@@ -3,7 +3,7 @@ from collections.abc import Iterable
 import pandas as pd
 from nba_ou.postgre_db.config.db_config import (
     connect_nba_db,
-    get_schema_name_odds_sportsbook,
+    get_schema_name_odds_yahoo,
 )
 from nba_ou.postgre_db.games.fetch_data_from_db.fetch_data_from_games_db import (
     load_cleaned_games_for_odds,
@@ -11,10 +11,10 @@ from nba_ou.postgre_db.games.fetch_data_from_db.fetch_data_from_games_db import 
 from psycopg import sql
 
 
-def load_games_for_sportsbook_update(
+def load_games_for_yahoo_update(
     season_year: str | int | None = None,
 ) -> pd.DataFrame:
-    """Load cleaned games from DB (excludes All Star/Preseason, fixes home/away issues)."""
+    """Load cleaned games from DB for Yahoo update."""
     games_df = load_cleaned_games_for_odds(season_year=season_year)
     if games_df.empty:
         return games_df
@@ -53,11 +53,11 @@ def select_target_game_ids(
     return base["game_id"].tolist()
 
 
-def get_existing_sportsbook_game_ids(
+def get_existing_yahoo_game_ids(
     game_ids: Iterable[str] | None = None,
 ) -> set[str]:
-    """Return game IDs that already exist in odds_sportsbook table."""
-    schema = get_schema_name_odds_sportsbook()
+    """Return game IDs that already exist in odds_yahoo table."""
+    schema = get_schema_name_odds_yahoo()
     table = schema
 
     conn = connect_nba_db()
@@ -87,7 +87,7 @@ def get_missing_game_ids_to_scrape(
     target_game_ids: Iterable[str],
 ) -> list[str]:
     target_ids = [str(gid) for gid in target_game_ids]
-    existing = get_existing_sportsbook_game_ids(target_ids)
+    existing = get_existing_yahoo_game_ids(target_ids)
     return [gid for gid in target_ids if gid not in existing]
 
 

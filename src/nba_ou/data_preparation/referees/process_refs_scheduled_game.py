@@ -10,6 +10,7 @@ def process_scheduled_referee_assignments(
     df_scheduled_games_original: pd.DataFrame,
 ) -> pd.DataFrame:
     df_scheduled_games = df_scheduled_games_original.copy()
+    
     # Create reverse mapping from team ID to team name
     id_to_team_name = {v: k for k, v in TEAM_ID_MAP.items()}
 

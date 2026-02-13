@@ -1,7 +1,7 @@
 import pandas as pd
 
 
-def standardize_and_merge_scheduled_games_to_team_data(df, games):
+def standardize_and_merge_scheduled_games_to_team_data(df, scheduled_games):
     """
     Standardizes the `games` DataFrame to match `df` and merges them.
 
@@ -17,7 +17,7 @@ def standardize_and_merge_scheduled_games_to_team_data(df, games):
         pd.DataFrame: Merged and standardized DataFrame.
     """
     # Ensure column names match
-    games_renamed = games.rename(
+    games_renamed = scheduled_games.rename(
         columns={
             "GAME_DATE_EST": "GAME_DATE",
             "HOME_TEAM_ID": "TEAM_ID",

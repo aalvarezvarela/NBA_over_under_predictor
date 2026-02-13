@@ -30,6 +30,9 @@ from nba_ou.data_preparation.merged_home_away_data.odds_feature_engeneer import 
 from nba_ou.data_preparation.merged_home_away_data.select_train_columns import (
     select_training_columns,
 )
+from nba_ou.data_preparation.odds.merge_scheduled_odds import (
+    merge_and_validate_scheduled_odds,
+)
 from nba_ou.data_preparation.past_injuries.injury_effects import (
     add_top3_absence_effect_features_for_columns,
 )
@@ -98,7 +101,6 @@ def process_team_statistics_for_training(df, df_odds, scheduled_games=None):
     )
     df = compute_total_points_features(df)
     df = filter_valid_games(df)
-    
 
     df = add_last_season_playoff_games(df)
 
@@ -161,12 +163,10 @@ def process_player_statistics_for_training(
 
 def create_df_to_predict(
     todays_prediction: bool = False,
-    scheduled_games: pd.DataFrame = None,
-    df_referees_scheduled: pd.DataFrame = None,
-    injury_dict_scheduled: dict = None,
-    df_odds_scheduled: pd.DataFrame = None,
+    scheduled_data: dict = None,
     recent_limit_to_include: str = None,
     older_limit_to_include: str = None,
+    strict_mode: bool = True,
 ) -> pd.DataFrame:
     """
     Create prediction dataset for NBA over/under prediction models.
@@ -180,17 +180,27 @@ def create_df_to_predict(
 
     Args:
         recent_limit_to_include (str | datetime): Latest date to include in training data (YYYY-MM-DD)
-        df_odds_scheduled (pd.DataFrame, optional): Scheduled betting odds data to include
+        scheduled_data (dict, optional): Scheduled data including odds and injury information
         older_limit_to_include (str | datetime, optional): Starting date for training data. If None, starts from 2006-07
+        strict_mode (bool, optional): If True, raises error if df_odds_predict has NaN/None values. Default is True.
 
     Returns:
         pd.DataFrame: Complete training dataset with all features
     """
+
     if todays_prediction:
+        scheduled_games = scheduled_data["scheduled_games"]
+        df_referees_scheduled = scheduled_data["df_referees_scheduled"]
+        injury_dict_scheduled = scheduled_data["injury_dict_scheduled"]
+
+        df_odds_yahoo = scheduled_data["df_odds_yahoo_scheduled"]
+        df_odds_sportsbook = scheduled_data["df_odds_sportsbook_scheduled"]
+
         assert (
             (df_referees_scheduled is not None)
             and (scheduled_games is not None)
-            and (df_odds_scheduled is not None)
+            and (df_odds_yahoo is not None)
+            and (df_odds_sportsbook is not None)
             and (injury_dict_scheduled is not None)
         ), "Scheduled games and referees data must be provided to include current day"
 
@@ -227,11 +237,10 @@ def create_df_to_predict(
     # Load and merge Yahoo and Sportsbook odds data
     df_odds = load_and_merge_odds_yahoo_sportsbookreview(season_years=seasons)
 
-    if df_odds_scheduled is not None:
-        # TODO: ensure columns match
-        df_odds = pd.concat([df_odds, df_odds_scheduled], ignore_index=True)
-        df_odds.sort_values(by="game_date", inplace=True, ascending=False)
-        df_odds.reset_index(drop=True, inplace=True)
+    if todays_prediction:
+        df_odds = merge_and_validate_scheduled_odds(
+            df_odds, df_odds_yahoo, df_odds_sportsbook, strict_mode=strict_mode
+        )
 
     # Load game and player data from database
     df, df_players = load_all_nba_data_from_db(seasons=seasons)
@@ -269,7 +278,10 @@ def create_df_to_predict(
 
     # Merge remaining odds data (Yahoo percentages, other sportsbooks, etc.)
     df_merged = merge_remaining_odds_by_game_id(
-        df_odds=df_odds, df_merged=df_merged, exclude_books=["bet365"], exclude_yahoo=False
+        df_odds=df_odds,
+        df_merged=df_merged,
+        exclude_books=["bet365"],
+        exclude_yahoo=False,
     )
 
     df_merged = add_referee_features_to_training_data(
@@ -277,9 +289,9 @@ def create_df_to_predict(
     )
 
     df_training = select_training_columns(df_merged, original_columns)
-    
+
     df_training = engineer_odds_features(df_training)
-    
+
     df_training = add_derived_features_after_computed_stats(df_training)
 
     df_training = add_top3_absence_effect_features_for_columns(
@@ -348,26 +360,19 @@ if __name__ == "__main__":
 
     # Get all info for scheduled games
     date_to_predict = pd.Timestamp.now(tz=ZoneInfo("US/Eastern")).strftime("%Y-%m-%d")
-    scheduled_games, df_referees_scheduled, injury_dict_scheduled, df_odds_scheduled = (
-        get_all_info_for_scheduled_games(
-            date_to_predict=date_to_predict,
-            nba_injury_reports_url=SETTINGS.nba_injury_reports_url,
-            save_reports_path=SETTINGS.report_path,
-            odds_api_key=SETTINGS.odds_api_key,
-            odds_base_url=SETTINGS.odds_base_url,
-        )
+    scheduled_data = get_all_info_for_scheduled_games(
+        date_to_predict=date_to_predict,
+        nba_injury_reports_url=SETTINGS.nba_injury_reports_url,
+        save_reports_path=SETTINGS.report_path,
     )
 
     df_train = create_df_to_predict(
         todays_prediction=True,
-        scheduled_games=scheduled_games,
-        df_referees_scheduled=df_referees_scheduled,
-        injury_dict_scheduled=injury_dict_scheduled,
-        df_odds_scheduled=df_odds_scheduled,
+        scheduled_data=scheduled_data,
         recent_limit_to_include=date_to_train,
         older_limit_to_include=older_limit_to_include,
     )
 
-    output_name_before_referee = f"{output_path}/training_data{pd.to_datetime(date_to_train).strftime('%Y%m%d')}.csv"
-    # df_train.to_csv(output_name_before_referee, index=False)
+    output_name_before_referee = f"{output_path}/predict_data_{pd.to_datetime(date_to_train).strftime('%Y%m%d')}.csv"
+    df_train.to_csv(output_name_before_referee, index=False)
     print(f"Training data features saved to {output_name_before_referee}")

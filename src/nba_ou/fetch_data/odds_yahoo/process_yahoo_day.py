@@ -1,7 +1,4 @@
-from __future__ import annotations
-
 from pathlib import Path
-from typing import Tuple
 
 import pandas as pd
 
@@ -10,7 +7,7 @@ def _to_num(s: pd.Series) -> pd.Series:
     return pd.to_numeric(s, errors="coerce")
 
 
-def _parse_matchup(matchup: str) -> Tuple[str, str]:
+def _parse_matchup(matchup: str) -> tuple[str, str]:
     """
     "Washington Wizards @ New York Knicks" -> ("Washington Wizards", "New York Knicks")
     """
@@ -203,6 +200,8 @@ def yahoo_one_row_per_game(input_df_or_path: pd.DataFrame | str | Path) -> pd.Da
     return out
 
 
-# Example:
-games = yahoo_one_row_per_game("/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/yahoo_odds/2021/csv/2022-04-10.csv")
-games
+# # Example:
+# games = yahoo_one_row_per_game(
+#     "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/yahoo_odds/2021/csv/2022-04-10.csv"
+# )
+# games
