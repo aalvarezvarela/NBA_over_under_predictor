@@ -14,7 +14,9 @@ def get_top_n_averages_with_names(
         date (datetime or str): The target date (usually the current game date)
         stat_col (str): The stat column (e.g., "PTS") for cumulative average lookup
         injured (bool): If False, consider players who played on `date`.
-                       If True, consider last game prior to `date`
+                       If there are no same-day rows (e.g., scheduled games),
+                       fallback to each player's latest game prior to `date`.
+                       If True, consider last game prior to `date`.
         lowest (bool): If False (default), return highest averages (descending).
                       If True, return lowest averages (ascending)
         n_players (int): Number of players to return
@@ -37,9 +39,17 @@ def get_top_n_averages_with_names(
         # For injured players: last game *before* `date`
         df_inj = df[df["GAME_DATE"] < date]
         df_last = df_inj.groupby("PLAYER_ID", as_index=False).tail(1).copy()
+    
     else:
-        # For non-injured: look at the game exactly on `date`
-        df_last = df[df["GAME_DATE"] == date].copy()
+        # For non-injured players, keep existing behavior for historical rows.
+        # For scheduled games (no same-day player boxscore yet), fallback to each
+        # player's latest game before `date`.
+        df_same_day = df[df["GAME_DATE"] == date].copy()
+        if df_same_day.empty:
+            df_prior = df[df["GAME_DATE"] < date]
+            df_last = df_prior.groupby("PLAYER_ID", as_index=False).tail(1).copy()
+        else:
+            df_last = df_same_day
 
     if df_last.empty:
         return []
