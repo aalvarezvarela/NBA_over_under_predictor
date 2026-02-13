@@ -71,11 +71,12 @@ def basic_cleaning(df: pd.DataFrame, verbose: int = 1) -> pd.DataFrame:
 
 
 def advanced_column_cleaning(
-    df: pd.DataFrame, 
-    nan_threshold: float = 50.0, 
-    corr_threshold: float = 0.99, 
+    df: pd.DataFrame,
+    nan_threshold: float = 50.0,
+    corr_threshold: float = 0.99,
     keep_columns: list[str] | None = None,
-    verbose: int = 1
+    keep_correlated_and_constant: bool = False,
+    verbose: int = 1,
 ) -> pd.DataFrame:
     """
     Perform advanced column cleaning on the training dataframe.
@@ -85,9 +86,9 @@ def advanced_column_cleaning(
     - Removes columns with 'ID' in the name
     - Removes columns with high NaN percentage (configurable)
     - Removes duplicate columns
-    - Removes columns with 99% similarity to another column
+    - Removes columns with 99% similarity to another column (unless keep_correlated_and_constant=True)
     - Removes columns that are absolute value matches of another column
-    - Removes columns with constant values
+    - Removes columns with constant values (unless keep_correlated_and_constant=True)
 
     Args:
         df (pd.DataFrame): Training dataframe to clean
@@ -97,6 +98,8 @@ def advanced_column_cleaning(
             and one will be removed. Default: 0.99
         keep_columns (list[str] | None): List of column names to always keep regardless of type or quality.
             Useful for preserving date columns or other important non-numeric columns. Default: None
+        keep_correlated_and_constant (bool): If True, skip removal of constant and highly correlated columns.
+            Default: False
         verbose (int): Verbosity level (0=silent, 1=basic, 2=detailed). Default: 1
 
     Returns:
@@ -106,7 +109,7 @@ def advanced_column_cleaning(
     if verbose >= 1:
         print(f"Starting advanced column cleaning with {initial_cols} columns")
     columns_to_drop = set()
-    
+
     # Set of columns to always keep
     keep_columns_set = set(keep_columns) if keep_columns else set()
     if keep_columns_set and verbose >= 2:
@@ -150,7 +153,11 @@ def advanced_column_cleaning(
     # 2. Remove columns containing 'ID' in the name
     if verbose >= 2:
         print("\n2. Checking for ID columns...")
-    id_cols = [col for col in df.columns if "_ID" in col.upper() and col not in keep_columns_set]
+    id_cols = [
+        col
+        for col in df.columns
+        if "_ID" in col.upper() and col not in keep_columns_set
+    ]
     if id_cols:
         if verbose >= 2:
             print(f"   Removing {len(id_cols)} _ID columns: {id_cols}")
@@ -161,7 +168,11 @@ def advanced_column_cleaning(
     # 3. Remove columns containing '_NAME' in the name
     if verbose >= 2:
         print("\n3. Checking for _NAME columns...")
-    name_cols = [col for col in df.columns if "_NAME" in col.upper() and col not in keep_columns_set]
+    name_cols = [
+        col
+        for col in df.columns
+        if "_NAME" in col.upper() and col not in keep_columns_set
+    ]
     if name_cols:
         if verbose >= 2:
             print(f"   Removing {len(name_cols)} _NAME columns: {name_cols}")
@@ -195,19 +206,28 @@ def advanced_column_cleaning(
     # 5. Remove columns with constant values (same value in every row)
     if verbose >= 2:
         print("\n5. Checking for constant columns...")
-    constant_cols = []
-    for col in df.columns:
-        if col in columns_to_drop or col in keep_columns_set:
-            continue
-        if df[col].nunique(dropna=False) == 1:
-            constant_cols.append(col)
 
-    if constant_cols:
+    if keep_correlated_and_constant:
         if verbose >= 2:
-            print(f"   Removing {len(constant_cols)} constant columns: {constant_cols}")
-        columns_to_drop.update(constant_cols)
-    elif verbose >= 2:
-        print("   No constant columns to remove")
+            print(
+                "   Skipping constant column removal (keep_correlated_and_constant=True)"
+            )
+    else:
+        constant_cols = []
+        for col in df.columns:
+            if col in columns_to_drop or col in keep_columns_set:
+                continue
+            if df[col].nunique(dropna=False) == 1:
+                constant_cols.append(col)
+
+        if constant_cols:
+            if verbose >= 2:
+                print(
+                    f"   Removing {len(constant_cols)} constant columns: {constant_cols}"
+                )
+            columns_to_drop.update(constant_cols)
+        elif verbose >= 2:
+            print("   No constant columns to remove")
 
     # Drop the columns identified so far before checking for duplicates
     df = df.drop(columns=list(columns_to_drop))
@@ -241,33 +261,40 @@ def advanced_column_cleaning(
     # 7. Check for highly similar columns (99% correlation)
     if verbose >= 2:
         print("\n7. Checking for highly similar columns (99.5% correlation)...")
-    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    corr_matrix = df[numeric_cols].corr().abs()
 
-    # Get upper triangle of correlation matrix
-    upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
-
-    # Find columns with correlation > 0.99
-    similar_pairs = []
-    for col in upper.columns:
-        high_corr_cols = upper[col][upper[col] > corr_threshold].index.tolist()
-        for corr_col in high_corr_cols:
-            similar_pairs.append((col, corr_col, upper.loc[corr_col, col]))
-
-    if similar_pairs:
+    if keep_correlated_and_constant:
         if verbose >= 2:
-            print(f"   Found {len(similar_pairs)} highly similar column pairs:")
-        cols_to_remove = set()
-        for col1, col2, corr in similar_pairs:
+            print(
+                "   Skipping highly correlated column removal (keep_correlated_and_constant=True)"
+            )
+    else:
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        corr_matrix = df[numeric_cols].corr().abs()
+
+        # Get upper triangle of correlation matrix
+        upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+
+        # Find columns with correlation > 0.99
+        similar_pairs = []
+        for col in upper.columns:
+            high_corr_cols = upper[col][upper[col] > corr_threshold].index.tolist()
+            for corr_col in high_corr_cols:
+                similar_pairs.append((col, corr_col, upper.loc[corr_col, col]))
+
+        if similar_pairs:
             if verbose >= 2:
-                print(f"      - {col1} ~ {col2} (correlation: {corr:.4f})")
-            # Keep the first one, remove the second
-            cols_to_remove.add(col2)
-        if verbose >= 2:
-            print(f"   Removing {len(cols_to_remove)} similar columns")
-        df = df.drop(columns=list(cols_to_remove))
-    elif verbose >= 2:
-        print("   No highly similar columns found")
+                print(f"   Found {len(similar_pairs)} highly similar column pairs:")
+            cols_to_remove = set()
+            for col1, col2, corr in similar_pairs:
+                if verbose >= 2:
+                    print(f"      - {col1} ~ {col2} (correlation: {corr:.4f})")
+                # Keep the first one, remove the second
+                cols_to_remove.add(col2)
+            if verbose >= 2:
+                print(f"   Removing {len(cols_to_remove)} similar columns")
+            df = df.drop(columns=list(cols_to_remove))
+        elif verbose >= 2:
+            print("   No highly similar columns found")
 
     # 8. Check for columns that are absolute value matches
     if verbose >= 2:
@@ -316,6 +343,7 @@ def clean_dataframe_for_training(
     drop_2017_na_rows: bool = True,
     create_missing_flags: bool = False,
     keep_columns: list[str] | None = None,
+    keep_correlated_and_constant: bool = False,
     verbose: int = 1,
 ) -> tuple[pd.DataFrame, dict] | pd.DataFrame:
     """
@@ -334,6 +362,8 @@ def clean_dataframe_for_training(
         drop_all_na_rows (bool): If True, drop rows that are all NaN. Default: False
         drop_2017_na_rows (bool): If True, drop rows with any NaN values where
             SEASON_YEAR is 2017. Default: False
+        keep_correlated_and_constant (bool): If True, skip removal of constant and
+            highly correlated columns. Default: False
         verbose (int): Verbosity level (0=silent, 1=basic, 2=detailed). Default: 1
 
     Returns:
@@ -353,6 +383,7 @@ def clean_dataframe_for_training(
         nan_threshold=nan_threshold,
         corr_threshold=corr_threshold,
         keep_columns=keep_columns,
+        keep_correlated_and_constant=keep_correlated_and_constant,
         verbose=verbose,
     )
 

@@ -258,7 +258,7 @@ def create_df_to_predict(
 
     # Process team statistics
     df = process_team_statistics_for_training(
-        df, df_odds, scheduled_games=scheduled_games
+        df, df_odds, scheduled_games=scheduled_games if todays_prediction else None
     )
     # Load injury data from database
     df_injuries = get_injury_data_from_db(seasons)
@@ -271,7 +271,7 @@ def create_df_to_predict(
         df_injuries,
         older_limit_to_include,
         recent_limit_to_include,
-        injury_dict_scheduled=injury_dict_scheduled,
+        injury_dict_scheduled=injury_dict_scheduled if todays_prediction else None,
     )
 
     df_merged = merge_home_away_data(df)
@@ -285,7 +285,7 @@ def create_df_to_predict(
     )
 
     df_merged = add_referee_features_to_training_data(
-        seasons, df_merged, df_referees_scheduled=df_referees_scheduled
+        seasons, df_merged, df_referees_scheduled=df_referees_scheduled if todays_prediction else None
     )
 
     df_training = select_training_columns(df_merged, original_columns)

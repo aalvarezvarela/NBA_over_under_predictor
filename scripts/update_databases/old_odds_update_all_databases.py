@@ -18,18 +18,12 @@ from nba_ou.postgre_db.games.update_games.update_database import (
 from nba_ou.postgre_db.injuries_refs.update_ref_injuries_database.update_refs_injuries_database import (
     update_refs_injuries_database,
 )
-from nba_ou.postgre_db.odds_sportsbook.update_sportsbook.update_sportsbook_database import (
-    update_odds_sportsbook_database,
-)
-from nba_ou.postgre_db.odds_yahoo.update_yahoo.update_yahoo_database import (
-    update_odds_yahoo_database,
-)
+from nba_ou.postgre_db.odds.update_odds.update_odds_database import update_odds_database
 
 
 def update_all_databases(
     start_season_year: int = 2006,
     end_season_year: int = 2025,
-    headless: bool = False,
     sleep_seconds_between_seasons: float = 2.0,
 ) -> None:
     """
@@ -42,7 +36,7 @@ def update_all_databases(
         sleep_seconds_between_seasons: Small pause to be polite with the NBA API.
     """
     games_id_to_exclude = get_live_game_ids()
-
+    
     for y in range(start_season_year, end_season_year + 1):
         season_year = str(y)
         print(f"\n=== Backfilling season starting {season_year} season) ===")
@@ -52,31 +46,17 @@ def update_all_databases(
             games_id_to_exclude=games_id_to_exclude,
         )
 
-        print(f"\n--- Updating sportsbook odds for season {y} ---")
-    
-        sportsbook_results = update_odds_sportsbook_database(
-            season_year=season_year,
-            headless=headless,
-        )
-        print(f"Sportsbook update results: {sportsbook_results}")
-    
+        print(f"\n--- Updating odds for season {y} ---")
 
-        print(f"\n--- Updating Yahoo odds for season {y} ---")
-    
-        yahoo_results = update_odds_yahoo_database(
+        update_odds_database(
             season_year=season_year,
-            headless=headless,
-            add_one_day=True,  # Add one day to catch any late updates for yesterday's games
+            ODDS_API_KEY=SETTINGS.odds_api_key,
+            BASE_URL=SETTINGS.odds_base_url,
+            check_missing_by_game=True,
+            save_pickle=SETTINGS.odds_save_pickle,
+            pickle_path=SETTINGS.odds_pickle_path,
         )
-        print(f"Yahoo update results: {yahoo_results}")
-        print("Rechecking Yahoo odds after 1 day to catch any date issue games...")
-        yahoo_results = update_odds_yahoo_database(
-            season_year=season_year,
-            headless=headless,
-            add_one_day=False
-        )
-        print(f"Yahoo reupdate results: {yahoo_results}")
-
+        print(f"✓ Odds data updated for season {y}")
 
         print(f"\n--- Updating refs/injuries for season {y} ---")
         limit_reached = update_refs_injuries_database(
@@ -116,7 +96,7 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-
+    
     update_all_databases(
         start_season_year=args.start,
         end_season_year=args.end,

@@ -21,12 +21,8 @@ def main(limit_date_to_train: str = "2026-01-10") -> None:
     # Call create_df_to_predict without a scheduled date (no todays prediction)
     df_train = create_df_to_predict(
         todays_prediction=False,
-        scheduled_games=None,
-        df_referees_scheduled=None,
-        injury_dict_scheduled=None,
-        df_odds_scheduled=None,
         recent_limit_to_include=limit_date_to_train,
-        older_limit_to_include=None
+        older_limit_to_include="2024-10-10",
         )
 
     output_path = (
@@ -49,8 +45,8 @@ if __name__ == "__main__":
         "--limit",
         "-l",
         dest="limit",
-        default="2026-01-20",
-        help="Limit date to train (YYYY-MM-DD). Defaults to 2026-01-10",
+        default="2026-02-13",
+        help="Limit date to train (YYYY-MM-DD). Defaults to 2026-02-13",
     )
 
     args = parser.parse_args()
