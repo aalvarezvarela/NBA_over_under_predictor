@@ -17,6 +17,8 @@ import requests
 from bs4 import BeautifulSoup
 from nba_api.stats.endpoints import commonplayerinfo
 from nba_api.stats.static import players, teams
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 try:
     from ..config.constants import TEAM_ID_MAP as TEAM_CONVERSION_DICT
@@ -35,10 +37,48 @@ player_name_pattern = re.compile(r"^[A-Z][a-zA-Z'.\- ]+, [A-Z][a-zA-Z'.\-]+")
 # NBA_INJURY_REPORTS_URL = "https://official.nba.com/nba-injury-report-2024-25-season/"
 
 
+def create_robust_session():
+    """Create a requests session with retry strategy and browser-like headers."""
+    session = requests.Session()
+
+    # Configure retry strategy
+    retry_strategy = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["HEAD", "GET", "OPTIONS"],
+    )
+
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+
+    # Comprehensive headers to mimic a real browser
+    session.headers.update(
+        {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Cache-Control": "max-age=0",
+            "DNT": "1",
+        }
+    )
+
+    return session
+
+
 def get_latest_pdf(nba_injury_report_url, save_path="latest_report_today.pdf"):
+    session = create_robust_session()
     try:
-        # Fetch the webpage content
-        response = requests.get(nba_injury_report_url)
+        # Fetch the webpage content with improved headers and retry logic
+        response = session.get(nba_injury_report_url, timeout=30, allow_redirects=True)
         response.raise_for_status()
 
         # Parse the HTML
@@ -85,7 +125,7 @@ def get_latest_pdf(nba_injury_report_url, save_path="latest_report_today.pdf"):
 
         # Find the latest timestamp
         # latest_pdf_url, latest_timestamp = max(timestamps, key=lambda x: x[1])
-        latest_pdf_url= injury_reports[-1]
+        latest_pdf_url = injury_reports[-1]
         print(f"The latest injury report link is: {latest_pdf_url}")
 
         # If the URL is relative, make it absolute
@@ -95,8 +135,8 @@ def get_latest_pdf(nba_injury_report_url, save_path="latest_report_today.pdf"):
 
         print(f"Downloading latest PDF: {latest_pdf_url}")
 
-        # Download the PDF
-        pdf_response = requests.get(latest_pdf_url)
+        # Download the PDF with improved headers and retry logic
+        pdf_response = session.get(latest_pdf_url, timeout=30, allow_redirects=True)
         pdf_response.raise_for_status()
 
         # Save the PDF to disk
@@ -105,8 +145,20 @@ def get_latest_pdf(nba_injury_report_url, save_path="latest_report_today.pdf"):
 
         print(f"PDF saved as {save_path}")
 
+    except requests.exceptions.Timeout:
+        print(f"Timeout error: The request took too long")
+        raise
+    except requests.exceptions.ConnectionError:
+        print(f"Connection error: Unable to connect to {nba_injury_report_url}")
+        raise
+    except requests.exceptions.HTTPError as e:
+        print(f"HTTP error: {e.response.status_code} - {e.response.reason}")
+        raise
     except requests.exceptions.RequestException as e:
         print(f"Error fetching data: {e}")
+        raise
+    finally:
+        session.close()
 
 
 def classify_token(token, category):
