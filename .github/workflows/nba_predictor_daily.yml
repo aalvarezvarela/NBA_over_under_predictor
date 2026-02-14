@@ -6,7 +6,7 @@ on:
             date:
                 description: "Prediction date: YYYY-MM-DD, today, tomorrow (leave empty for default: today)"
                 required: false
-    #             default: ""
+                default: ""
     # schedule:
     #     # Madrid (CET, UTC+1): 18, 20, 21, 22, 23, 24 -> UTC: 17, 19, 20, 21, 22, 23
     #     - cron: "01 19 * * *"
@@ -21,6 +21,7 @@ concurrency:
 
 permissions:
     contents: read
+    id-token: write
 
 jobs:
     run:
@@ -29,12 +30,13 @@ jobs:
             PYTHONWARNINGS: "ignore::UserWarning,ignore::DeprecationWarning,ignore::FutureWarning"
 
             # Critical for resolving imports that live under src/
-            PYTHONPATH: ${{ github.workspace }}/src
+            PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/src
 
             DB_ENV: supabase
             SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
             SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
             ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+            S3_AWS_PROFILE: ""
 
             # Cron runs in UTC; keep runtime consistent
             TZ: UTC
@@ -48,10 +50,24 @@ jobs:
               with:
                   python-version: "3.12"
 
+            - name: Configure AWS credentials (OIDC)
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+                  aws-region: eu-west-1
+
+            - name: Verify AWS identity
+              run: |
+                  aws sts get-caller-identity
+
+            - name: Verify S3 access
+              run: |
+                  aws s3 ls s3://adrian-nba-model-registry-eu-west-1/models/
+
             - name: Install dependencies
               run: |
                   python -m pip install --upgrade pip
                   pip install -r requirements.txt
 
             - name: Run NBA predictor
-              run: python -m src.nba_predictor
+              run: python scripts/predict_nba_games.py

@@ -1,0 +1,55 @@
+name: S3 Model Smoke Test
+
+on:
+    workflow_dispatch:
+        inputs:
+            aws_region:
+                description: "AWS region used for OIDC credentials and S3 client"
+                required: false
+                default: "eu-west-1"
+            s3_bucket:
+                description: "Optional S3 bucket override (empty = use config.ini)"
+                required: false
+                default: ""
+            s3_model_key:
+                description: "Optional S3 key override (empty = use config.ini)"
+                required: false
+                default: ""
+
+permissions:
+    contents: read
+    id-token: write
+
+jobs:
+    smoke-test:
+        runs-on: ubuntu-latest
+        env:
+            PYTHONWARNINGS: "ignore::UserWarning,ignore::DeprecationWarning,ignore::FutureWarning"
+            PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/src
+            S3_AWS_PROFILE: ""
+            S3_AWS_REGION: ${{ inputs.aws_region }}
+            S3_MODEL_BUCKET: ${{ inputs.s3_bucket }}
+            S3_MODEL_KEY: ${{ inputs.s3_model_key }}
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Set up Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: "3.12"
+
+            - name: Configure AWS credentials (OIDC)
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+                  aws-region: ${{ inputs.aws_region }}
+
+            - name: Install dependencies
+              run: |
+                  python -m pip install --upgrade pip
+                  pip install -r requirements.txt
+
+            - name: Run S3 model smoke test
+              run: python scripts/smoke_test_s3_model_load.py
