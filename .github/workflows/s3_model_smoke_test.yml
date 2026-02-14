@@ -53,4 +53,4 @@ jobs:
               run: poetry install --no-interaction --no-root
 
             - name: Run S3 model smoke test
-              run: python scripts/smoke_test_s3_model_load.py
+              run: poetry runpython scripts/smoke_test_s3_model_load.py
