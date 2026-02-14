@@ -207,7 +207,7 @@ def create_df_to_predict(
     # Set default recent_limit_to_include to yesterday if not provided
     if recent_limit_to_include is None:
         recent_limit_to_include = pd.Timestamp.now(
-            tz=ZoneInfo("US/Eastern")
+            tz=ZoneInfo("US/Pacific")
         ) - pd.Timedelta(days=1)
 
     recent_limit_to_include = pd.to_datetime(recent_limit_to_include, format="%Y-%m-%d")
@@ -215,7 +215,7 @@ def create_df_to_predict(
     # Determine older_limit_to_include based on todays_prediction flag
     if todays_prediction:
         recent_limit_to_include = pd.Timestamp.now(
-            tz=ZoneInfo("US/Eastern")
+            tz=ZoneInfo("US/Pacific")
         ) - pd.Timedelta(days=1)
         recent_limit_to_include = pd.to_datetime(
             recent_limit_to_include, format="%Y-%m-%d"
@@ -223,8 +223,9 @@ def create_df_to_predict(
 
         # If predicting today, go back two years from today
         older_limit_to_include = pd.Timestamp.now(
-            tz=ZoneInfo("US/Eastern")
+            tz=ZoneInfo("US/Pacific")
         ) - pd.Timedelta(days=365 * 2)
+
     elif older_limit_to_include is None:
         # Default to 2017 (start of 2017-18 season)
         older_limit_to_include = pd.to_datetime("2017-10-01")
@@ -285,7 +286,9 @@ def create_df_to_predict(
     )
 
     df_merged = add_referee_features_to_training_data(
-        seasons, df_merged, df_referees_scheduled=df_referees_scheduled if todays_prediction else None
+        seasons,
+        df_merged,
+        df_referees_scheduled=df_referees_scheduled if todays_prediction else None,
     )
 
     df_training = select_training_columns(df_merged, original_columns)
@@ -338,6 +341,12 @@ def create_df_to_predict(
     df_training = add_high_value_features_for_team_points(df_training)
     df_training = add_game_date_features(df_training)
 
+    if todays_prediction:
+        todays_date = pd.to_datetime(
+            pd.Timestamp.now(tz=ZoneInfo("US/Pacific")).strftime("%Y-%m-%d")
+        )
+        df_training = df_training[df_training["GAME_DATE"] == todays_date]
+
     print()
     print("--" * 20)
     print(f"Training data created up to {recent_limit_to_include}")
@@ -359,7 +368,7 @@ if __name__ == "__main__":
     older_limit_to_include = "2023-12-01"  # Optional: specify start date
 
     # Get all info for scheduled games
-    date_to_predict = pd.Timestamp.now(tz=ZoneInfo("US/Eastern")).strftime("%Y-%m-%d")
+    date_to_predict = pd.Timestamp.now(tz=ZoneInfo("US/Pacific")).strftime("%Y-%m-%d")
     scheduled_data = get_all_info_for_scheduled_games(
         date_to_predict=date_to_predict,
         nba_injury_reports_url=SETTINGS.nba_injury_reports_url,

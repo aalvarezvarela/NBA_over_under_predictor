@@ -22,7 +22,7 @@ def main(limit_date_to_train: str = "2026-01-10") -> None:
     df_train = create_df_to_predict(
         todays_prediction=False,
         recent_limit_to_include=limit_date_to_train,
-        older_limit_to_include="2024-10-10",
+        older_limit_to_include=None,
         )
 
     output_path = (
@@ -45,8 +45,8 @@ if __name__ == "__main__":
         "--limit",
         "-l",
         dest="limit",
-        default="2026-02-13",
-        help="Limit date to train (YYYY-MM-DD). Defaults to 2026-02-13",
+        default="2026-02-14",
+        help="Limit date to train (YYYY-MM-DD). Defaults to 2026-02-14",
     )
 
     args = parser.parse_args()

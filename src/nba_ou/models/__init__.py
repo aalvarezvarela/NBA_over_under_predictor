@@ -5,7 +5,7 @@ This package contains prediction models and utilities for making NBA game
 over/under predictions using trained machine learning models.
 """
 
-from .predictor import (
+from ..prediction.prediction import (
     create_column_descriptions_df,
     predict_nba_games,
     save_predictions_to_excel,

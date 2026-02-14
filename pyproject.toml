@@ -70,6 +70,7 @@ imblearn = "^0.0"
 autogluon = "^1.5.0"
 ipywidgets = "^8.1.8"
 optuna = "^4.7.0"
+boto3 = "^1.42.49"
 
 [tool.poetry.group.dev.dependencies]
 black = "^24.0.0"

@@ -1,20 +1,3 @@
-"""
-NBA Over/Under Predictor - Main Execution Script
-
-This is the main entry point for the NBA Over/Under prediction system.
-It orchestrates the entire prediction pipeline:
-1. Updates the game database with latest data
-2. Fetches and processes injury reports
-3. Prepares prediction features
-4. Runs ML models for predictions
-5. Exports results to Excel
-
-Usage:
-    From project root: python -m src.nba_predictor
-    From src folder:   python nba_predictor.py
-    With date:         python nba_predictor.py -d 2025-01-15
-"""
-
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -26,8 +9,14 @@ from nba_ou.create_training_data.create_df_to_predict import (
 from nba_ou.create_training_data.get_all_info_for_scheduled_games import (
     get_all_info_for_scheduled_games,
 )
+from nba_ou.prediction.prediction import load_and_predict_model_for_nba_games
+from nba_ou.utils.s3_models import (
+    load_joblib_from_bytes,
+    make_s3_client,
+    read_s3_object_bytes,
+)
 
-from models import predict_nba_games, save_predictions_to_excel
+# from models import predict_nba_games, save_predictions_to_excel
 from scripts.update_databases.update_all_databases import update_all_databases
 
 
@@ -56,7 +45,7 @@ def print_status(message: str, ok: bool = True) -> None:
     print(f"  {symbol} {message}")
 
 
-def main():
+def predict_nba_games():
     """
     Main execution function for the NBA prediction pipeline.
 
@@ -84,8 +73,11 @@ def main():
         update_all_databases(
             start_season_year=int(season_to_update),
             end_season_year=int(season_to_update),
+            only_new_games=True,
+            headless=True,
         )
         print_status("Databases updated")
+
     except Exception as e:
         print_status(f"Failed to update databases: {e}", ok=False)
         raise
@@ -93,19 +85,18 @@ def main():
     # Step 2: Fetch scheduled games, referees, injuries and odds
     print_step_header(2, "Fetching Scheduled Games & Reports")
     try:
-        (
-            scheduled_games,
-            df_referees_scheduled,
-            injury_dict_scheduled,
-            df_odds_scheduled,
-        ) = get_all_info_for_scheduled_games(
+        scheduled_data = get_all_info_for_scheduled_games(
             date_to_predict=date_to_predict,
             nba_injury_reports_url=SETTINGS.nba_injury_reports_url,
             save_reports_path=SETTINGS.report_path,
-            odds_api_key=SETTINGS.odds_api_key,
-            odds_base_url=SETTINGS.odds_base_url,
         )
         print_status("Fetched scheduled games, refs, injuries and odds")
+        if scheduled_data["scheduled_games"].empty:
+            print_status(
+                "⚠️ WARNING: No scheduled games found for the specified date.", ok=False
+            )
+            return 0
+
     except Exception as e:
         print_status(f"Failed to fetch scheduled data: {e}", ok=False)
         raise
@@ -115,11 +106,9 @@ def main():
     try:
         df_to_predict = create_df_to_predict(
             todays_prediction=True,
-            scheduled_games=scheduled_games,
-            df_referees_scheduled=df_referees_scheduled,
-            injury_dict_scheduled=injury_dict_scheduled,
-            df_odds_scheduled=df_odds_scheduled,
+            scheduled_data=scheduled_data,
             recent_limit_to_include=date_to_predict,
+            strict_mode=True,
         )
         print_status("Feature DataFrame prepared")
     except Exception as e:
@@ -128,20 +117,43 @@ def main():
 
     if df_to_predict.empty:
         print("⚠️  Warning: No games found for the specified date.")
-        print("    Please check if there are scheduled games on this date.")
-        return 0
+        raise ValueError("df to predict is empty")
 
     print_status(f"Found {len(df_to_predict)} game(s) to predict")
 
-    # # Step 4: Generate predictions
-    # print_step_header(4, "Generating Predictions")
-    # try:
-    #     predictions_dfs = predict_nba_games(df_to_predict)
-    #     print_status("Predictions generated")
-    # except Exception as e:
-    #     print_status(f"Failed to generate predictions: {e}", ok=False)
-    #     raise
+    # Step 4: Generate predictions
+    prediction_date = datetime.now(ZoneInfo("Europe/Madrid"))
+    print_step_header(4, "Generating Predictions")
+
+    s3 = make_s3_client(profile=SETTINGS.s3_aws_profile, region=SETTINGS.s3_aws_region)
+
+    model_bytes = read_s3_object_bytes(
+        s3_client=s3,
+        bucket=SETTINGS.s3_bucket,
+        key=SETTINGS.s3_regressor_s3_key,
+    )
+    regressor = load_joblib_from_bytes(
+        model_bytes
+    )  # Test loading the model from S3 bytes
+    try:
+        model_name = Path(SETTINGS.s3_regressor_s3_key).stem
+        model_type = type(regressor).__name__
+        model_version = "1.0"
+
+        _ = load_and_predict_model_for_nba_games(
+            df=df_to_predict,
+            regressor=regressor,
+            model_name=model_name,
+            model_type=model_type,
+            model_version=model_version,
+            prediction_date=prediction_date,
+        )
+        print_status("Predictions generated")
+
+    except Exception as e:
+        print_status(f"Failed to generate predictions: {e}", ok=False)
+        raise
 
 
 if __name__ == "__main__":
-    main()
+    predict_nba_games()

@@ -168,6 +168,29 @@ class Settings:
     def odds_pickle_path(self) -> str | None:
         """Path to store raw odds pickles (optional)."""
         return self.config.get("Odds", "ODDS_PICKLE_PATH", fallback=None)
+    @property
+    def s3_aws_region(self) -> str:
+        return self.config.get("S3", "AWS_REGION", fallback="eu-west-1")
+
+    @property
+    def s3_bucket(self) -> str:
+        return self.config.get("S3", "BUCKET")
+
+    @property
+    def s3_regressor_s3_key(self) -> str:
+        return self.config.get("S3", "REGRESSOR_S3_KEY")
+
+    @property
+    def s3_regressor_meta_s3_key(self) -> str | None:
+        return self.config.get("S3", "REGRESSOR_META_S3_KEY", fallback=None)
+
+    @property
+    def s3_aws_profile(self) -> str | None:
+        """
+        Local-only convenience. In CI (GitHub Actions with OIDC),
+        you typically do NOT want/need a profile.
+        """
+        return self.config.get("S3", "AWS_PROFILE", fallback=None)
 
     # =========================================================================
     # HELPER METHODS

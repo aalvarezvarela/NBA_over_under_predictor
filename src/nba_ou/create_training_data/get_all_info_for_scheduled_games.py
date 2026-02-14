@@ -214,7 +214,13 @@ def get_all_info_for_scheduled_games(
     scheduled_games = get_schedule_games(date_to_predict)
     if scheduled_games.empty:
         print(f"No scheduled games found for {date_to_predict}")
-        raise ValueError("No scheduled games found")
+        return {
+            "scheduled_games": pd.DataFrame(),
+            "df_referees_scheduled": pd.DataFrame(),
+            "injury_dict_scheduled": {},
+            "df_odds_yahoo_scheduled": pd.DataFrame(),
+            "df_odds_sportsbook_scheduled": pd.DataFrame(),
+        }
 
     # Convert team IDs to team names using TEAM_ID_MAP
     # Create reverse mapping: ID -> Name

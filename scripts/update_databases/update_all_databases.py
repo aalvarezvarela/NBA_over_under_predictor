@@ -29,6 +29,7 @@ from nba_ou.postgre_db.odds_yahoo.update_yahoo.update_yahoo_database import (
 def update_all_databases(
     start_season_year: int = 2006,
     end_season_year: int = 2025,
+    only_new_games: bool = True,
     headless: bool = False,
     sleep_seconds_between_seasons: float = 2.0,
 ) -> None:
@@ -47,11 +48,14 @@ def update_all_databases(
         season_year = str(y)
         print(f"\n=== Backfilling season starting {season_year} season) ===")
 
-        limit_reached, exclude_game_ids = update_team_players_database(
+        limit_reached, exclude_game_ids, new_data_found = update_team_players_database(
             season_year=season_year,
             games_id_to_exclude=games_id_to_exclude,
         )
-
+        if not new_data_found and only_new_games:
+            print(f"No new games found for season {season_year}. Skipping odds and refs/injuries updates.")
+            continue
+        
         print(f"\n--- Updating sportsbook odds for season {y} ---")
     
         sportsbook_results = update_odds_sportsbook_database(

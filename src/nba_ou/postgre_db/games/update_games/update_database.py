@@ -87,8 +87,18 @@ def upload_players_to_postgresql(
 
 def update_team_players_database(
     season_year: str = None, games_id_to_exclude: list = None
-) -> bool:
+) -> tuple:
+    """Updates team and player databases for a given season.
+
+    Returns:
+        tuple: (limit_reached, exclude_game_ids, new_data_found)
+            - limit_reached (bool): Whether API rate limit was reached
+            - exclude_game_ids (list): List of game IDs that were excluded/invalid
+            - new_data_found (bool): Whether any new data (games or players) was found and uploaded
+    """
     exclude_game_ids = set(games_id_to_exclude or [])
+    new_data_found = False
+
     if not season_year:
         date = datetime.now()
         # Get Season to Update
@@ -126,13 +136,17 @@ def update_team_players_database(
         if len(invalid_game_ids) > 0:
             exclude_game_ids.update(invalid_game_ids)
         # Upload team/game data to PostgreSQL
-        upload_games_to_postgresql(team_df, games_id_to_exclude=list(exclude_game_ids))
+        if upload_games_to_postgresql(
+            team_df, games_id_to_exclude=list(exclude_game_ids)
+        ):
+            new_data_found = True
 
     if players_df is not None:
         # Upload player data to PostgreSQL
-        upload_players_to_postgresql(
+        if upload_players_to_postgresql(
             players_df, players_game_ids_to_exclude=list(exclude_game_ids)
-        )
+        ):
+            new_data_found = True
 
     print(f"Completed season: {season_nullable}\n" + "-" * 50)
-    return limit_reached, list(exclude_game_ids)
+    return limit_reached, list(exclude_game_ids), new_data_found
