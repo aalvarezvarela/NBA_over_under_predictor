@@ -2,8 +2,8 @@ name: Update PostgreSQL DB - Games, Players, Refs & Injuries (Local Runner)
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 14 * * *"
+  # schedule:
+  #   - cron: "0 14 * * *"
 
 permissions:
   contents: read
