@@ -11,8 +11,11 @@ class S3ModelLocation:
     key: str
 
 
-def make_s3_client(profile: str, region: str):
-    session = boto3.Session(profile_name=profile, region_name=region)
+def make_s3_client(*, profile: str | None, region: str):
+    session_kwargs = {"region_name": region}
+    if profile:
+        session_kwargs["profile_name"] = profile
+    session = boto3.Session(**session_kwargs)
     return session.client("s3")
 
 

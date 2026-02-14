@@ -187,10 +187,27 @@ class Settings:
     @property
     def s3_aws_profile(self) -> str | None:
         """
-        Local-only convenience. In CI (GitHub Actions with OIDC),
-        you typically do NOT want/need a profile.
+        Select AWS profile for S3 access.
+
+        Resolution order:
+          1) `S3_AWS_PROFILE` environment variable (empty disables profile)
+          2) If running in GitHub Actions (`GITHUB_ACTIONS=true`), use no profile
+          3) `S3.AWS_PROFILE` from config.ini
         """
-        return self.config.get("S3", "AWS_PROFILE", fallback=None)
+        env_profile = os.getenv("S3_AWS_PROFILE")
+        if env_profile is not None:
+            env_profile = env_profile.strip()
+            return env_profile or None
+
+        if os.getenv("GITHUB_ACTIONS", "").lower() == "true":
+            return None
+
+        profile = self.config.get("S3", "AWS_PROFILE", fallback=None)
+        if profile is None:
+            return None
+
+        profile = profile.strip()
+        return profile or None
 
     # =========================================================================
     # HELPER METHODS
