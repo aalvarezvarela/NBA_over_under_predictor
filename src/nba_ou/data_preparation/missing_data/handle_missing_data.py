@@ -225,10 +225,11 @@ def apply_missing_policy(
     current_total_line_col: str | None = "TOTAL_OVER_UNDER_LINE",
     mode: Literal["train", "predict"] = "train",
     create_missing_flags: bool = False,
+    keep_all_cols: bool = False,
 ) -> pd.DataFrame:
     """
     Apply the deterministic missing data policy:
-      1) Drop rows missing required cols
+      1) Drop rows missing required cols (skipped if keep_all_cols=True)
       2) Add __is_missing flags for structural missing columns (if enabled)
       3) Infer rolling features from season averages
       4) Zero-fill neutral features + add flags
@@ -239,6 +240,7 @@ def apply_missing_policy(
         current_total_line_col: Column name for current betting line
         mode: "train" or "predict" mode
         create_missing_flags: If True, create __is_missing flag columns for market features. Default: False
+        keep_all_cols: If True, skip dropping rows with missing required columns. Default: False
 
     Returns:
         Cleaned dataframe
@@ -253,12 +255,16 @@ def apply_missing_policy(
         out, current_total_line_col=current_total_line_col, mode=mode
     )
 
-    # A) DROP rows missing required cols
+    # A) DROP rows missing required cols (skip if keep_all_cols=True)
     dropped_reasons: dict[str, int] = {}
-    if policy.drop_cols:
+    if policy.drop_cols and not keep_all_cols:
         drop_mask = out[policy.drop_cols].isna().any(axis=1)
         dropped_reasons["missing_required_any"] = int(drop_mask.sum())
         out = out.loc[~drop_mask].copy()
+    elif keep_all_cols and policy.drop_cols:
+        dropped_reasons["missing_required_any"] = (
+            0  # Would have dropped but keep_all_cols=True
+        )
 
     # B) ADD __is_missing FLAGS (after dropping)
     # Use pd.concat to avoid DataFrame fragmentation

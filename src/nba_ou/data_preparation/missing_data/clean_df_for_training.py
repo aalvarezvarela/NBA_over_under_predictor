@@ -75,7 +75,7 @@ def advanced_column_cleaning(
     nan_threshold: float = 50.0,
     corr_threshold: float = 0.99,
     keep_columns: list[str] | None = None,
-    keep_correlated_and_constant: bool = False,
+    keep_all_cols: bool = False,
     verbose: int = 1,
 ) -> pd.DataFrame:
     """
@@ -86,9 +86,9 @@ def advanced_column_cleaning(
     - Removes columns with 'ID' in the name
     - Removes columns with high NaN percentage (configurable)
     - Removes duplicate columns
-    - Removes columns with 99% similarity to another column (unless keep_correlated_and_constant=True)
+    - Removes columns with 99% similarity to another column (unless keep_all_cols=True)
     - Removes columns that are absolute value matches of another column
-    - Removes columns with constant values (unless keep_correlated_and_constant=True)
+    - Removes columns with constant values (unless keep_all_cols=True)
 
     Args:
         df (pd.DataFrame): Training dataframe to clean
@@ -98,8 +98,8 @@ def advanced_column_cleaning(
             and one will be removed. Default: 0.99
         keep_columns (list[str] | None): List of column names to always keep regardless of type or quality.
             Useful for preserving date columns or other important non-numeric columns. Default: None
-        keep_correlated_and_constant (bool): If True, skip removal of constant and highly correlated columns.
-            Default: False
+        keep_all_cols (bool): If True, only drops ID, NAME, and string columns; keeps all others
+            (high-NaN, constant, duplicate, correlated, absolute matches). Default: False
         verbose (int): Verbosity level (0=silent, 1=basic, 2=detailed). Default: 1
 
     Returns:
@@ -191,7 +191,7 @@ def advanced_column_cleaning(
         if nan_pct > nan_threshold:
             high_nan_cols.append((col, nan_pct))
 
-    if high_nan_cols:
+    if high_nan_cols and not keep_all_cols:
         if verbose >= 2:
             print(
                 f"   Removing {len(high_nan_cols)} columns with >{nan_threshold}% NaN:"
@@ -201,17 +201,18 @@ def advanced_column_cleaning(
         for col, pct in high_nan_cols:
             columns_to_drop.add(col)
     elif verbose >= 2:
-        print("   No high-NaN columns to remove")
+        if keep_all_cols:
+            print("   Skipping high-NaN column removal (keep_all_cols=True)")
+        else:
+            print("   No high-NaN columns to remove")
 
     # 5. Remove columns with constant values (same value in every row)
     if verbose >= 2:
         print("\n5. Checking for constant columns...")
 
-    if keep_correlated_and_constant:
+    if keep_all_cols:
         if verbose >= 2:
-            print(
-                "   Skipping constant column removal (keep_correlated_and_constant=True)"
-            )
+            print("   Skipping constant column removal (keep_all_cols=True)")
     else:
         constant_cols = []
         for col in df.columns:
@@ -235,38 +236,41 @@ def advanced_column_cleaning(
     # 6. Check for duplicate columns (exact matches)
     if verbose >= 2:
         print("\n6. Checking for duplicate columns...")
-    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    duplicate_pairs = []
 
-    for i, col1 in enumerate(numeric_cols):
-        for col2 in numeric_cols[i + 1 :]:
-            if df[col1].equals(df[col2]):
-                duplicate_pairs.append((col1, col2))
-
-    if duplicate_pairs:
+    if keep_all_cols:
         if verbose >= 2:
-            print(f"   Found {len(duplicate_pairs)} duplicate column pairs:")
-        cols_to_remove = set()
-        for col1, col2 in duplicate_pairs:
+            print("   Skipping duplicate column removal (keep_all_cols=True)")
+    else:
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        duplicate_pairs = []
+
+        for i, col1 in enumerate(numeric_cols):
+            for col2 in numeric_cols[i + 1 :]:
+                if df[col1].equals(df[col2]):
+                    duplicate_pairs.append((col1, col2))
+
+        if duplicate_pairs:
             if verbose >= 2:
-                print(f"      - {col1} == {col2}")
-            # Keep the first one, remove the second
-            cols_to_remove.add(col2)
-        if verbose >= 2:
-            print(f"   Removing {len(cols_to_remove)} duplicate columns")
-        df = df.drop(columns=list(cols_to_remove))
-    elif verbose >= 2:
-        print("   No duplicate columns found")
+                print(f"   Found {len(duplicate_pairs)} duplicate column pairs:")
+            cols_to_remove = set()
+            for col1, col2 in duplicate_pairs:
+                if verbose >= 2:
+                    print(f"      - {col1} == {col2}")
+                # Keep the first one, remove the second
+                cols_to_remove.add(col2)
+            if verbose >= 2:
+                print(f"   Removing {len(cols_to_remove)} duplicate columns")
+            df = df.drop(columns=list(cols_to_remove))
+        elif verbose >= 2:
+            print("   No duplicate columns found")
 
     # 7. Check for highly similar columns (99% correlation)
     if verbose >= 2:
         print("\n7. Checking for highly similar columns (99.5% correlation)...")
 
-    if keep_correlated_and_constant:
+    if keep_all_cols:
         if verbose >= 2:
-            print(
-                "   Skipping highly correlated column removal (keep_correlated_and_constant=True)"
-            )
+            print("   Skipping highly correlated column removal (keep_all_cols=True)")
     else:
         numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
         corr_matrix = df[numeric_cols].corr().abs()
@@ -299,31 +303,36 @@ def advanced_column_cleaning(
     # 8. Check for columns that are absolute value matches
     if verbose >= 2:
         print("\n8. Checking for absolute value matches...")
-    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    abs_match_pairs = []
 
-    for i, col1 in enumerate(numeric_cols):
-        for col2 in numeric_cols[i + 1 :]:
-            # Check if one is the absolute value of the other
-            if df[col1].abs().equals(df[col2].abs()):
-                # Check if they're not already exact duplicates
-                if not df[col1].equals(df[col2]):
-                    abs_match_pairs.append((col1, col2))
-
-    if abs_match_pairs:
+    if keep_all_cols:
         if verbose >= 2:
-            print(f"   Found {len(abs_match_pairs)} absolute value match pairs:")
-        cols_to_remove = set()
-        for col1, col2 in abs_match_pairs:
+            print("   Skipping absolute value match removal (keep_all_cols=True)")
+    else:
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        abs_match_pairs = []
+
+        for i, col1 in enumerate(numeric_cols):
+            for col2 in numeric_cols[i + 1 :]:
+                # Check if one is the absolute value of the other
+                if df[col1].abs().equals(df[col2].abs()):
+                    # Check if they're not already exact duplicates
+                    if not df[col1].equals(df[col2]):
+                        abs_match_pairs.append((col1, col2))
+
+        if abs_match_pairs:
             if verbose >= 2:
-                print(f"      - abs({col1}) == abs({col2})")
-            # Keep the first one, remove the second
-            cols_to_remove.add(col2)
-        if verbose >= 2:
-            print(f"   Removing {len(cols_to_remove)} absolute match columns")
-        df = df.drop(columns=list(cols_to_remove))
-    elif verbose >= 2:
-        print("   No absolute value matches found")
+                print(f"   Found {len(abs_match_pairs)} absolute value match pairs:")
+            cols_to_remove = set()
+            for col1, col2 in abs_match_pairs:
+                if verbose >= 2:
+                    print(f"      - abs({col1}) == abs({col2})")
+                # Keep the first one, remove the second
+                cols_to_remove.add(col2)
+            if verbose >= 2:
+                print(f"   Removing {len(cols_to_remove)} absolute match columns")
+            df = df.drop(columns=list(cols_to_remove))
+        elif verbose >= 2:
+            print("   No absolute value matches found")
 
     final_cols = len(df.columns)
     if verbose >= 1:
@@ -343,7 +352,7 @@ def clean_dataframe_for_training(
     drop_2017_na_rows: bool = True,
     create_missing_flags: bool = False,
     keep_columns: list[str] | None = None,
-    keep_correlated_and_constant: bool = False,
+    keep_all_cols: bool = False,
     verbose: int = 1,
 ) -> tuple[pd.DataFrame, dict] | pd.DataFrame:
     """
@@ -362,8 +371,8 @@ def clean_dataframe_for_training(
         drop_all_na_rows (bool): If True, drop rows that are all NaN. Default: False
         drop_2017_na_rows (bool): If True, drop rows with any NaN values where
             SEASON_YEAR is 2017. Default: False
-        keep_correlated_and_constant (bool): If True, skip removal of constant and
-            highly correlated columns. Default: False
+        keep_all_cols (bool): If True, only drops ID, NAME, and string columns; keeps all others.
+            Default: False
         verbose (int): Verbosity level (0=silent, 1=basic, 2=detailed). Default: 1
 
     Returns:
@@ -383,7 +392,7 @@ def clean_dataframe_for_training(
         nan_threshold=nan_threshold,
         corr_threshold=corr_threshold,
         keep_columns=keep_columns,
-        keep_correlated_and_constant=keep_correlated_and_constant,
+        keep_all_cols=keep_all_cols,
         verbose=verbose,
     )
 
@@ -416,6 +425,7 @@ def clean_dataframe_for_training(
         df_cleaned,
         current_total_line_col="TOTAL_OVER_UNDER_LINE",
         create_missing_flags=create_missing_flags,
+        keep_all_cols=keep_all_cols,
     )
     if drop_all_na_rows:
         if verbose >= 1:
