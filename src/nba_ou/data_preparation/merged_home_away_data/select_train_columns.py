@@ -174,10 +174,13 @@ def select_training_columns(df_merged, original_columns, debug=True):
 
     # Filter to only include columns that actually exist in df_merged
     columns_to_select = [col for col in columns_info_before if col in df_merged.columns]
+    # Deduplicate while preserving order (some columns can be added by multiple rules)
+    columns_to_select = list(dict.fromkeys(columns_to_select))
 
     # Add target column if it exists
     if TARGET_COLUMN in df_merged.columns:
         columns_to_select.append(TARGET_COLUMN)
+        columns_to_select = list(dict.fromkeys(columns_to_select))
 
     if debug:
         excluded_columns = [
