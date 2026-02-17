@@ -18,7 +18,7 @@ def load_and_predict_model_for_nba_games(
     model_name: str,
     model_type: str,
     model_version: str,
-    prediction_date: datetime | None = None,
+    prediction_datetime: datetime | None = None,
 ) -> list[pd.DataFrame]:
     """
     Predicts the line error for NBA games using a trained regression model.
@@ -35,7 +35,7 @@ def load_and_predict_model_for_nba_games(
         model_name: Name of the model being used for predictions
         model_type: Type of the model (e.g., "regression", "classification")
         model_version: Version identifier for the model
-        prediction_date: Timestamp when predictions are made. If None, uses current time in Europe/Madrid timezone.
+        prediction_datetime: Timestamp when predictions are made. If None, uses current time in Europe/Madrid timezone.
 
     Returns:
         DataFrame containing predictions with key information
@@ -46,6 +46,15 @@ def load_and_predict_model_for_nba_games(
         df,
         nan_threshold=100,
         drop_all_na_rows=False,
+        keep_columns=[
+            "GAME_ID",
+            "SEASON_TYPE",
+            "GAME_DATE",
+            "GAME_TIME",
+            "TEAM_NAME_TEAM_HOME",
+            "TEAM_NAME_TEAM_AWAY",
+            "MATCHUP_TEAM_HOME",
+        ],
         keep_all_cols=True,
         verbose=False,
         strict_mode=True,
@@ -105,11 +114,11 @@ def load_and_predict_model_for_nba_games(
     df_summary = df_predictable[summary_columns].copy()
 
     # Add prediction timestamp and time to match
-    # Use provided prediction_date or create timezone-aware timestamp in Madrid time
-    if prediction_date is None:
-        prediction_date = datetime.now(ZoneInfo("Europe/Madrid"))
+    # Use provided prediction_datetime or create timezone-aware timestamp in Madrid time
+    if prediction_datetime is None:
+        prediction_datetime = datetime.now(ZoneInfo("Europe/Madrid"))
 
-    df_summary["PREDICTION_DATE"] = prediction_date
+    df_summary["PREDICTION_DATE"] = prediction_datetime
 
     # Calculate time to match in minutes
     def ensure_timezone_aware(dt_value):
@@ -121,7 +130,7 @@ def load_and_predict_model_for_nba_games(
         if not isinstance(dt_value, (pd.Timestamp, datetime)):
             try:
                 dt_value = pd.to_datetime(dt_value)
-            except:
+            except Exception:
                 return pd.NaT
 
         # Check if timezone-aware

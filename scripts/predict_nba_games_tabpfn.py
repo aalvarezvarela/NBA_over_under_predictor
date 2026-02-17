@@ -1,5 +1,4 @@
 from datetime import datetime
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from nba_ou.config.settings import SETTINGS
@@ -9,23 +8,16 @@ from nba_ou.create_training_data.create_df_to_predict import (
 from nba_ou.create_training_data.get_all_info_for_scheduled_games import (
     get_all_info_for_scheduled_games,
 )
-from nba_ou.prediction.prediction import load_and_predict_model_for_nba_games
 from nba_ou.prediction.prediction_tabpfn_client import (
     load_and_predict_tabpfn_client_for_nba_games,
 )
-from nba_ou.utils.s3_models import (
-    load_joblib_from_bytes,
-    make_s3_client,
-    read_s3_object_bytes,
-)
 
-# from models import predict_nba_games, save_predictions_to_excel
 from scripts.update_databases.update_all_databases import update_all_databases
 
 
 def print_banner(date_to_predict: str) -> None:
     line = "=" * 70
-    title = "NBA OVER/UNDER PREDICTION SYSTEM"
+    title = "NBA OVER/UNDER TABPFN CLIENT PREDICTION"
     print(f"\n{line}")
     print(title.center(len(line)))
     print(line)
@@ -34,7 +26,6 @@ def print_banner(date_to_predict: str) -> None:
 
 
 def print_step_header(step_number: int, title: str) -> None:
-    """Print a compact, eye-catching step header."""
     sep = "-" * 70
     header = f" STEP {step_number} — {title} "
     print(sep)
@@ -43,33 +34,17 @@ def print_step_header(step_number: int, title: str) -> None:
 
 
 def print_status(message: str, ok: bool = True) -> None:
-    """Print a single-line status message with a check or cross."""
     symbol = "✓" if ok else "✖"
     print(f"  {symbol} {message}")
 
 
-def predict_nba_games():
-    """
-    Main execution function for the NBA prediction pipeline.
-
-    This function:
-    1. Parses command-line arguments for the prediction date
-    2. Loads configuration settings
-    3. Updates the game database
-    4. Processes data with injuries
-    5. Generates predictions
-    6. Saves results to Excel
-    """
-
+def predict_nba_games_tabpfn() -> None:
     date_to_predict = datetime.now(ZoneInfo("US/Pacific")).strftime("%Y-%m-%d")
+    prediction_date = datetime.now(ZoneInfo("Europe/Madrid"))
 
-    # Print welcome banner
     print_banner(date_to_predict)
-    print(
-        f"  Models: regressor={SETTINGS.regressor_model_path} | classifier={SETTINGS.classifier_model_path}\n"
-    )
 
-    # Step 1: Update the database
+    # Step 1: Update database
     print_step_header(1, "Updating All Databases")
     season_to_update = str(date_to_predict)[:4]
     try:
@@ -80,12 +55,11 @@ def predict_nba_games():
             headless=True,
         )
         print_status("Databases updated")
-
     except Exception as e:
         print_status(f"Failed to update databases: {e}", ok=False)
         raise
 
-    # Step 2: Fetch scheduled games, referees, injuries and odds
+    # Step 2: Scheduled data
     print_step_header(2, "Fetching Scheduled Games & Reports")
     try:
         scheduled_data = get_all_info_for_scheduled_games(
@@ -98,13 +72,12 @@ def predict_nba_games():
             print_status(
                 "⚠️ WARNING: No scheduled games found for the specified date.", ok=False
             )
-            return 0
-
+            return
     except Exception as e:
         print_status(f"Failed to fetch scheduled data: {e}", ok=False)
         raise
 
-    # Step 3: Build feature DataFrame for prediction
+    # Step 3: Build features
     print_step_header(3, "Preparing Feature DataFrame")
     try:
         df_to_predict = create_df_to_predict(
@@ -119,51 +92,17 @@ def predict_nba_games():
         raise
 
     if df_to_predict.empty:
-        print("⚠️  Warning: No games found for the specified date.")
-        raise ValueError("df to predict is empty")
+        raise ValueError("df_to_predict is empty")
 
     print_status(f"Found {len(df_to_predict)} game(s) to predict")
 
-    # Step 4: Generate predictions with deployed regressor
-    prediction_time= datetime.now(ZoneInfo("Europe/Madrid"))
-    print_step_header(4, "Generating Predictions (Deployed Regressor)")
-
-    s3 = make_s3_client(profile=SETTINGS.s3_aws_profile, region=SETTINGS.s3_aws_region)
-
-    model_bytes = read_s3_object_bytes(
-        s3_client=s3,
-        bucket=SETTINGS.s3_bucket,
-        key=SETTINGS.s3_regressor_s3_key,
-    )
-    regressor = load_joblib_from_bytes(
-        model_bytes
-    )  # Test loading the model from S3 bytes
-    try:
-        model_name = Path(SETTINGS.s3_regressor_s3_key).stem
-        model_type = type(regressor).__name__
-        model_version = "1.0"
-
-        _ = load_and_predict_model_for_nba_games(
-            df=df_to_predict,
-            regressor=regressor,
-            model_name=model_name,
-            model_type=model_type,
-            model_version=model_version,
-            prediction_time=prediction_time,
-        )
-        print_status("Predictions generated")
-
-    except Exception as e:
-        print_status(f"Failed to generate predictions: {e}", ok=False)
-        raise
-
-    # Step 5: Generate predictions with TabPFN client
-    print_step_header(5, "Generating Predictions (TabPFN Client)")
+    # Step 4: TabPFN inference + upload
+    print_step_header(4, "Generating Predictions (TabPFN Client)")
     try:
         _ = load_and_predict_tabpfn_client_for_nba_games(
             df=df_to_predict,
             prediction_date=date_to_predict,
-            prediction_datetime=prediction_time,
+            prediction_datetime=prediction_date,
         )
         print_status("TabPFN predictions generated")
     except Exception as e:
@@ -172,4 +111,4 @@ def predict_nba_games():
 
 
 if __name__ == "__main__":
-    predict_nba_games()
+    predict_nba_games_tabpfn()

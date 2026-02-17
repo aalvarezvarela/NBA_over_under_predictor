@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 import boto3
 import joblib
+import pandas as pd
 
 
 @dataclass(frozen=True)
@@ -50,3 +51,24 @@ def upload_bytes_to_s3(*, s3_client, bucket: str, key: str, data: bytes) -> None
 
 def load_joblib_from_bytes(b: bytes):
     return joblib.load(io.BytesIO(b))
+
+
+def list_s3_objects(*, s3_client, bucket: str, prefix: str) -> list[dict]:
+    """
+    List objects under an S3 prefix.
+
+    Returns:
+        list[dict]: Raw S3 object dictionaries (contains Key, LastModified, Size, ...)
+    """
+    paginator = s3_client.get_paginator("list_objects_v2")
+    pages = paginator.paginate(Bucket=bucket, Prefix=prefix)
+
+    objects: list[dict] = []
+    for page in pages:
+        objects.extend(page.get("Contents", []))
+    return objects
+
+
+def load_parquet_from_bytes(b: bytes) -> pd.DataFrame:
+    """Load a parquet DataFrame from bytes."""
+    return pd.read_parquet(io.BytesIO(b))

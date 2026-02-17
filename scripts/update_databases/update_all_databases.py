@@ -124,4 +124,5 @@ if __name__ == "__main__":
     update_all_databases(
         start_season_year=args.start,
         end_season_year=args.end,
+        only_new_games=False
     )
