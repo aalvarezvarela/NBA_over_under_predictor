@@ -53,5 +53,6 @@ jobs:
 
             - name: Update finished matches
               run: |
-                  cd src
+                  cd scripts
+                  cd update_finished_matches
                   python update_finished_matches.py
