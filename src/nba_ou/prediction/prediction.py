@@ -176,6 +176,7 @@ def load_s3_model_and_predict(
     bucket: str,
     prefix: str,
     df: pd.DataFrame,
+    model_id :str,
     prediction_datetime: datetime | None = None,
 ) -> pd.DataFrame:
     """
@@ -219,8 +220,14 @@ def load_s3_model_and_predict(
 
     # Extract model metadata from the S3 key
     model_name = Path(model_key).stem
-    model_type = type(regressor).__name__
-    model_version = "1.0"
+    model_type = model_id
+    # Extract version from model name (assumes format like: model_name_DD_MM_YY)
+    # e.g., "recent_data_xgb_line_error_14_02_26" -> "14_02_26"
+    name_parts = model_name.split("_")
+    if len(name_parts) >= 3 and all(part.isdigit() for part in name_parts[-3:]):
+        model_version = "_".join(name_parts[-3:])  # Last 3 parts as date
+    else:
+        model_version = "1.0"  # Fallback if no date pattern found
 
     # Generate predictions
     return load_and_predict_model_for_nba_games(

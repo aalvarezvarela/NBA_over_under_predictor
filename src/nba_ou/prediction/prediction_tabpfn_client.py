@@ -85,7 +85,7 @@ def load_and_predict_tabpfn_client_for_nba_games(
     historical_train_s3_key: str | None = None,
     historical_train_prefix: str = "train_data/",
     model_name: str = "tabpfn_client_regressor",
-    model_version: str = "1.0",
+    model_version: str = "2.5",
 ) -> pd.DataFrame:
     """
     Predict NBA totals using TabPFN client regressor and upload to PostgreSQL.

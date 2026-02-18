@@ -47,7 +47,7 @@ def print_status(message: str, ok: bool = True) -> None:
     print(f"  {symbol} {message}")
 
 
-def predict_nba_games():
+def predict_nba_games(run_tabpfn_client: bool = False) -> None:
     """
     Main execution function for the NBA prediction pipeline.
 
@@ -137,6 +137,7 @@ def predict_nba_games():
             bucket=SETTINGS.s3_bucket,
             prefix=SETTINGS.s3_regressor_full_dataset_prefix,
             df=df_to_predict,
+            model_id="full_dataset",
             prediction_datetime=prediction_time,
         )
         print_status("Full dataset predictions generated")
@@ -152,6 +153,7 @@ def predict_nba_games():
             bucket=SETTINGS.s3_bucket,
             prefix=SETTINGS.s3_regressor_recent_games_prefix,
             df=df_to_predict,
+            model_id="recent_games",
             prediction_datetime=prediction_time,
         )
         print_status("Recent games predictions generated")
@@ -159,6 +161,10 @@ def predict_nba_games():
         print_status(f"Failed to generate recent games predictions: {e}", ok=False)
         raise
 
+    if not run_tabpfn_client:
+        print("\nPrediction pipeline completed successfully.")
+        return
+    
     # Step 6: Generate predictions with TabPFN client
     print_step_header(6, "Generating Predictions (TabPFN Client)")
     try:
@@ -168,6 +174,7 @@ def predict_nba_games():
             prediction_datetime=prediction_time,
         )
         print_status("TabPFN predictions generated")
+    
     except Exception as e:
         print_status(f"Failed to generate TabPFN predictions: {e}", ok=False)
         raise

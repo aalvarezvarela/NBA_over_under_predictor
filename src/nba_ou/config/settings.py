@@ -278,9 +278,3 @@ class Settings:
 
 # Create a default settings instance for easy importing
 SETTINGS = Settings()
-
-# For backward compatibility and convenience
-def get_settings(config_path: str | None = None) -> Settings:
-    if config_path:
-        return Settings(config_path)
-    return SETTINGS
