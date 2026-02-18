@@ -3,16 +3,102 @@ NBA Over/Under Predictor - Settings Module
 
 This module handles application settings and configuration loading from config.ini.
 It provides a centralized way to access all configuration parameters.
+
+ADDING NEW SETTINGS:
+--------------------
+To add a new setting, simply add it to the CONFIG_SCHEMA dictionary:
+
+    "property_name": ("Section", "CONFIG_KEY", type, default_value)
+
+Where:
+    - property_name: The Python property name (snake_case)
+    - Section: The INI file section name
+    - CONFIG_KEY: The key name in the INI file
+    - type: str, bool, int, or "secret" (for sensitive data)
+    - default_value: Fallback value (None if required)
+
+Example:
+    "my_new_setting": ("MySection", "MY_SETTING", str, "default_value")
+
+The setting will automatically be available as SETTINGS.my_new_setting
+
+For settings with custom logic (like s3_aws_profile), create a @property method.
 """
 
 import configparser
 import os
 from pathlib import Path
+from typing import Any
 
 # Locate the config.ini file (assumes it's in the project root)
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 CONFIG_FILE = PROJECT_ROOT / "nba_ou/config.ini"
 SECRETS_FILE = PROJECT_ROOT / "nba_ou/config.secrets.ini"
+
+
+# Configuration schema: maps property names to (section, key, type, default)
+# type can be: str, bool, int, secret
+CONFIG_SCHEMA = {
+    # Database
+    "db_env": ("Database", "DB_ENV", str, None),
+    "db_name": ("Database", "DB_NAME", str, None),
+    "schema_name_games": ("Database", "SCHEMA_NAME_GAMES", str, None),
+    "schema_name_players": ("Database", "SCHEMA_NAME_PLAYERS", str, None),
+    "schema_name_odds": ("Database", "SCHEMA_NAME_ODDS", str, None),
+    "schema_name_odds_mgm": ("Database", "SCHEMA_NAME_ODDS_MGM", str, None),
+    "schema_name_odds_sportsbook": (
+        "Database",
+        "SCHEMA_NAME_ODDS_SPORTSBOOK",
+        str,
+        None,
+    ),
+    "schema_name_odds_yahoo": ("Database", "SCHEMA_NAME_ODDS_YAHOO", str, None),
+    "schema_name_predictions": ("Database", "SCHEMA_NAME_PREDICTIONS", str, None),
+    "schema_name_injuries": ("Database", "SCHEMA_NAME_INJURIES", str, None),
+    "schema_name_refs": ("Database", "SCHEMA_NAME_REFS", str, None),
+    # Database Local
+    "db_user_local": ("DatabaseLocal", "DB_USER", str, None),
+    "db_host_local": ("DatabaseLocal", "DB_HOST", str, None),
+    "db_port_local": ("DatabaseLocal", "DB_PORT", int, None),
+    "db_sslmode_local": ("DatabaseLocal", "DB_SSLMODE", str, None),
+    # Database Supabase
+    "db_user_supabase": ("DatabaseSupabase", "DB_USER", str, None),
+    "db_port_supabase": ("DatabaseSupabase", "DB_PORT", int, None),
+    "db_sslmode_supabase": ("DatabaseSupabase", "DB_SSLMODE", str, None),
+    "db_name_supabase": ("DatabaseSupabase", "DB_NAME", str, None),
+    "db_host_supabase": ("DatabaseSupabase", "DB_HOST", str, None),
+    # Paths
+    "report_path": ("Paths", "REPORT_PATH", str, None),
+    # Injuries
+    "nba_injury_reports_url": ("Injuries", "NBA_INJURY_REPORTS_URL", str, None),
+    # Refs
+    "nba_official_assignments_url": ("Refs", "NBA_OFFICIAL_ASSIGNMENTS_URL", str, None),
+    # Odds
+    "odds_data_folder": ("Odds", "ODDS_DATA_FOLDER", str, None),
+    "odds_base_url": ("Odds", "BASE_URL", str, None),
+    "odds_save_pickle": ("Odds", "SAVE_ODDS_PICKLE", bool, None),
+    "odds_pickle_path": ("Odds", "ODDS_PICKLE_PATH", str, None),
+    # Secrets (not in config.ini, must be in secrets file or env vars)
+    "odds_api_key": ("Odds", "ODDS_API_KEY", "secret", None),
+    "db_password": ("DatabaseSupabase", "DB_PASSWORD", "secret", None),
+    # S3 (Note: s3_aws_profile has custom @property logic below)
+    "s3_aws_region": ("S3", "AWS_REGION", str, None),
+    "s3_bucket": ("S3", "BUCKET", str, None),
+    "s3_models_prefix": ("S3", "MODELS_PREFIX", str, None),
+    "s3_regressor_full_dataset_prefix": (
+        "S3",
+        "REGRESSOR_FULL_DATASET_PREFIX",
+        str,
+        None,
+    ),
+    "s3_regressor_recent_games_prefix": (
+        "S3",
+        "REGRESSOR_RECENT_GAMES_PREFIX",
+        str,
+        None,
+    ),
+    "s3_local_model_cache_dir": ("S3", "LOCAL_MODEL_CACHE_DIR", str, None),
+}
 
 
 class Settings:
@@ -33,6 +119,54 @@ class Settings:
         secrets_path = Path(secrets_path) if secrets_path else SECRETS_FILE
         if secrets_path.exists():
             self.config.read(secrets_path)
+
+        # Cache for resolved values
+        self._cache: dict[str, Any] = {}
+
+    def __getattr__(self, name: str) -> Any:
+        """
+        Dynamically resolve configuration values based on the schema.
+
+        This method is called when an attribute is not found through normal lookup.
+        It checks the CONFIG_SCHEMA and resolves the value from the config file.
+        """
+        # Avoid infinite recursion for special attributes
+        if name.startswith("_") or name in ("config", "_cache"):
+            raise AttributeError(
+                f"'{type(self).__name__}' object has no attribute '{name}'"
+            )
+
+        # Check cache first
+        if name in self._cache:
+            return self._cache[name]
+
+        # Check if this property is in the schema
+        if name not in CONFIG_SCHEMA:
+            raise AttributeError(
+                f"'{type(self).__name__}' object has no attribute '{name}'"
+            )
+
+        section, key, value_type, default = CONFIG_SCHEMA[name]
+
+        # Handle secrets
+        if value_type == "secret":
+            env_var = key  # Environment variable name
+            value = self._get_secret(
+                section, key, env_var, required=default is None, fallback=default
+            )
+        # Handle booleans
+        elif value_type is bool:
+            value = self.config.getboolean(section, key, fallback=default)
+        # Handle integers
+        elif value_type is int:
+            value = self.config.getint(section, key, fallback=default)
+        # Handle strings
+        else:
+            value = self.config.get(section, key, fallback=default)
+
+        # Cache the result
+        self._cache[name] = value
+        return value
 
     # -------------------------------------------------------------------------
     # Secret resolver
@@ -72,118 +206,9 @@ class Settings:
 
         return ""
 
-    # =========================================================================
-    # PATHS
-    # =========================================================================
-
-    @property
-    def output_path(self) -> str:
-        """Directory for saving prediction outputs."""
-        return self.config.get("Paths", "OUTPUT_PATH", fallback="./Predictions/")
-
-    @property
-    def regressor_model_path(self) -> str:
-        """Path to the trained regressor model file."""
-        return self.config.get(
-            "Paths", "REGRESSOR_PATH", fallback="./model/production_regressor_xgb.pkl"
-        )
-
-    @property
-    def classifier_model_path(self) -> str:
-        """Path to the trained classifier model file."""
-        return self.config.get(
-            "Paths", "CLASSIFIER_PATH", fallback="./model/production_classifier_xgb.pkl"
-        )
-
-    @property
-    def data_folder(self) -> str:
-        """Directory containing NBA game data."""
-        return self.config.get("Paths", "DATA_FOLDER", fallback="./data/")
-
-    @property
-    def report_path(self) -> str:
-        """Directory for storing injury reports."""
-        return self.config.get("Paths", "REPORT_PATH", fallback="./injury_reports/")
-
-    @property
-    def manual_data_entry_path(self) -> str:
-        """Directory for manual odds data entry (optional)."""
-        return self.config.get(
-            "Paths", "MANUAL_DATA_ENTRY_PATH", fallback="./MANUAL ODDS ENTRY/"
-        )
-
-    # =========================================================================
-    # INJURIES
-    # =========================================================================
-
-    @property
-    def nba_injury_reports_url(self) -> str:
-        """URL for fetching NBA injury reports."""
-        return self.config.get(
-            "Injuries",
-            "NBA_INJURY_REPORTS_URL",
-        )
-
-    # =========================================================================
-    # REFS
-    # =========================================================================
-
-    @property
-    def nba_official_assignments_url(self) -> str:
-        """URL for fetching NBA referee assignments."""
-        return self.config.get(
-            "Refs",
-            "NBA_OFFICIAL_ASSIGNMENTS_URL",
-        )
-
-    # =========================================================================
-    # ODDS
-    # =========================================================================
-
-    @property
-    def odds_data_folder(self) -> str:
-        """Directory for storing odds data."""
-        return self.config.get("Odds", "ODDS_DATA_FOLDER", fallback="./odds_data/")
-
-    @property
-    def odds_api_key(self) -> str:
-        # Env var in CI, secrets file locally
-        return self._get_secret("Odds", "ODDS_API_KEY", env_var="ODDS_API_KEY")
-
-    @property
-    def odds_base_url(self) -> str:
-        """Base URL for the odds API."""
-        return self.config.get(
-            "Odds",
-            "BASE_URL",
-            fallback="https://therundown-therundown-v1.p.rapidapi.com",
-        )
-
-    @property
-    def odds_save_pickle(self) -> bool:
-        """Whether to save raw odds pickles."""
-        return self.config.getboolean("Odds", "SAVE_ODDS_PICKLE", fallback=False)
-
-    @property
-    def odds_pickle_path(self) -> str | None:
-        """Path to store raw odds pickles (optional)."""
-        return self.config.get("Odds", "ODDS_PICKLE_PATH", fallback=None)
-    @property
-    def s3_aws_region(self) -> str:
-        return self.config.get("S3", "AWS_REGION", fallback="eu-west-1")
-
-    @property
-    def s3_bucket(self) -> str:
-        return self.config.get("S3", "BUCKET")
-
-    @property
-    def s3_regressor_s3_key(self) -> str:
-        return self.config.get("S3", "REGRESSOR_S3_KEY")
-
-    @property
-    def s3_regressor_meta_s3_key(self) -> str | None:
-        return self.config.get("S3", "REGRESSOR_META_S3_KEY", fallback=None)
-
+    # -------------------------------------------------------------------------
+    # Special properties with custom logic
+    # -------------------------------------------------------------------------
     @property
     def s3_aws_profile(self) -> str | None:
         """
@@ -232,8 +257,6 @@ class Settings:
         Create all necessary directories if they don't exist.
         """
         directories = [
-            self.output_path,
-            self.data_folder,
             self.report_path,
             self.odds_data_folder,
         ]
@@ -246,17 +269,15 @@ class Settings:
         """String representation of settings."""
         return (
             f"Settings(\n"
-            f"  output_path='{self.output_path}',\n"
-            f"  data_folder='{self.data_folder}',\n"
-            f"  regressor_model='{self.regressor_model_path}',\n"
-            f"  classifier_model='{self.classifier_model_path}'\n"
+            f"  db_env='{self.db_env}',\n"
+            f"  s3_bucket='{self.s3_bucket}',\n"
+            f"  report_path='{self.report_path}'\n"
             f")"
         )
 
 
 # Create a default settings instance for easy importing
 SETTINGS = Settings()
-
 
 # For backward compatibility and convenience
 def get_settings(config_path: str | None = None) -> Settings:

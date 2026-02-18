@@ -72,3 +72,27 @@ def list_s3_objects(*, s3_client, bucket: str, prefix: str) -> list[dict]:
 def load_parquet_from_bytes(b: bytes) -> pd.DataFrame:
     """Load a parquet DataFrame from bytes."""
     return pd.read_parquet(io.BytesIO(b))
+
+
+def get_first_joblib_from_prefix(*, s3_client, bucket: str, prefix: str) -> str | None:
+    """
+    Find the first .joblib file under an S3 prefix.
+
+    Args:
+        s3_client: Boto3 S3 client
+        bucket: S3 bucket name
+        prefix: S3 prefix to search under
+
+    Returns:
+        Full S3 key of the first .joblib file found, or None if none exist
+    """
+    objects = list_s3_objects(s3_client=s3_client, bucket=bucket, prefix=prefix)
+
+    # Filter for .joblib files and sort by key name
+    joblib_files = [obj["Key"] for obj in objects if obj["Key"].endswith(".joblib")]
+
+    if not joblib_files:
+        return None
+
+    # Return the first one (sorted alphabetically)
+    return sorted(joblib_files)[0]

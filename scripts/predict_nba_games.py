@@ -1,5 +1,4 @@
-from datetime import datetime
-from pathlib import Path
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from nba_ou.config.settings import SETTINGS
@@ -9,18 +8,18 @@ from nba_ou.create_training_data.create_df_to_predict import (
 from nba_ou.create_training_data.get_all_info_for_scheduled_games import (
     get_all_info_for_scheduled_games,
 )
-from nba_ou.prediction.prediction import load_and_predict_model_for_nba_games
+
+# from models import predict_nba_games, save_predictions_to_excel
+from nba_ou.postgre_db.update_all.update_all_databases import update_all_databases
+from nba_ou.prediction.prediction import (
+    load_s3_model_and_predict,
+)
 from nba_ou.prediction.prediction_tabpfn_client import (
     load_and_predict_tabpfn_client_for_nba_games,
 )
 from nba_ou.utils.s3_models import (
-    load_joblib_from_bytes,
     make_s3_client,
-    read_s3_object_bytes,
 )
-
-# from models import predict_nba_games, save_predictions_to_excel
-from scripts.update_databases.update_all_databases import update_all_databases
 
 
 def print_banner(date_to_predict: str) -> None:
@@ -61,12 +60,14 @@ def predict_nba_games():
     6. Saves results to Excel
     """
 
-    date_to_predict = datetime.now(ZoneInfo("US/Pacific")).strftime("%Y-%m-%d")
+    date_to_predict = (
+        datetime.now(ZoneInfo("US/Pacific")) + timedelta(days=1)
+    ).strftime("%Y-%m-%d")
 
     # Print welcome banner
     print_banner(date_to_predict)
     print(
-        f"  Models: regressor={SETTINGS.regressor_model_path} | classifier={SETTINGS.classifier_model_path}\n"
+        f"  S3 Models: Full Dataset={SETTINGS.s3_regressor_full_dataset_prefix} | Recent Games={SETTINGS.s3_regressor_recent_games_prefix}\n"
     )
 
     # Step 1: Update the database
@@ -124,41 +125,42 @@ def predict_nba_games():
 
     print_status(f"Found {len(df_to_predict)} game(s) to predict")
 
-    # Step 4: Generate predictions with deployed regressor
-    prediction_time= datetime.now(ZoneInfo("Europe/Madrid"))
-    print_step_header(4, "Generating Predictions (Deployed Regressor)")
-
+    # Initialize S3 client once for all model operations
     s3 = make_s3_client(profile=SETTINGS.s3_aws_profile, region=SETTINGS.s3_aws_region)
+    prediction_time = datetime.now(ZoneInfo("Europe/Madrid"))
 
-    model_bytes = read_s3_object_bytes(
-        s3_client=s3,
-        bucket=SETTINGS.s3_bucket,
-        key=SETTINGS.s3_regressor_s3_key,
-    )
-    regressor = load_joblib_from_bytes(
-        model_bytes
-    )  # Test loading the model from S3 bytes
+    # Step 4: Generate predictions with full dataset regressor
+    print_step_header(4, "Generating Predictions (Full Dataset Model)")
     try:
-        model_name = Path(SETTINGS.s3_regressor_s3_key).stem
-        model_type = type(regressor).__name__
-        model_version = "1.0"
-
-        _ = load_and_predict_model_for_nba_games(
+        _ = load_s3_model_and_predict(
+            s3_client=s3,
+            bucket=SETTINGS.s3_bucket,
+            prefix=SETTINGS.s3_regressor_full_dataset_prefix,
             df=df_to_predict,
-            regressor=regressor,
-            model_name=model_name,
-            model_type=model_type,
-            model_version=model_version,
-            prediction_time=prediction_time,
+            prediction_datetime=prediction_time,
         )
-        print_status("Predictions generated")
-
+        print_status("Full dataset predictions generated")
     except Exception as e:
-        print_status(f"Failed to generate predictions: {e}", ok=False)
+        print_status(f"Failed to generate full dataset predictions: {e}", ok=False)
         raise
 
-    # Step 5: Generate predictions with TabPFN client
-    print_step_header(5, "Generating Predictions (TabPFN Client)")
+    # Step 5: Generate predictions with recent games regressor
+    print_step_header(5, "Generating Predictions (Recent Games Model)")
+    try:
+        _ = load_s3_model_and_predict(
+            s3_client=s3,
+            bucket=SETTINGS.s3_bucket,
+            prefix=SETTINGS.s3_regressor_recent_games_prefix,
+            df=df_to_predict,
+            prediction_datetime=prediction_time,
+        )
+        print_status("Recent games predictions generated")
+    except Exception as e:
+        print_status(f"Failed to generate recent games predictions: {e}", ok=False)
+        raise
+
+    # Step 6: Generate predictions with TabPFN client
+    print_step_header(6, "Generating Predictions (TabPFN Client)")
     try:
         _ = load_and_predict_tabpfn_client_for_nba_games(
             df=df_to_predict,

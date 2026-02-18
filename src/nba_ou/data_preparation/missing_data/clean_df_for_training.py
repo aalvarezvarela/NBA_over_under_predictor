@@ -429,7 +429,7 @@ def clean_dataframe_for_training(
     )
     if drop_all_na_rows:
         if verbose >= 1:
-            print("\nDropping rows that are all NaN...")
+            print("\nDropping rows that contain NaN...")
 
         initial_rows = len(df_cleaned)
         df_cleaned = df_cleaned.dropna()

@@ -1,7 +1,7 @@
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import joblib
 import numpy as np
 import pandas as pd
 from nba_ou.data_preparation.missing_data.clean_df_for_training import (
@@ -9,6 +9,11 @@ from nba_ou.data_preparation.missing_data.clean_df_for_training import (
 )
 from nba_ou.postgre_db.predictions.create.create_nba_predictions_db import (
     upload_predictions_to_postgre,
+)
+from nba_ou.utils.s3_models import (
+    get_first_joblib_from_prefix,
+    load_joblib_from_bytes,
+    read_s3_object_bytes,
 )
 
 
@@ -163,3 +168,66 @@ def load_and_predict_model_for_nba_games(
     upload_predictions_to_postgre(df_summary_clean)
 
     return df_summary_clean
+
+
+def load_s3_model_and_predict(
+    *,
+    s3_client,
+    bucket: str,
+    prefix: str,
+    df: pd.DataFrame,
+    prediction_datetime: datetime | None = None,
+) -> pd.DataFrame:
+    """
+    Load the first .joblib model from an S3 prefix and generate predictions.
+
+    This helper function reduces code duplication by combining:
+    1. Finding the first .joblib file in an S3 prefix
+    2. Loading the model from S3
+    3. Generating predictions
+
+    Args:
+        s3_client: Boto3 S3 client
+        bucket: S3 bucket name
+        prefix: S3 prefix to search for model
+        df: DataFrame containing game data to predict
+        prediction_datetime: Timestamp for predictions (defaults to now in Europe/Madrid)
+
+    Returns:
+        DataFrame containing predictions
+
+    Raises:
+        FileNotFoundError: If no .joblib file is found in the prefix
+    """
+    # Find the first .joblib file in the prefix
+    model_key = get_first_joblib_from_prefix(
+        s3_client=s3_client,
+        bucket=bucket,
+        prefix=prefix,
+    )
+
+    if not model_key:
+        raise FileNotFoundError(f"No .joblib file found in S3 prefix: {prefix}")
+
+    # Load the model from S3
+    model_bytes = read_s3_object_bytes(
+        s3_client=s3_client,
+        bucket=bucket,
+        key=model_key,
+    )
+    regressor = load_joblib_from_bytes(model_bytes)
+
+    # Extract model metadata from the S3 key
+    model_name = Path(model_key).stem
+    model_type = type(regressor).__name__
+    model_version = "1.0"
+
+    # Generate predictions
+    return load_and_predict_model_for_nba_games(
+        df=df,
+        regressor=regressor,
+        model_name=model_name,
+        model_type=model_type,
+        model_version=model_version,
+        prediction_time=prediction_datetime,
+    )
