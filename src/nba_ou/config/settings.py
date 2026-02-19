@@ -39,6 +39,8 @@ SECRETS_FILE = PROJECT_ROOT / "nba_ou/config.secrets.ini"
 # Configuration schema: maps property names to (section, key, type, default)
 # type can be: str, bool, int, secret
 CONFIG_SCHEMA = {
+    # Scraping / Browser
+    "headless": ("Scraping", "HEADLESS", bool, True),
     # Database
     "db_env": ("Database", "DB_ENV", str, None),
     "db_name": ("Database", "DB_NAME", str, None),

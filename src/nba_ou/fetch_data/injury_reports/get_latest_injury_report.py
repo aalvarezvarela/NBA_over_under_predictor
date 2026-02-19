@@ -41,7 +41,8 @@ def create_robust_session():
     return session
 
 
-def get_latest_pdf(nba_injury_report_url, save_path="latest_report_today.pdf"):
+def get_latest_pdf(nba_injury_report_url) -> bytes:
+    """Download the latest injury report PDF and return it as bytes."""
     session = create_robust_session()
     try:
         # Fetch the webpage content with improved headers and retry logic
@@ -60,7 +61,7 @@ def get_latest_pdf(nba_injury_report_url, save_path="latest_report_today.pdf"):
 
         if not pdf_links:
             print("No PDF links found.")
-            return
+            raise ValueError("No PDF links found.")
 
         # Filter only 'Injury-Report' links (case insensitive)
         injury_reports = [link for link in pdf_links if "injury-report" in link.lower()]
@@ -106,11 +107,8 @@ def get_latest_pdf(nba_injury_report_url, save_path="latest_report_today.pdf"):
         pdf_response = session.get(latest_pdf_url, timeout=30, allow_redirects=True)
         pdf_response.raise_for_status()
 
-        # Save the PDF to disk
-        with open(save_path, "wb") as file:
-            file.write(pdf_response.content)
-
-        print(f"PDF saved as {save_path}")
+        print(f"PDF downloaded successfully ({len(pdf_response.content)} bytes)")
+        return pdf_response.content
 
     except requests.exceptions.Timeout:
         print("Timeout error: The request took too long")
@@ -169,9 +167,13 @@ def classify_token(token, category):
     return False
 
 
-def read_injury_report(pdf_path):
-    # Path to your PDF fileC
-    doc = pymupdf.open(pdf_path)
+def read_injury_report(pdf_data):
+    """Read injury report from PDF bytes or file path."""
+    # Open PDF from bytes if bytes-like, otherwise treat as file path
+    if isinstance(pdf_data, bytes):
+        doc = pymupdf.open(stream=pdf_data, filetype="pdf")
+    else:
+        doc = pymupdf.open(pdf_data)
     col_names = [
         "Game Date",
         "Game Time",
@@ -276,20 +278,31 @@ def read_injury_report(pdf_path):
     return df
 
 
-def retrieve_injury_report_as_df(nba_injury_reports_url, reports_path):
+def retrieve_injury_report_as_df(nba_injury_reports_url, reports_path=None):
     """
-    Retrieves the latest injury report PDF from the NBA website,
-    extracts the data, and saves it to a CSV file.
-    """
-    game_date = datetime.now().strftime("%Y-%m-%d")
-    # Ensure the reports directory exists
-    os.makedirs(reports_path, exist_ok=True)
-    # Get the latest PDF
-    pdf_name = f"latest_report_{game_date}.pdf"
-    pdf_path = os.path.join(reports_path, pdf_name)
-    get_latest_pdf(nba_injury_reports_url, pdf_path)
+    Retrieves the latest injury report PDF from the NBA website and extracts the data.
 
-    # Read the PDF and extract data
-    df_report = read_injury_report(pdf_path)
+    Args:
+        nba_injury_reports_url: URL to the NBA injury reports page
+        reports_path: Optional path to save a copy of the PDF. If None, PDF is not saved.
+
+    Returns:
+        DataFrame with injury report data
+    """
+    # Download the PDF as bytes
+    pdf_bytes = get_latest_pdf(nba_injury_reports_url)
+
+    # Optionally save a copy to disk
+    if reports_path:
+        game_date = datetime.now().strftime("%Y-%m-%d")
+        os.makedirs(reports_path, exist_ok=True)
+        pdf_name = f"latest_report_{game_date}.pdf"
+        pdf_path = os.path.join(reports_path, pdf_name)
+        with open(pdf_path, "wb") as f:
+            f.write(pdf_bytes)
+        print(f"PDF saved to {pdf_path}")
+
+    # Read the PDF from bytes and extract data
+    df_report = read_injury_report(pdf_bytes)
 
     return df_report

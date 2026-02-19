@@ -322,7 +322,7 @@ async def extract_sbr_moneyline_full_game_rows(
 
       const parsePrice = (txt) => {
         const t = String(txt || "");
-        const m = t.match(/([+-]\d{2,4})/);
+        const m = t.match(/([+-]\d{2,5})/);
         return m ? m[1] : null;
       };
 

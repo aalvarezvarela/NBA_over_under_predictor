@@ -61,7 +61,7 @@ def load_and_predict_model_for_nba_games(
             "MATCHUP_TEAM_HOME",
         ],
         keep_all_cols=True,
-        verbose=False,
+        verbose=2,
         strict_mode=True,
     )
 
@@ -75,6 +75,15 @@ def load_and_predict_model_for_nba_games(
     missing_features = [
         feat for feat in required_features if feat not in df_predictable.columns
     ]
+
+    # Handle IS_TRAINING_DATA if it's missing - create it with all False values
+    if "IS_TRAINING_DATA" in missing_features:
+        print(
+            "⚠️  Warning: 'IS_TRAINING_DATA' column is missing. Creating it with default False values for prediction."
+        )
+        df_predictable["IS_TRAINING_DATA"] = False
+        missing_features = [f for f in missing_features if f != "IS_TRAINING_DATA"]
+
     if missing_features:
         raise ValueError(
             f"Missing required features for prediction: {missing_features}"
@@ -123,7 +132,12 @@ def load_and_predict_model_for_nba_games(
     if prediction_datetime is None:
         prediction_datetime = datetime.now(ZoneInfo("Europe/Madrid"))
 
-    df_summary["PREDICTION_DATE"] = prediction_datetime
+    df_summary["PREDICTION_DATETIME"] = prediction_datetime
+    df_summary["PREDICTION_DATE"] = prediction_datetime.strftime("%Y-%m-%d %H:%M:%S")
+
+    # Add score columns (will be None for predictions, filled in later with actual results)
+    df_summary["HOME_PTS"] = None
+    df_summary["AWAY_PTS"] = None
 
     # Calculate time to match in minutes
     def ensure_timezone_aware(dt_value):
@@ -152,7 +166,7 @@ def load_and_predict_model_for_nba_games(
     game_time_aware = df_summary["GAME_TIME"].apply(ensure_timezone_aware)
 
     df_summary["TIME_TO_MATCH_MINUTES"] = (
-        game_time_aware - df_summary["PREDICTION_DATE"]
+        game_time_aware - df_summary["PREDICTION_DATETIME"]
     ).dt.total_seconds() / 60
     df_summary["TIME_TO_MATCH_MINUTES"] = (
         df_summary["TIME_TO_MATCH_MINUTES"].round(0).astype(int)
@@ -176,7 +190,7 @@ def load_s3_model_and_predict(
     bucket: str,
     prefix: str,
     df: pd.DataFrame,
-    model_id :str,
+    model_id: str,
     prediction_datetime: datetime | None = None,
 ) -> pd.DataFrame:
     """
@@ -236,5 +250,5 @@ def load_s3_model_and_predict(
         model_name=model_name,
         model_type=model_type,
         model_version=model_version,
-        prediction_time=prediction_datetime,
+        prediction_datetime=prediction_datetime,
     )

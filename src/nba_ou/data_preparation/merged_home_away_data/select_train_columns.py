@@ -133,7 +133,9 @@ FORBIDDEN_COLUMNS = [
 ]
 
 
-def select_training_columns(df_merged, original_columns, debug=True):
+def select_training_columns(
+    df_merged, original_columns, debug=False, keep_game_time=False
+):
     """
     Select and organize columns for training dataset.
 
@@ -141,6 +143,7 @@ def select_training_columns(df_merged, original_columns, debug=True):
         df_merged (pd.DataFrame): Merged home/away DataFrame with all features
         original_columns (list): List of original column names to check against
         debug (bool): If True, print information about deleted columns
+        keep_game_time (bool): If True, keep GAME_TIME column for prediction purposes. Default: False
 
     Returns:
         pd.DataFrame: DataFrame with selected columns for training
@@ -171,6 +174,10 @@ def select_training_columns(df_merged, original_columns, debug=True):
     columns_info_before.extend(
         [col for col in df_merged.columns if col.startswith("TOTAL_LINE_")]
     )
+
+    # Add GAME_TIME if requested (for prediction purposes)
+    if keep_game_time and "GAME_TIME" in df_merged.columns:
+        columns_info_before.append("GAME_TIME")
 
     # Filter to only include columns that actually exist in df_merged
     columns_to_select = [col for col in columns_info_before if col in df_merged.columns]

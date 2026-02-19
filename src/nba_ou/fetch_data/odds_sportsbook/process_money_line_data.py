@@ -48,16 +48,22 @@ def build_one_game_row_from_moneyline_group(g: pd.DataFrame) -> dict:
     # Split moneyline prices into away/home per book
     for book in ML_BOOKS:
         price_col = f"{book}_price"
-        out[f"ml_{book}_price_away"] = (
+
+        # Get away price and replace -10000 with NA
+        away_price = (
             _to_num(away_row[price_col]).iloc[0]
             if (len(away_row) and price_col in g.columns)
             else pd.NA
         )
-        out[f"ml_{book}_price_home"] = (
+        out[f"ml_{book}_price_away"] = pd.NA if away_price == -10000 else away_price
+
+        # Get home price and replace -10000 with NA
+        home_price = (
             _to_num(home_row[price_col]).iloc[0]
             if (len(home_row) and price_col in g.columns)
             else pd.NA
         )
+        out[f"ml_{book}_price_home"] = pd.NA if home_price == -10000 else home_price
 
     return out
 

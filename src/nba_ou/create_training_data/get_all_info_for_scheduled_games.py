@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from nba_ou.config.constants import TEAM_ID_MAP, TEAM_NAME_STANDARDIZATION
+from nba_ou.config.settings import SETTINGS
 from nba_ou.data_preparation.referees.process_refs_scheduled_game import (
     process_scheduled_referee_assignments,
 )
@@ -107,7 +108,7 @@ def merge_odds_with_scheduled_games(
 
 
 def get_yahoo_prediction_data(
-    date_to_predict: str, scheduled_games: pd.DataFrame
+    date_to_predict: str, scheduled_games: pd.DataFrame, *, headless: bool
 ) -> pd.DataFrame:
     """Get Yahoo odds data for the prediction date.
 
@@ -127,7 +128,7 @@ def get_yahoo_prediction_data(
 
     # Scrape both dates to account for timezone differences
     days_to_scrape = [base_date, next_date]
-    df_yahoo = asyncio.run(scrape_yahoo_days(days_to_scrape, headless=False))
+    df_yahoo = asyncio.run(scrape_yahoo_days(days_to_scrape, headless=headless))
 
     # Check if we got any data
     if df_yahoo.empty:
@@ -148,7 +149,7 @@ def get_yahoo_prediction_data(
 
 
 def get_sportsbook_prediction_data(
-    date_to_predict: str, scheduled_games: pd.DataFrame
+    date_to_predict: str, scheduled_games: pd.DataFrame, *, headless: bool
 ) -> pd.DataFrame:
     """Get Sportsbook Review odds data for the prediction date.
 
@@ -166,7 +167,9 @@ def get_sportsbook_prediction_data(
 
     # Scrape both dates to account for timezone differences
     days_to_scrape = [base_date]
-    df_sportsbook = asyncio.run(scrape_sportsbook_days(days_to_scrape, headless=False))
+    df_sportsbook = asyncio.run(
+        scrape_sportsbook_days(days_to_scrape, headless=headless)
+    )
 
     # Check if we got any data
     if df_sportsbook.empty:
@@ -186,7 +189,8 @@ def get_sportsbook_prediction_data(
 def get_all_info_for_scheduled_games(
     date_to_predict: str,
     nba_injury_reports_url,
-    save_reports_path,
+    save_reports_path = None,
+    headless: bool | None = None,
 ) -> dict:
     """Get all information needed for scheduled games prediction.
 
@@ -197,6 +201,7 @@ def get_all_info_for_scheduled_games(
         date_to_predict (str): Date in format 'YYYY-MM-DD'
         nba_injury_reports_url: URL for NBA injury reports
         save_reports_path: Path to save injury reports
+        headless (bool | None): Playwright mode. If None, uses SETTINGS.headless.
 
     Returns:
         dict: Dictionary containing:
@@ -210,6 +215,9 @@ def get_all_info_for_scheduled_games(
         date_to_predict = pd.Timestamp.now(tz=ZoneInfo("US/Eastern")).strftime(
             "%Y-%m-%d"
         )
+    if headless is None:
+        headless = SETTINGS.headless
+
     # First Get the games itself
     scheduled_games = get_schedule_games(date_to_predict)
     if scheduled_games.empty:
@@ -255,12 +263,14 @@ def get_all_info_for_scheduled_games(
     if len(games_not_updated) == len(scheduled_games):
         raise ValueError("No games were updated with injury data")
 
+    print("Fetched and processed scheduled games, referees, and injuries")
+    print("Processing odds data for scheduled games...")
     # Fetch Yahoo odds data for the scheduled games using the temp dataframe
     df_odds_yahoo_scheduled = get_yahoo_prediction_data(
-        date_to_predict, scheduled_games_for_merge
+        date_to_predict, scheduled_games_for_merge, headless=headless
     )
     df_odds_sportsbook_scheduled = get_sportsbook_prediction_data(
-        date_to_predict, scheduled_games_for_merge
+        date_to_predict, scheduled_games_for_merge, headless=headless
     )
 
     return {

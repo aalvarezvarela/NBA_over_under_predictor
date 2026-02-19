@@ -7,15 +7,19 @@ General utility functions for use across NBA Over/Under Predictor modules.
 from datetime import datetime
 
 
-def get_season_year_from_date(date: datetime) -> int:
+def get_season_year_from_date(date: datetime | str) -> int:
     """
     Given a date, returns the starting year of the NBA season it belongs to.
 
     Args:
-        date (datetime): The date to evaluate.
+        date (datetime or str): The date to evaluate as datetime object or string ('YYYY-MM-DD').
     Returns:
         int: The starting year of the NBA season.
     """
+    # Convert to datetime if string
+    if isinstance(date, str):
+        date = datetime.strptime(date, "%Y-%m-%d")
+
     year = date.year
     month = date.month
 
@@ -56,8 +60,8 @@ def get_nba_season_nullable_from_date(date):
 
     # If we are before September, we are still in the previous season
     if date.month < 9:
-        season = f"{year-1}-{str(year)[-2:]}"
+        season = f"{year - 1}-{str(year)[-2:]}"
     else:
-        season = f"{year}-{str(year+1)[-2:]}"
+        season = f"{year}-{str(year + 1)[-2:]}"
 
     return season

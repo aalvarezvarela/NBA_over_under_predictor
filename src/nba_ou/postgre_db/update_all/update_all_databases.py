@@ -1,5 +1,6 @@
 import time
 
+from nba_ou.config.settings import SETTINGS
 from nba_ou.fetch_data.live_games.live_games import get_live_game_ids
 from nba_ou.postgre_db.games.update_games.update_database import (
     update_team_players_database,
@@ -19,7 +20,7 @@ def update_all_databases(
     start_season_year: int = 2006,
     end_season_year: int = 2025,
     only_new_games: bool = True,
-    headless: bool = False,
+    headless: bool | None = None,
     sleep_seconds_between_seasons: float = 2.0,
 ) -> None:
     """
@@ -31,6 +32,9 @@ def update_all_databases(
         end_season_year: Last season start year (2024 -> 2024-25).
         sleep_seconds_between_seasons: Small pause to be polite with the NBA API.
     """
+    if headless is None:
+        headless = SETTINGS.headless
+
     games_id_to_exclude = get_live_game_ids()
 
     for y in range(start_season_year, end_season_year + 1):

@@ -52,7 +52,7 @@ def predict_nba_games_tabpfn() -> None:
             start_season_year=int(season_to_update),
             end_season_year=int(season_to_update),
             only_new_games=True,
-            headless=True,
+            headless=SETTINGS.headless,
         )
         print_status("Databases updated")
     except Exception as e:
@@ -66,6 +66,7 @@ def predict_nba_games_tabpfn() -> None:
             date_to_predict=date_to_predict,
             nba_injury_reports_url=SETTINGS.nba_injury_reports_url,
             save_reports_path=SETTINGS.report_path,
+            headless=SETTINGS.headless,
         )
         print_status("Fetched scheduled games, refs, injuries and odds")
         if scheduled_data["scheduled_games"].empty:

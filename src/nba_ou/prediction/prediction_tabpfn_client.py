@@ -23,11 +23,11 @@ from nba_ou.utils.s3_models import (
 def _select_latest_historical_train_key(s3_client, bucket: str, prefix: str) -> str:
     """Select the latest historical parquet by YYYYMMDD suffix in key name."""
     objects = list_s3_objects(s3_client=s3_client, bucket=bucket, prefix=prefix)
-    parquet_objects = [obj for obj in objects if obj.get("Key", "").endswith(".parquet")]
+    parquet_objects = [
+        obj for obj in objects if obj.get("Key", "").endswith(".parquet")
+    ]
     if not parquet_objects:
-        raise FileNotFoundError(
-            f"No parquet files found in s3://{bucket}/{prefix}"
-        )
+        raise FileNotFoundError(f"No parquet files found in s3://{bucket}/{prefix}")
 
     pattern = re.compile(r"historical_training_data_until_(\d{8})\.parquet$")
 
@@ -152,15 +152,15 @@ def load_and_predict_tabpfn_client_for_nba_games(
             "MATCHUP_TEAM_HOME",
         ],
         keep_all_cols=True,
-        verbose=False)
+        verbose=2,
+    )
 
     if "TOTAL_OVER_UNDER_LINE" not in cleaned_df.columns:
         raise ValueError("TOTAL_OVER_UNDER_LINE is required for prediction")
 
-    cleaned_df["LINE_ERROR"] = (
-        pd.to_numeric(cleaned_df.get("TOTAL_POINTS"), errors="coerce")
-        - pd.to_numeric(cleaned_df["TOTAL_OVER_UNDER_LINE"], errors="coerce")
-    )
+    cleaned_df["LINE_ERROR"] = pd.to_numeric(
+        cleaned_df.get("TOTAL_POINTS"), errors="coerce"
+    ) - pd.to_numeric(cleaned_df["TOTAL_OVER_UNDER_LINE"], errors="coerce")
 
     prediction_day = pd.to_datetime(prediction_date, errors="coerce")
     if pd.isna(prediction_day):
@@ -169,9 +169,9 @@ def load_and_predict_tabpfn_client_for_nba_games(
 
     game_dates = pd.to_datetime(cleaned_df["GAME_DATE"], errors="coerce").dt.date
     predict_mask = game_dates == prediction_day
-    
+
     df_predictable = cleaned_df[predict_mask].copy()
-    
+
     if df_predictable.empty:
         raise ValueError(
             "No games found for TabPFN prediction after merge/cleaning for "
@@ -217,7 +217,9 @@ def load_and_predict_tabpfn_client_for_nba_games(
 
     TabPFNRegressor = _init_tabpfn_client()
     regressor = TabPFNRegressor()
-    regressor.fit(X_train, y_train)
+
+    print("Remove This line after testing TabPFN client fit/predict")
+    regressor.fit(X_train[:100], y_train[:100])  # Temporary limit for testing
     pred_line_error = regressor.predict(X_pred)
 
     df_predictable["PRED_LINE_ERROR"] = pred_line_error
@@ -226,10 +228,9 @@ def load_and_predict_tabpfn_client_for_nba_games(
         "OVER",
         np.where(df_predictable["PRED_LINE_ERROR"] < 0, "UNDER", "PUSH"),
     )
-    df_predictable["PRED_TOTAL_POINTS"] = (
-        pd.to_numeric(df_predictable["TOTAL_OVER_UNDER_LINE"], errors="coerce")
-        + pd.to_numeric(df_predictable["PRED_LINE_ERROR"], errors="coerce")
-    )
+    df_predictable["PRED_TOTAL_POINTS"] = pd.to_numeric(
+        df_predictable["TOTAL_OVER_UNDER_LINE"], errors="coerce"
+    ) + pd.to_numeric(df_predictable["PRED_LINE_ERROR"], errors="coerce")
 
     df_predictable.rename(columns={"MATCHUP_TEAM_HOME": "MATCHUP"}, inplace=True)
     if "GAME_DATE" in df_predictable.columns:
@@ -254,7 +255,8 @@ def load_and_predict_tabpfn_client_for_nba_games(
         raise ValueError(f"Missing summary columns for upload: {missing_summary}")
 
     df_summary = df_predictable[summary_columns].copy()
-    df_summary["PREDICTION_DATE"] = prediction_datetime
+    df_summary["PREDICTION_DATETIME"] = prediction_datetime
+    df_summary["PREDICTION_DATE"] = pd.to_datetime(prediction_datetime).date()
 
     def ensure_timezone_aware(dt_value):
         if pd.isna(dt_value):
@@ -274,7 +276,7 @@ def load_and_predict_tabpfn_client_for_nba_games(
 
     game_time_aware = df_summary["GAME_TIME"].apply(ensure_timezone_aware)
     df_summary["TIME_TO_MATCH_MINUTES"] = (
-        game_time_aware - df_summary["PREDICTION_DATE"]
+        game_time_aware - df_summary["PREDICTION_DATETIME"]
     ).dt.total_seconds() / 60
     df_summary["TIME_TO_MATCH_MINUTES"] = (
         pd.to_numeric(df_summary["TIME_TO_MATCH_MINUTES"], errors="coerce")

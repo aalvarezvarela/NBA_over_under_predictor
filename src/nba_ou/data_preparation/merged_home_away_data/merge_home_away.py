@@ -71,12 +71,13 @@ def deduplicate_game_level_columns(df_merged):
     return df_merged
 
 
-def merge_home_away_data(df):
+def merge_home_away_data(df, todays_prediction=False):
     """
     Merge home and away team data and prepare final training features.
 
     Args:
         df (pd.DataFrame): Team statistics DataFrame with injury data attached
+        todays_prediction (bool): If True, includes GAME_TIME in static columns. Default: False
 
     Returns:
         pd.DataFrame: Final training-ready DataFrame
@@ -122,6 +123,10 @@ def merge_home_away_data(df):
         "SEASON_YEAR",
         "IS_OVERTIME",
     ]
+
+    # Include GAME_TIME for today's predictions
+    if todays_prediction and "GAME_TIME" in df.columns:
+        static_columns.append("GAME_TIME")
 
     df_home = df[df["HOME"]].copy().drop(columns="HOME")
     df_away = df[~df["HOME"]].copy().drop(columns="HOME")

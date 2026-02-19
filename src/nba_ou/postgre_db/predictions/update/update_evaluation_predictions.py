@@ -1,8 +1,11 @@
 import numpy as np
 import pandas as pd
+from nba_ou.postgre_db.config.db_config import (
+    connect_nba_db,
+    get_schema_name_predictions,
+)
 from psycopg import sql
 
-from nba_ou.postgre_db.config.db_config import connect_nba_db, get_schema_name_predictions
 
 def get_games_with_total_scored_points(
     date: str = None,
@@ -236,14 +239,16 @@ def add_ou_betting_metrics(
 
     # both agree profit
     df["profit_both_agree"] = df.apply(
-        lambda row: profit_from_pick(
-            row["both_agree_side"],
-            row["both_agree_correct"],
-            row[over_odds_col],
-            row[under_odds_col],
-        )
-        if pd.notna(row["both_agree_side"])
-        else 0.0,
+        lambda row: (
+            profit_from_pick(
+                row["both_agree_side"],
+                row["both_agree_correct"],
+                row[over_odds_col],
+                row[under_odds_col],
+            )
+            if pd.notna(row["both_agree_side"])
+            else 0.0
+        ),
         axis=1,
     )
 

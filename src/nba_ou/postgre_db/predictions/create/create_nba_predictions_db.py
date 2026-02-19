@@ -1,17 +1,27 @@
-import pandas as pd
 import psycopg
+from typing import TYPE_CHECKING
 from nba_ou.postgre_db.config.db_config import (
     connect_nba_db,
-    get_schema_name_predictions,
 )
 from psycopg import sql
+
+if TYPE_CHECKING:
+    import pandas as pd
+
+PREDICTIONS_SCHEMA = "nba_predictions"
+PREDICTIONS_TABLE = "nba_predictions"
+
+
+def get_predictions_schema_and_table() -> tuple[str, str]:
+    """Return the canonical predictions schema/table names."""
+    return PREDICTIONS_SCHEMA, PREDICTIONS_TABLE
 
 
 def schema_exists(schema_name: str = None) -> bool:
     """Check if the predictions schema exists in the database."""
     try:
         if schema_name is None:
-            schema_name = get_schema_name_predictions()
+            schema_name, _ = get_predictions_schema_and_table()
 
         conn = connect_nba_db()
         with conn.cursor() as cur:
@@ -37,19 +47,30 @@ def create_prediction_schema_if_not_exists(
     conn.commit()
 
 
-def create_predictions_table():
+def create_predictions_table(drop: bool = False):
     """
-    Create the nba_predictions table inside schema SCHEMA_NAME_PREDICTIONS.
+    Create table nba_predictions inside schema nba_predictions.
+
+    Args:
+        drop (bool): If True, drops the existing table before creating it. Default: False
     """
 
-    schema = get_schema_name_predictions()
-    table = schema
+    schema, table = get_predictions_schema_and_table()
     conn = connect_nba_db()
 
     try:
         create_prediction_schema_if_not_exists(conn, schema)
 
         with conn.cursor() as cur:
+            # Drop table if requested
+            if drop:
+                cur.execute(
+                    sql.SQL("DROP TABLE IF EXISTS {}.{} CASCADE").format(
+                        sql.Identifier(schema), sql.Identifier(table)
+                    )
+                )
+                print(f"Dropped existing table '{schema}.{table}'")
+
             cur.execute(
                 sql.SQL(
                     """
@@ -65,32 +86,34 @@ def create_predictions_table():
                         pred_line_error NUMERIC NOT NULL,
                         pred_total_points NUMERIC NOT NULL,
                         pred_pick TEXT,
-                        model_name TEXT,
+                        model_name TEXT NOT NULL,
                         model_type TEXT,
                         model_version TEXT,
-                        prediction_date TEXT NOT NULL,
+                        prediction_date TEXT,
+                        prediction_datetime TIMESTAMP NOT NULL,
                         time_to_match_minutes INTEGER,
-                        total_scored_points NUMERIC
+                        total_scored_points NUMERIC,
+                        home_pts NUMERIC,
+                        away_pts NUMERIC
                     )
                     """
                 ).format(sql.Identifier(schema), sql.Identifier(table))
             )
 
-            # Unique constraint (idempotent) on (game_id, prediction_date)
+            # Unique constraint on (game_id, model_name, prediction_datetime)
+            # Always drop and recreate constraint to ensure it has correct columns
+            cur.execute(
+                sql.SQL(
+                    "ALTER TABLE {}.{} DROP CONSTRAINT IF EXISTS unique_game_prediction"
+                ).format(sql.Identifier(schema), sql.Identifier(table))
+            )
+
             cur.execute(
                 sql.SQL(
                     """
-                    DO $$
-                    BEGIN
-                        IF NOT EXISTS (
-                            SELECT 1
-                            FROM pg_constraint
-                            WHERE conname = 'unique_game_prediction'
-                        ) THEN
-                            ALTER TABLE {}.{}
-                            ADD CONSTRAINT unique_game_prediction UNIQUE (game_id, prediction_date);
-                        END IF;
-                    END $$;
+                    ALTER TABLE {}.{}
+                    ADD CONSTRAINT unique_game_prediction 
+                    UNIQUE (game_id, model_name, prediction_datetime)
                     """
                 ).format(sql.Identifier(schema), sql.Identifier(table))
             )
@@ -101,23 +124,20 @@ def create_predictions_table():
         conn.close()
 
 
-def upload_predictions_to_postgre(df: pd.DataFrame):
+def upload_predictions_to_postgre(df: "pd.DataFrame"):
     """
     Insert the summary DataFrame into schema.table nba_predictions.
-    Upserts on (game_id, prediction_date).
+    Upserts on (game_id, model_name, prediction_datetime).
     """
+    import pandas as pd
+
     create_predictions_table()
 
-    schema = get_schema_name_predictions()
-    table = schema  # convention: schema == table
+    schema, table = get_predictions_schema_and_table()
 
     conn = connect_nba_db()
 
     try:
-        # Ensure required columns exist
-        if "total_scored_points" not in df.columns:
-            df["total_scored_points"] = None
-
         # Normalize column names to match DB (lowercase in DB)
         df = df.rename(
             columns={
@@ -135,9 +155,24 @@ def upload_predictions_to_postgre(df: pd.DataFrame):
                 "MODEL_TYPE": "model_type",
                 "MODEL_VERSION": "model_version",
                 "PREDICTION_DATE": "prediction_date",
+                "PREDICTION_DATETIME": "prediction_datetime",
                 "TIME_TO_MATCH_MINUTES": "time_to_match_minutes",
+                "HOME_PTS": "home_pts",
+                "AWAY_PTS": "away_pts",
             }
         )
+
+        # If both uppercase and lowercase versions exist, keep the first non-null value.
+        duplicate_cols = df.columns[df.columns.duplicated()].unique().tolist()
+        for col in duplicate_cols:
+            dup_values = df.loc[:, df.columns == col]
+            df = df.loc[:, df.columns != col]
+            df[col] = dup_values.bfill(axis=1).iloc[:, 0]
+
+        # Ensure optional score columns exist after normalization.
+        for col in ("total_scored_points", "home_pts", "away_pts"):
+            if col not in df.columns:
+                df[col] = None
 
         # Keep only DB columns (excluding id which is SERIAL)
         columns = [
@@ -155,31 +190,45 @@ def upload_predictions_to_postgre(df: pd.DataFrame):
             "model_type",
             "model_version",
             "prediction_date",
+            "prediction_datetime",
             "time_to_match_minutes",
             "total_scored_points",
+            "home_pts",
+            "away_pts",
         ]
+
+        missing_columns = [col for col in columns if col not in df.columns]
+        if missing_columns:
+            raise ValueError(f"Missing required columns for upload: {missing_columns}")
 
         # Convert pandas NA to None
         df = df.where(pd.notna(df), None)
 
         values = [tuple(row) for row in df[columns].itertuples(index=False, name=None)]
+        if not values:
+            return
 
-        placeholders = ", ".join(["%s"] * len(columns))
-        update_assignments = ", ".join(
-            [
-                f"{col} = EXCLUDED.{col}"
-                for col in columns
-                if col not in ("game_id", "prediction_date")
-            ]
-        )
+        conflict_columns = ("game_id", "model_name", "prediction_datetime")
+        update_assignments = [
+            sql.SQL("{} = EXCLUDED.{}").format(sql.Identifier(col), sql.Identifier(col))
+            for col in columns
+            if col not in conflict_columns
+        ]
 
         insert_query = sql.SQL(
-            f"""
-            INSERT INTO {{}}.{{}} ({", ".join(columns)})
-            VALUES ({placeholders})
-            ON CONFLICT (game_id, prediction_date) DO UPDATE SET {update_assignments}
             """
-        ).format(sql.Identifier(schema), sql.Identifier(table))
+            INSERT INTO {}.{} ({})
+            VALUES ({})
+            ON CONFLICT ({}) DO UPDATE SET {}
+            """
+        ).format(
+            sql.Identifier(schema),
+            sql.Identifier(table),
+            sql.SQL(", ").join(map(sql.Identifier, columns)),
+            sql.SQL(", ").join(sql.Placeholder() for _ in columns),
+            sql.SQL(", ").join(map(sql.Identifier, conflict_columns)),
+            sql.SQL(", ").join(update_assignments),
+        )
 
         with conn.cursor() as cur:
             cur.executemany(insert_query, values)
@@ -190,5 +239,5 @@ def upload_predictions_to_postgre(df: pd.DataFrame):
 
 
 if __name__ == "__main__":
-    create_predictions_table()
+    create_predictions_table(False)
     print("nba_predictions table is ready.")

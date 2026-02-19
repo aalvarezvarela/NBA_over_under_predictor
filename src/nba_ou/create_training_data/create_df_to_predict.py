@@ -224,7 +224,7 @@ def create_df_to_predict(
         # If predicting today, go back two years from today
         older_limit_to_include = pd.Timestamp.now(
             tz=ZoneInfo("US/Pacific")
-        ) - pd.Timedelta(days=365 * 2)
+        ) - pd.Timedelta(days=365 * 1)
 
     elif older_limit_to_include is None:
         # Default to 2017 (start of 2017-18 season)
@@ -275,7 +275,7 @@ def create_df_to_predict(
         injury_dict_scheduled=injury_dict_scheduled if todays_prediction else None,
     )
 
-    df_merged = merge_home_away_data(df)
+    df_merged = merge_home_away_data(df, todays_prediction=todays_prediction)
 
     # Merge remaining odds data (Yahoo percentages, other sportsbooks, etc.)
     df_merged = merge_remaining_odds_by_game_id(
@@ -291,7 +291,9 @@ def create_df_to_predict(
         df_referees_scheduled=df_referees_scheduled if todays_prediction else None,
     )
 
-    df_training = select_training_columns(df_merged, original_columns)
+    df_training = select_training_columns(
+        df_merged, original_columns, keep_game_time=todays_prediction
+    )
 
     df_training = engineer_odds_features(df_training)
 

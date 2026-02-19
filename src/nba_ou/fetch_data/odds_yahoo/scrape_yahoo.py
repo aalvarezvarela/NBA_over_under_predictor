@@ -288,12 +288,18 @@ async def extract_full_game_public_bet_percentages(
     return data
 
 
-async def scrape_yahoo_day(page: Page, d: date) -> pd.DataFrame | None:
+async def scrape_yahoo_day(
+    page: Page, d: date, *, skip_navigation: bool = False
+) -> tuple[pd.DataFrame | None, str]:
     season_year = season_year_for_date(d)
     schedule_url = build_schedule_url(season_year, d)
 
-    await page.goto(schedule_url, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
-    await try_click_consent(page)
+    if not skip_navigation:
+        await page.goto(schedule_url, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
+        await try_click_consent(page)
+
+    # Get the actual URL after any redirects
+    actual_url = page.url
 
     try:
         await page.wait_for_selector("tr[rowindex] a[href]", timeout=TIMEOUT_MS)
@@ -306,7 +312,7 @@ async def scrape_yahoo_day(page: Page, d: date) -> pd.DataFrame | None:
     )
     matchup_hrefs = dedupe_keep_order([h for h in hrefs if MATCHUP_HREF_RE.match(h)])
     if not matchup_hrefs:
-        return None
+        return None, actual_url
 
     matchup_urls = [urljoin(BASE, h) for h in matchup_hrefs]
     daily_dfs: list[pd.DataFrame] = []
@@ -376,9 +382,9 @@ async def scrape_yahoo_day(page: Page, d: date) -> pd.DataFrame | None:
             daily_dfs.append(df_game)
 
     if not daily_dfs:
-        return None
+        return None, actual_url
 
-    return pd.concat(daily_dfs, ignore_index=True)
+    return pd.concat(daily_dfs, ignore_index=True), actual_url
 
 
 async def scrape_yahoo_days(days: list[date], *, headless: bool = True) -> pd.DataFrame:
@@ -392,11 +398,26 @@ async def scrape_yahoo_days(days: list[date], *, headless: bool = True) -> pd.Da
         context = await browser.new_context()
         page = await context.new_page()
 
+        last_actual_url = None
+
         for d in days:
             try:
-                df_day = await scrape_yahoo_day(page, d)
+                # Build the schedule URL for this day
+                season_year = season_year_for_date(d)
+                current_schedule_url = build_schedule_url(season_year, d)
+
+                # Skip navigation if the actual URL from last scrape matches where we're going
+                skip_nav = current_schedule_url == last_actual_url
+
+                df_day, actual_url = await scrape_yahoo_day(
+                    page, d, skip_navigation=skip_nav
+                )
                 if df_day is not None and not df_day.empty:
                     all_rows.append(df_day)
+
+                # Update with the actual URL after navigation/redirect
+                last_actual_url = actual_url
+
             except Exception as e:
                 print(f"Yahoo scrape failed for {d.isoformat()}: {e}")
 
