@@ -173,6 +173,7 @@ def fetch_nba_data(
         try:
             time.sleep(random.uniform(0.1, 0.3))  # Avoid rate limiting
 
+            print("Attempting to fecth scheduled games for a given season")
             game_finder = LeagueGameFinder(
                 season_nullable=season_nullable,
                 league_id_nullable="00",
