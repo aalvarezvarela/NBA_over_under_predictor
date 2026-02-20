@@ -30,7 +30,7 @@ jobs:
             DB_ENV: supabase
             SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
             SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
-            ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+            TABPFN_ACCESS_TOKEN: ${{ secrets.TABPFN_ACCESS_TOKEN }}
             S3_AWS_PROFILE: ""
 
             # Cron runs in UTC; keep runtime consistent
