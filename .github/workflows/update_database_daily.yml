@@ -54,4 +54,4 @@ jobs:
 
       - name: Update all databases
         run: |
-          python scripts/update_databases/update_all_databases.py --start 2025 --end 2025 --only-new-games False
+          python scripts/update_databases/update_all_databases.py --start 2025 --end 2025
