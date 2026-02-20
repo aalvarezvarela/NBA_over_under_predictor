@@ -343,12 +343,6 @@ def create_df_to_predict(
     df_training = add_high_value_features_for_team_points(df_training)
     df_training = add_game_date_features(df_training)
 
-    if todays_prediction:
-        todays_date = pd.to_datetime(
-            pd.Timestamp.now(tz=ZoneInfo("US/Pacific")).strftime("%Y-%m-%d")
-        )
-        df_training = df_training[df_training["GAME_DATE"] == todays_date]
-
     print()
     print("--" * 20)
     print(f"Training data created up to {recent_limit_to_include}")

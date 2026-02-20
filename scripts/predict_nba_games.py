@@ -108,6 +108,7 @@ def predict_nba_games(run_tabpfn_client: bool = False) -> None:
     # Step 3: Build feature DataFrame for prediction
     print_step_header(3, "Preparing Feature DataFrame")
     try:
+        #TODO: remove not updated injury reports
         df_to_predict_total = create_df_to_predict(
             todays_prediction=True,
             scheduled_data=scheduled_data,

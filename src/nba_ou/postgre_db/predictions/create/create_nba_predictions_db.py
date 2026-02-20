@@ -263,5 +263,5 @@ def upload_predictions_to_postgre(df: "pd.DataFrame"):
 
 
 if __name__ == "__main__":
-    create_predictions_table(True)
+    create_predictions_table(False)
     print("nba_predictions table is ready.")
