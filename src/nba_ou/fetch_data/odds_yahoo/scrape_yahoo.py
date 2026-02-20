@@ -13,8 +13,8 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 BASE = "https://sports.yahoo.com"
 MATCHUP_HREF_RE = re.compile(r"^/nba/.+-\d{10}/?$")
 BOARD_ID_FULL = "odds-board-six-pack-FULL"
-TIMEOUT_MS = 4_000
-TIMEOUT_MS_PUBLIC = 200
+TIMEOUT_MS = 45_000
+TIMEOUT_MS_PUBLIC = 5_200
 SLEEP_MIN_S = 1.0
 SLEEP_MAX_S = 2.0
 
@@ -429,3 +429,12 @@ async def scrape_yahoo_days(days: list[date], *, headless: bool = True) -> pd.Da
         return pd.DataFrame()
 
     return pd.concat(all_rows, ignore_index=True)
+
+
+if __name__ == "__main__":
+    today = date.today()
+    input_dates = [today]
+
+    result_df = asyncio.run(scrape_yahoo_days(input_dates, headless=True))
+    if not result_df.empty:
+        print(result_df)
