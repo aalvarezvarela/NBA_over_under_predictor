@@ -56,14 +56,6 @@ jobs:
                   role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
                   aws-region: eu-west-1
 
-            - name: Verify AWS identity
-              run: |
-                  aws sts get-caller-identity
-
-            - name: Verify S3 access
-              run: |
-                  aws s3 ls s3://adrian-nba-model-registry-eu-west-1/models/
-
             - name: Install dependencies
               run: |
                   python -m pip install --upgrade pip
