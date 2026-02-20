@@ -1,34 +1,71 @@
 import os
-import sys
 import time
 import warnings
+from datetime import datetime, timedelta
+from pathlib import Path
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
+
 import streamlit as st
 
-# Suppress pandas SQLAlchemy warnings
-# Import nba_predictor main function
-from scripts.predict_nba_games import main as run_nba_predictor
-from postgre_DB.update_evaluation_predictions import (
-    add_ou_betting_metrics,
-    compute_daily_accuracy,
-    compute_daily_prediction_errors,
-    compute_ou_betting_statistics,
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SRC_DIR = PROJECT_ROOT / "src"
+
+import sys
+
+for path in (PROJECT_ROOT, SRC_DIR):
+    path_str = str(path)
+    if path_str not in sys.path:
+        sys.path.insert(0, path_str)
+
+try:
+    from scripts.predict_nba_games import predict_nba_games as run_nba_predictor
+except Exception:
+    run_nba_predictor = None
+
+from nba_ou.postgre_db.predictions.update.update_evaluation_predictions import (
     get_games_with_total_scored_points,
 )
-from utils.streamlit_utils import format_upcoming_games_display, render_game_cards
+from nba_ou.utils.streamlit_utils import get_team_logo_url
 
 warnings.filterwarnings("ignore", message="pandas only supports SQLAlchemy connectable")
-os.environ["SUPABASE_DB_URL"] = st.secrets["DatabaseSupabase"]["SUPABASE_DB_URL"]
-os.environ["SUPABASE_DB_PASSWORD"] = st.secrets["DatabaseSupabase"][
-    "SUPABASE_DB_PASSWORD"
-]
-try:
-    os.environ["ODDS_API_KEY"] = st.secrets["Odds"]["ODDS_API_KEY"]
-except KeyError:
-    pass
+
+MODEL_ORDER = ["full_dataset", "recent_games", "TabPFNRegressor"]
+MODEL_LABELS = {
+    "full_dataset": "Full Dataset",
+    "recent_games": "Recent Games",
+    "TabPFNRegressor": "TabPFN",
+}
+MODEL_PREFIXES = {
+    "full_dataset": "full",
+    "recent_games": "recent",
+    "TabPFNRegressor": "tabpfn",
+}
+MODEL_WEIGHTS = {
+    "full_dataset": 0.25,
+    "recent_games": 0.25,
+    "TabPFNRegressor": 0.50,
+}
+
+
+def set_runtime_env_from_secrets() -> None:
+    try:
+        os.environ["SUPABASE_DB_URL"] = st.secrets["DatabaseSupabase"][
+            "SUPABASE_DB_URL"
+        ]
+        os.environ["SUPABASE_DB_PASSWORD"] = st.secrets["DatabaseSupabase"][
+            "SUPABASE_DB_PASSWORD"
+        ]
+    except Exception:
+        pass
+
+    try:
+        os.environ["ODDS_API_KEY"] = st.secrets["Odds"]["ODDS_API_KEY"]
+    except Exception:
+        pass
 
 
 def inject_global_css() -> None:
@@ -94,7 +131,7 @@ def inject_global_css() -> None:
             font-weight: 800 !important;
           }
 
-          /* DataFrame readability - keep your current style intent */
+          /* DataFrame readability */
           div[data-testid="stDataFrame"] div[role="gridcell"] {
             padding: 0.65rem !important;
           }
@@ -154,9 +191,7 @@ def render_header() -> None:
         <div class="app-hero">
           <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:12px;">
             <div style="flex: 1;">
-              <div style="font-size: 0.95rem; font-weight: 700; opacity: 0.85;">
-                NBA analytics
-              </div>
+              <div style="font-size: 0.95rem; font-weight: 700; opacity: 0.85;">NBA analytics</div>
               <div style="margin-top: 2px;">
                 <span style="font-size: 2.2rem; font-weight: 900; letter-spacing: -0.02em;">
                   Over/Under Predictor
@@ -166,8 +201,9 @@ def render_header() -> None:
                 Predictions, results, and historical performance in one place.
               </div>
               <div class="chip-row">
-                <span class="chip">Model: regressor + classifier</span>
-                <span class="chip">Lines: bookmaker O/U</span>
+                <span class="chip">Model: full_dataset</span>
+                <span class="chip">Model: recent_games</span>
+                <span class="chip">Model: TabPFNRegressor</span>
                 <span class="chip">Timezone: Madrid (CEST)</span>
               </div>
             </div>
@@ -178,62 +214,998 @@ def render_header() -> None:
     )
 
 
-def check_password():
-    """Returns True if the user has entered the correct password."""
+def normalize_model_type(value: object) -> str | None:
+    if pd.isna(value):
+        return None
 
-    def password_entered():
-        """Checks whether a password entered by the user is correct."""
-        if st.session_state["password"] == st.secrets["App"]["PASSWORD"]:
-            st.session_state["password_correct"] = True
-            del st.session_state["password"]  # Don't store password
+    text = str(value).strip()
+    if text in MODEL_ORDER:
+        return text
+
+    lowered = text.lower()
+    if lowered == "full_dataset":
+        return "full_dataset"
+    if lowered == "recent_games":
+        return "recent_games"
+    if lowered in {"tabpfnregressor", "tabpfn"}:
+        return "TabPFNRegressor"
+
+    return None
+
+
+def normalize_pick(value: object) -> str | float:
+    if pd.isna(value):
+        return np.nan
+
+    text = str(value).strip().upper()
+    if text in {"OVER", "O", "1", "TRUE", "YES"}:
+        return "OVER"
+    if text in {"UNDER", "U", "0", "FALSE", "NO"}:
+        return "UNDER"
+    if text == "PUSH":
+        return "PUSH"
+
+    return np.nan
+
+
+def format_madrid_datetime(series: pd.Series, fmt: str) -> pd.Series:
+    dt_utc = pd.to_datetime(series, errors="coerce", utc=True)
+    return dt_utc.dt.tz_convert("Europe/Madrid").dt.strftime(fmt)
+
+
+def build_game_level_predictions(
+    df: pd.DataFrame,
+    prediction_cutoff: pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame()
+
+    work = df.copy()
+    if "model_type" not in work.columns:
+        return pd.DataFrame()
+
+    work["model_type"] = work["model_type"].apply(normalize_model_type)
+    work = work[work["model_type"].isin(MODEL_ORDER)].copy()
+
+    if work.empty:
+        return pd.DataFrame()
+
+    if "prediction_datetime" in work.columns:
+        pred_dt = pd.to_datetime(work["prediction_datetime"], errors="coerce", utc=True)
+    else:
+        pred_dt = pd.Series(pd.NaT, index=work.index, dtype="datetime64[ns, UTC]")
+
+    if "prediction_date" in work.columns:
+        pred_date_dt = pd.to_datetime(
+            work["prediction_date"], errors="coerce", utc=True
+        )
+    else:
+        pred_date_dt = pd.Series(pd.NaT, index=work.index, dtype="datetime64[ns, UTC]")
+    work["prediction_datetime_utc"] = pred_dt.fillna(pred_date_dt)
+
+    if prediction_cutoff is not None:
+        cutoff = pd.Timestamp(prediction_cutoff)
+        if cutoff.tzinfo is None:
+            cutoff = cutoff.tz_localize("UTC")
         else:
-            st.session_state["password_correct"] = False
+            cutoff = cutoff.tz_convert("UTC")
+        work = work[work["prediction_datetime_utc"] <= cutoff].copy()
 
-    # Return True if the password is validated.
-    if st.session_state.get("password_correct", False):
-        return True
+    if work.empty:
+        return pd.DataFrame()
 
-    # Show login form
-    st.markdown(
-        """
-        <div style="text-align: center; padding: 2rem;">
-            <h1 style="font-size: 3rem; margin-bottom: 1rem;">🏀 NBA Over/Under Predictor</h1>
-            <p style="font-size: 1.2rem; opacity: 0.85;">Please enter the password to access the application</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    if "game_time" in work.columns:
+        work["game_time_utc"] = pd.to_datetime(
+            work["game_time"], errors="coerce", utc=True
+        )
+    else:
+        work["game_time_utc"] = pd.NaT
+
+    base_cols = [
+        "game_id",
+        "season_type",
+        "game_date",
+        "game_time",
+        "game_time_utc",
+        "team_name_team_home",
+        "team_name_team_away",
+        "total_over_under_line",
+        "total_scored_points",
+        "home_pts",
+        "away_pts",
+        "prediction_date",
+        "prediction_datetime_utc",
+        "time_to_match_minutes",
+    ]
+    available_base_cols = [col for col in base_cols if col in work.columns]
+
+    base = (
+        work.sort_values("prediction_datetime_utc")
+        .groupby("game_id", as_index=False)
+        .tail(1)[available_base_cols]
+        .copy()
     )
 
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        # Use a small form so pressing Enter or clicking the button both submit
-        with st.form(key="login_form"):
-            pwd = st.text_input(
-                "Password",
-                type="password",
-                key="password_input",
-                label_visibility="collapsed",
-                placeholder="Enter password...",
+    base = base.rename(
+        columns={"prediction_datetime_utc": "latest_prediction_datetime"}
+    )
+
+    for model_type in MODEL_ORDER:
+        prefix = MODEL_PREFIXES[model_type]
+        per_model = work[work["model_type"] == model_type].copy()
+        if per_model.empty:
+            continue
+
+        model_cols = [
+            "game_id",
+            "pred_pick",
+            "pred_total_points",
+            "pred_line_error",
+            "prediction_datetime_utc",
+        ]
+        available_model_cols = [col for col in model_cols if col in per_model.columns]
+
+        per_model = (
+            per_model.sort_values("prediction_datetime_utc")
+            .groupby("game_id", as_index=False)
+            .tail(1)[available_model_cols]
+        )
+
+        rename_map = {
+            "pred_pick": f"pick_{prefix}",
+            "pred_total_points": f"pred_total_{prefix}",
+            "pred_line_error": f"line_error_{prefix}",
+            "prediction_datetime_utc": f"pred_dt_{prefix}",
+        }
+        per_model = per_model.rename(columns=rename_map)
+
+        base = base.merge(per_model, on="game_id", how="left")
+
+    line = pd.to_numeric(base.get("total_over_under_line"), errors="coerce")
+    actual_total = pd.to_numeric(base.get("total_scored_points"), errors="coerce")
+
+    # NumPy 2 raises DTypePromotionError when np.where mixes strings with np.nan.
+    actual_side = pd.Series(index=base.index, dtype="object")
+    actual_side.loc[actual_total > line] = "OVER"
+    actual_side.loc[actual_total < line] = "UNDER"
+    actual_side.loc[actual_total == line] = "PUSH"
+    base["actual_side"] = actual_side
+
+    def pick_from_diff(diff: pd.Series) -> pd.Series:
+        out = pd.Series(index=diff.index, dtype="object")
+        out.loc[diff > 0] = "OVER"
+        out.loc[diff < 0] = "UNDER"
+        out.loc[diff == 0] = "PUSH"
+        return out
+
+    model_pick_cols: list[str] = []
+    model_total_cols: list[str] = []
+    for model_type in MODEL_ORDER:
+        prefix = MODEL_PREFIXES[model_type]
+        pick_col = f"pick_{prefix}"
+        pred_total_col = f"pred_total_{prefix}"
+        line_diff_col = f"line_diff_{prefix}"
+        error_col = f"error_{prefix}"
+        correct_col = f"correct_{prefix}"
+
+        if pick_col not in base.columns:
+            base[pick_col] = np.nan
+        if pred_total_col not in base.columns:
+            base[pred_total_col] = np.nan
+
+        base[pick_col] = base[pick_col].apply(normalize_pick)
+        base[pred_total_col] = pd.to_numeric(base[pred_total_col], errors="coerce")
+        base[line_diff_col] = base[pred_total_col] - line
+
+        derived_pick = pick_from_diff(base[line_diff_col])
+        base[pick_col] = base[pick_col].where(base[pick_col].notna(), derived_pick)
+
+        base[error_col] = base[pred_total_col] - actual_total
+        base[correct_col] = (base[pick_col] == base["actual_side"]) & base[
+            "actual_side"
+        ].isin(["OVER", "UNDER"])
+
+        model_pick_cols.append(pick_col)
+        model_total_cols.append(pred_total_col)
+
+    weighted_numerator = pd.Series(0.0, index=base.index)
+    weighted_denominator = pd.Series(0.0, index=base.index)
+    for model_type in MODEL_ORDER:
+        prefix = MODEL_PREFIXES[model_type]
+        weight = MODEL_WEIGHTS[model_type]
+        pred_total_col = f"pred_total_{prefix}"
+        pred_total = pd.to_numeric(base[pred_total_col], errors="coerce")
+        valid_mask = pred_total.notna()
+        weighted_numerator += pred_total.fillna(0.0) * weight
+        weighted_denominator += valid_mask.astype(float) * weight
+
+    base["consensus_pred_total"] = (
+        weighted_numerator / weighted_denominator.replace(0, np.nan)
+    )
+    base["consensus_line_diff"] = base["consensus_pred_total"] - line
+    base["consensus_pick"] = pick_from_diff(base["consensus_line_diff"])
+    base["consensus_error"] = base["consensus_pred_total"] - actual_total
+    base["consensus_correct"] = (base["consensus_pick"] == base["actual_side"]) & base[
+        "actual_side"
+    ].isin(["OVER", "UNDER"])
+
+    base["all_models_available"] = base[model_total_cols].notna().all(axis=1)
+    base["all_models_agree"] = (
+        base[model_pick_cols].nunique(axis=1, dropna=True).eq(1)
+        & base["all_models_available"]
+    )
+
+    if "game_time_utc" in base.columns:
+        base = base.sort_values("game_time_utc")
+
+    return base.reset_index(drop=True)
+
+
+def build_upcoming_display(df: pd.DataFrame) -> pd.DataFrame:
+    display = pd.DataFrame()
+    display["Matchup"] = df["team_name_team_home"] + " vs " + df["team_name_team_away"]
+    display["Game Time (Madrid)"] = format_madrid_datetime(
+        df["game_time_utc"], "%Y-%m-%d %H:%M"
+    )
+    display["O/U Line"] = pd.to_numeric(
+        df["total_over_under_line"], errors="coerce"
+    ).round(1)
+
+    for model_type in MODEL_ORDER:
+        prefix = MODEL_PREFIXES[model_type]
+        label = MODEL_LABELS[model_type]
+        display[f"{label} Total"] = pd.to_numeric(
+            df[f"pred_total_{prefix}"], errors="coerce"
+        ).round(1)
+        display[f"{label} Diff"] = pd.to_numeric(
+            df[f"line_diff_{prefix}"], errors="coerce"
+        ).round(2)
+        display[f"{label} Pick"] = df[f"pick_{prefix}"]
+
+    display["Consensus Total"] = pd.to_numeric(
+        df["consensus_pred_total"], errors="coerce"
+    ).round(1)
+    display["Consensus Diff"] = pd.to_numeric(
+        df["consensus_line_diff"], errors="coerce"
+    ).round(2)
+    display["Consensus Pick"] = df["consensus_pick"]
+    if "time_to_match_minutes" in df.columns:
+        display["Time to Game (min)"] = (
+            pd.to_numeric(df["time_to_match_minutes"], errors="coerce")
+            .fillna(0)
+            .astype(int)
+        )
+
+    return display
+
+
+def build_past_display(df: pd.DataFrame) -> pd.DataFrame:
+    display = pd.DataFrame()
+    display["Matchup"] = df["team_name_team_home"] + " vs " + df["team_name_team_away"]
+    display["Game Time (Madrid)"] = format_madrid_datetime(df["game_time_utc"], "%H:%M")
+    display["O/U Line"] = pd.to_numeric(
+        df["total_over_under_line"], errors="coerce"
+    ).round(1)
+    display["Actual Total"] = pd.to_numeric(
+        df["total_scored_points"], errors="coerce"
+    ).round(1)
+    display["Actual Side"] = df["actual_side"]
+
+    for model_type in MODEL_ORDER:
+        prefix = MODEL_PREFIXES[model_type]
+        label = MODEL_LABELS[model_type]
+        display[f"{label} Total"] = pd.to_numeric(
+            df[f"pred_total_{prefix}"], errors="coerce"
+        ).round(1)
+        display[f"{label} Diff"] = pd.to_numeric(
+            df[f"line_diff_{prefix}"], errors="coerce"
+        ).round(2)
+        display[f"{label} Pick"] = df[f"pick_{prefix}"]
+        display[f"{label} Correct"] = df[f"correct_{prefix}"].map(
+            {True: "✅", False: "❌"}
+        )
+
+    display["Consensus Total"] = pd.to_numeric(
+        df["consensus_pred_total"], errors="coerce"
+    ).round(1)
+    display["Consensus Diff"] = pd.to_numeric(
+        df["consensus_line_diff"], errors="coerce"
+    ).round(2)
+    display["Consensus Pick"] = df["consensus_pick"]
+    display["Consensus Correct"] = df["consensus_correct"].map({True: "✅", False: "❌"})
+    return display
+
+
+def format_pick_label(value: object) -> str:
+    if pd.isna(value):
+        return "N/A"
+    text = str(value).upper()
+    if text == "OVER":
+        return "Over"
+    if text == "UNDER":
+        return "Under"
+    if text == "PUSH":
+        return "Push"
+    if text == "MIXED":
+        return "Mixed"
+    return str(value)
+
+
+def get_pick_icon(pick_label: str) -> str:
+    if pick_label == "Under":
+        return "🔵"
+    if pick_label == "Over":
+        return "🔴"
+    return "⚪"
+
+
+def render_prediction_cards(df: pd.DataFrame, include_actual: bool = False) -> None:
+    df = df.sort_values("game_time_utc").reset_index(drop=True)
+    cols_per_row = 2
+
+    for idx in range(0, len(df), cols_per_row):
+        cols = st.columns(cols_per_row)
+        for col_idx, col in enumerate(cols):
+            row_idx = idx + col_idx
+            if row_idx >= len(df):
+                break
+
+            row = df.iloc[row_idx]
+
+            with col:
+                home_team = row["team_name_team_home"]
+                away_team = row["team_name_team_away"]
+
+                game_dt = pd.to_datetime(row["game_time_utc"], errors="coerce", utc=True)
+                if pd.isna(game_dt):
+                    game_time = "TBD"
+                    game_date = "TBD"
+                else:
+                    game_dt_madrid = game_dt.tz_convert("Europe/Madrid")
+                    game_time = game_dt_madrid.strftime("%I:%M %p")
+                    game_date = game_dt_madrid.strftime("%b %d, %Y")
+
+                line_value = pd.to_numeric(row.get("total_over_under_line"), errors="coerce")
+                line_text = f"{line_value:.1f}" if pd.notna(line_value) else "N/A"
+
+                picks = {
+                    "Full Dataset": format_pick_label(row.get("pick_full")),
+                    "Recent Games": format_pick_label(row.get("pick_recent")),
+                    "TabPFN": format_pick_label(row.get("pick_tabpfn")),
+                }
+
+                totals = {
+                    "Full Dataset": pd.to_numeric(row.get("pred_total_full"), errors="coerce"),
+                    "Recent Games": pd.to_numeric(row.get("pred_total_recent"), errors="coerce"),
+                    "TabPFN": pd.to_numeric(row.get("pred_total_tabpfn"), errors="coerce"),
+                }
+
+                if include_actual:
+                    correct_flags = [
+                        row.get("correct_full"),
+                        row.get("correct_recent"),
+                        row.get("correct_tabpfn"),
+                    ]
+                    valid_flags = [bool(v) for v in correct_flags if pd.notna(v)]
+                    if not valid_flags:
+                        border_color = "#9E9E9E"
+                    elif all(valid_flags):
+                        border_color = "#4CAF50"
+                    elif any(valid_flags):
+                        border_color = "#FFA500"
+                    else:
+                        border_color = "#F44336"
+                else:
+                    consensus_pick = row.get("consensus_pick")
+                    border_color = "#4CAF50" if consensus_pick in {"OVER", "UNDER"} else "#FF9800"
+
+                header_html = f"""
+                <div style="
+                    border: 2px solid {border_color};
+                    border-radius: 12px 12px 0 0;
+                    overflow: hidden;
+                    box-shadow: 0 3px 6px rgba(0,0,0,0.15);
+                ">
+                    <div style="
+                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                        padding: 20px;
+                        color: white;
+                    ">
+                        <div style="display: flex; align-items: center; justify-content: space-between;">
+                            <div style="flex: 1; text-align: center;">
+                                <img src="{get_team_logo_url(home_team)}" width="88" style="margin-bottom: 8px;">
+                                <div style="font-size: 1.05rem; font-weight: 700;">{home_team}</div>
+                            </div>
+                            <div style="flex: 0.45; text-align: center;">
+                                <div style="font-size: 2rem; font-weight: 900; margin-bottom: 5px;">VS</div>
+                                <div style="font-size: 0.95rem; font-weight: 600;">{game_date}</div>
+                                <div style="font-size: 1.05rem; font-weight: 700; margin-top: 3px;">🕐 {game_time}</div>
+                            </div>
+                            <div style="flex: 1; text-align: center;">
+                                <img src="{get_team_logo_url(away_team)}" width="88" style="margin-bottom: 8px;">
+                                <div style="font-size: 1.05rem; font-weight: 700;">{away_team}</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                """
+                st.components.v1.html(header_html, height=192)
+
+                with st.container():
+                    st.markdown(
+                        f"""
+                        <div style="border: 2px solid {border_color}; border-top: none;
+                             border-radius: 0 0 12px 12px; padding: 14px; margin-top: -5px;
+                             background: white;">
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                    if include_actual:
+                        actual_total = pd.to_numeric(row.get("total_scored_points"), errors="coerce")
+                        actual_side = row.get("actual_side")
+                        actual_side_text = actual_side if pd.notna(actual_side) else "N/A"
+                        actual_total_text = f"{actual_total:.1f}" if pd.notna(actual_total) else "N/A"
+                        actual_color = "#2196F3" if actual_side == "UNDER" else "#FF5722"
+                        st.markdown(
+                            f"""
+                            <div style="text-align: center; margin-bottom: 10px; padding: 10px;
+                                 background: {actual_color}; color: white; border-radius: 8px;">
+                                <span style="font-size: 1.1rem; font-weight: 700;">
+                                    ⚡ ACTUAL: {actual_side_text} ({actual_total_text} points)
+                                </span>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        consensus = row.get("consensus_pick")
+                        consensus_text = format_pick_label(consensus)
+                        st.markdown(
+                            f"""
+                            <div style="text-align: center; margin-bottom: 10px; padding: 10px;
+                                 background: #eef2ff; color: #1f2937; border-radius: 8px;">
+                                <span style="font-size: 1.0rem; font-weight: 700;">
+                                    ✅ CONSENSUS: {consensus_text}
+                                </span>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("O/U Line", line_text)
+                    with col2:
+                        val = totals["Full Dataset"]
+                        st.metric("Full Total", f"{val:.1f}" if pd.notna(val) else "N/A")
+                    with col3:
+                        val = totals["Recent Games"]
+                        st.metric("Recent Total", f"{val:.1f}" if pd.notna(val) else "N/A")
+                    with col4:
+                        val = totals["TabPFN"]
+                        st.metric("TabPFN Total", f"{val:.1f}" if pd.notna(val) else "N/A")
+
+                    consensus_total = pd.to_numeric(
+                        row.get("consensus_pred_total"), errors="coerce"
+                    )
+                    consensus_diff = pd.to_numeric(
+                        row.get("consensus_line_diff"), errors="coerce"
+                    )
+                    consensus_pick = format_pick_label(row.get("consensus_pick"))
+
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric(
+                            "Consensus Total",
+                            f"{consensus_total:.1f}" if pd.notna(consensus_total) else "N/A",
+                        )
+                    with col2:
+                        st.metric(
+                            "Consensus Diff",
+                            f"{consensus_diff:+.2f}" if pd.notna(consensus_diff) else "N/A",
+                        )
+                    with col3:
+                        st.metric("Consensus Pick", consensus_pick)
+
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        diff = pd.to_numeric(row.get("line_diff_full"), errors="coerce")
+                        st.metric("Full Diff", f"{diff:+.2f}" if pd.notna(diff) else "N/A")
+                    with col2:
+                        diff = pd.to_numeric(row.get("line_diff_recent"), errors="coerce")
+                        st.metric("Recent Diff", f"{diff:+.2f}" if pd.notna(diff) else "N/A")
+                    with col3:
+                        diff = pd.to_numeric(row.get("line_diff_tabpfn"), errors="coerce")
+                        st.metric("TabPFN Diff", f"{diff:+.2f}" if pd.notna(diff) else "N/A")
+
+                    model_cols = st.columns(3)
+                    model_keys = [
+                        ("Full Dataset", "correct_full"),
+                        ("Recent Games", "correct_recent"),
+                        ("TabPFN", "correct_tabpfn"),
+                    ]
+
+                    for mcol, (model_label, correct_col) in zip(model_cols, model_keys):
+                        with mcol:
+                            pick_label = picks[model_label]
+                            icon = get_pick_icon(pick_label)
+                            if include_actual:
+                                flag = row.get(correct_col)
+                                status = "✅" if pd.notna(flag) and bool(flag) else "❌"
+                                st.metric(model_label, f"{icon} {pick_label} {status}")
+                            else:
+                                st.metric(model_label, f"{icon} {pick_label}")
+
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def summarize_model_performance(df: pd.DataFrame) -> pd.DataFrame:
+    resolved_mask = df["actual_side"].isin(["OVER", "UNDER"])
+    rows = []
+
+    for model_type in MODEL_ORDER:
+        prefix = MODEL_PREFIXES[model_type]
+        picks = df[f"pick_{prefix}"]
+        valid_mask = resolved_mask & picks.isin(["OVER", "UNDER"])
+
+        n_games = int(valid_mask.sum())
+        accuracy = (
+            float(df.loc[valid_mask, f"correct_{prefix}"].mean()) if n_games else np.nan
+        )
+        mean_error = (
+            float(df.loc[valid_mask, f"error_{prefix}"].mean()) if n_games else np.nan
+        )
+        mae = (
+            float(df.loc[valid_mask, f"error_{prefix}"].abs().mean())
+            if n_games
+            else np.nan
+        )
+        mean_abs_line_diff = (
+            float(df.loc[valid_mask, f"line_diff_{prefix}"].abs().mean())
+            if n_games
+            else np.nan
+        )
+
+        rows.append(
+            {
+                "Model": MODEL_LABELS[model_type],
+                "Games": n_games,
+                "Accuracy (%)": None if pd.isna(accuracy) else round(accuracy * 100, 2),
+                "Mean Error": None if pd.isna(mean_error) else round(mean_error, 2),
+                "MAE": None if pd.isna(mae) else round(mae, 2),
+                "Avg |Diff vs Line|": None
+                if pd.isna(mean_abs_line_diff)
+                else round(mean_abs_line_diff, 2),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def compute_threshold_accuracy_table(
+    df: pd.DataFrame,
+    *,
+    model_thresholds: dict[str, tuple[float, ...]] | None = None,
+) -> pd.DataFrame:
+    if model_thresholds is None:
+        model_thresholds = {
+            "full_dataset": (0.0, 1.0, 2.0),
+            "recent_games": (0.0, 1.0, 2.0),
+            "TabPFNRegressor": (0.0, 0.5, 1.0, 1.5, 2.0),
+        }
+
+    resolved_mask = df["actual_side"].isin(["OVER", "UNDER"])
+    rows: list[dict] = []
+
+    for model_type, thresholds in model_thresholds.items():
+        prefix = MODEL_PREFIXES[model_type]
+        pick_col = f"pick_{prefix}"
+        correct_col = f"correct_{prefix}"
+        line_diff_col = f"line_diff_{prefix}"
+
+        for threshold in thresholds:
+            mask = (
+                resolved_mask
+                & df[pick_col].isin(["OVER", "UNDER"])
+                & (pd.to_numeric(df[line_diff_col], errors="coerce").abs() >= threshold)
             )
-            submitted = st.form_submit_button("Enter")
+            n_games = int(mask.sum())
+            accuracy = float(df.loc[mask, correct_col].mean()) if n_games else np.nan
 
-            if submitted:
-                st.session_state["password"] = pwd
-                password_entered()
+            rows.append(
+                {
+                    "Model": MODEL_LABELS[model_type],
+                    "Filter": f"|Diff vs Line| >= {threshold:g}",
+                    "Games": n_games,
+                    "Accuracy (%)": None
+                    if pd.isna(accuracy)
+                    else round(accuracy * 100, 2),
+                }
+            )
 
-                if st.session_state.get("password_correct"):
-                    st.rerun()
-
-        if (
-            "password_correct" in st.session_state
-            and not st.session_state["password_correct"]
-        ):
-            st.error("😕 Password incorrect. Please try again.")
-
-    return False
+    return pd.DataFrame(rows)
 
 
-def main():
+def compute_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame()
+
+    out_rows = []
+    temp = df.copy()
+    temp["game_date_dt"] = pd.to_datetime(temp["game_date"], errors="coerce")
+    temp = temp.dropna(subset=["game_date_dt"])  # keep only valid dates
+
+    for game_date, group in temp.groupby(temp["game_date_dt"].dt.date):
+        resolved = group[group["actual_side"].isin(["OVER", "UNDER"])]
+
+        for model_type in MODEL_ORDER:
+            prefix = MODEL_PREFIXES[model_type]
+            valid = resolved[resolved[f"pick_{prefix}"].isin(["OVER", "UNDER"])]
+            n_games = len(valid)
+
+            out_rows.append(
+                {
+                    "game_date": pd.to_datetime(game_date),
+                    "model_type": model_type,
+                    "model_label": MODEL_LABELS[model_type],
+                    "n_games": n_games,
+                    "accuracy": valid[f"correct_{prefix}"].mean()
+                    if n_games
+                    else np.nan,
+                    "mae": valid[f"error_{prefix}"].abs().mean() if n_games else np.nan,
+                }
+            )
+
+    return pd.DataFrame(out_rows).sort_values(["game_date", "model_type"])
+
+
+def show_upcoming_predictions() -> None:
+    st.markdown("### 🔄 Update Predictions")
+    st.caption("Run the prediction model to generate fresh predictions for today's games.")
+    st.markdown("")
+
+    if run_nba_predictor is None:
+        st.warning("Predictor module could not be imported in this environment.")
+    elif st.button("Run Predictor Now", type="primary", use_container_width=True):
+        try:
+            with st.spinner("Running predictor. This may take a few minutes..."):
+                run_nba_predictor(run_tabpfn_client=True)
+
+            st.success("Predictions updated. Reloading...")
+            time.sleep(1.5)
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Error running predictor: {exc}")
+            st.exception(exc)
+
+    st.markdown("---")
+
+    with st.spinner("Loading upcoming predictions..."):
+        raw = get_games_with_total_scored_points(only_null=True)
+        games = build_game_level_predictions(raw)
+
+    if games.empty:
+        st.info("No upcoming predictions found.")
+        return
+
+    latest_prediction_time = pd.to_datetime(
+        games["latest_prediction_datetime"], errors="coerce", utc=True
+    ).max()
+
+    metric_cols = st.columns(3)
+    with metric_cols[0]:
+        st.metric("Upcoming Games", len(games))
+    with metric_cols[1]:
+        available_all = int(games["all_models_available"].sum())
+        st.metric("3 Models Available", f"{available_all}/{len(games)}")
+    with metric_cols[2]:
+        if pd.notna(latest_prediction_time):
+            st.metric(
+                "Latest Prediction",
+                latest_prediction_time.tz_convert("Europe/Madrid").strftime(
+                    "%Y-%m-%d %H:%M"
+                ),
+            )
+        else:
+            st.metric("Latest Prediction", "N/A")
+
+    if pd.notna(latest_prediction_time):
+        st.caption(
+            "Latest prediction: "
+            + latest_prediction_time.tz_convert("Europe/Madrid").strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            + " (Madrid)"
+        )
+
+    st.markdown("---")
+    st.markdown("## Today's Predictions")
+    st.caption("View upcoming games with AI-powered over/under predictions.")
+    st.markdown("")
+    use_cards = st.toggle("Use Card View", value=True)
+
+    if use_cards:
+        render_prediction_cards(games, include_actual=False)
+    else:
+        st.dataframe(
+            build_upcoming_display(games),
+            width="stretch",
+            hide_index=True,
+            height=600,
+        )
+
+    st.markdown("---")
+    st.markdown("")
+    with st.expander("ℹ️ **How to Read the Predictions**", expanded=False):
+        st.markdown(
+            """
+        ### 📊 Understanding the Predictions
+
+        - **🏀 Matchup**: Home team vs Away team with logos
+        - **⏰ Game Time**: When the game starts (Madrid timezone)
+        - **📏 O/U Line**: The bookmaker's over/under betting line
+        - **📌 Full/Recent/TabPFN**: Predictions from each model
+        - **✅ Consensus**: Combined agreement signal across models
+        - **Time to Game**: Minutes until game starts
+
+        **Note**: Predictions are updated periodically. Most recent prediction time shown above.
+        """
+        )
+
+
+def show_past_games_results() -> None:
+    st.markdown("## Past Games Results")
+    st.caption("Compare predictions vs actual totals for a selected date.")
+    st.markdown("")
+
+    default_date = datetime.now() - timedelta(days=1)
+    selected_date = st.date_input("Select Date", value=default_date)
+    date_str = selected_date.strftime("%Y-%m-%d")
+
+    with st.spinner("Loading completed games..."):
+        raw = get_games_with_total_scored_points(only_null=False, date=date_str)
+
+    if raw.empty:
+        st.warning(f"No completed games found for {date_str}.")
+        return
+
+    if "prediction_datetime" in raw.columns:
+        prediction_dt = pd.to_datetime(
+            raw["prediction_datetime"], errors="coerce", utc=True
+        )
+    else:
+        prediction_dt = pd.Series(pd.NaT, index=raw.index, dtype="datetime64[ns, UTC]")
+
+    if "prediction_date" in raw.columns:
+        prediction_date_dt = pd.to_datetime(
+            raw["prediction_date"], errors="coerce", utc=True
+        )
+    else:
+        prediction_date_dt = pd.Series(
+            pd.NaT, index=raw.index, dtype="datetime64[ns, UTC]"
+        )
+    raw["prediction_datetime_utc"] = prediction_dt.fillna(prediction_date_dt)
+
+    unique_times = sorted(
+        raw["prediction_datetime_utc"].dropna().unique(), reverse=True
+    )
+    if not unique_times:
+        st.warning(f"No prediction timestamps found for {date_str}.")
+        return
+
+    st.markdown("### ⏰ Select Prediction Time")
+    st.caption("Choose which prediction time to analyze (most recent is default).")
+    mapping: dict[str, pd.Timestamp] = {}
+    options: list[str] = []
+    for ts in unique_times:
+        ts_madrid = pd.Timestamp(ts).tz_convert("Europe/Madrid")
+        label = ts_madrid.strftime("%Y-%m-%d %H:%M:%S")
+        options.append(label)
+        mapping[label] = pd.Timestamp(ts)
+
+    selected_label = st.selectbox(
+        "Prediction Time:",
+        options=options,
+        index=0,
+        help="Select which prediction snapshot to analyze.",
+    )
+
+    selected_cutoff = mapping[selected_label]
+    games = build_game_level_predictions(raw, prediction_cutoff=selected_cutoff)
+
+    if games.empty:
+        st.warning("No games available at the selected prediction time.")
+        return
+
+    resolved_mask = games["actual_side"].isin(["OVER", "UNDER"])
+    n_resolved = int(resolved_mask.sum())
+
+    metrics_cols = st.columns(4)
+    with metrics_cols[0]:
+        st.metric("🎮 Games Played", n_resolved)
+
+    metric_labels = {
+        "full_dataset": "🧱 Full Correct",
+        "recent_games": "⚡ Recent Correct",
+        "TabPFNRegressor": "🧠 TabPFN Correct",
+    }
+    for idx, model_type in enumerate(MODEL_ORDER, start=1):
+        prefix = MODEL_PREFIXES[model_type]
+        model_mask = resolved_mask & games[f"pick_{prefix}"].isin(["OVER", "UNDER"])
+        correct = int(games.loc[model_mask, f"correct_{prefix}"].sum())
+        total = int(model_mask.sum())
+        with metrics_cols[idx]:
+            st.metric(metric_labels[model_type], f"{correct}/{total}")
+
+    st.markdown("---")
+    st.markdown(f"### 🏀 Games on {date_str}")
+    st.markdown("")
+    use_cards = st.toggle("Use Card View", value=True, key="past_cards")
+
+    if use_cards:
+        render_prediction_cards(games, include_actual=True)
+    else:
+        st.dataframe(
+            build_past_display(games), width="stretch", hide_index=True, height=600
+        )
+
+
+def show_historical_performance() -> None:
+    st.markdown("## Historical Betting Performance")
+    st.caption("Analyze model accuracy and prediction error over time.")
+    st.markdown("")
+
+    use_date_filter = st.checkbox("Filter by Date Range", value=False)
+    start_date = None
+    end_date = None
+
+    if use_date_filter:
+        col1, col2 = st.columns(2)
+        with col1:
+            start_date = st.date_input("Start Date", value=pd.to_datetime("2026-01-01"))
+        with col2:
+            end_date = st.date_input("End Date", value=pd.to_datetime("today"))
+
+    with st.spinner("Loading historical predictions..."):
+        raw = get_games_with_total_scored_points(
+            only_null=False,
+            start_date=start_date.strftime("%Y-%m-%d") if start_date else None,
+            end_date=end_date.strftime("%Y-%m-%d") if end_date else None,
+        )
+        games = build_game_level_predictions(raw)
+
+    if games.empty:
+        st.warning("No historical rows found for the selected range.")
+        return
+
+    resolved_mask = games["actual_side"].isin(["OVER", "UNDER"])
+    total_games = len(games)
+    resolved_games = int(resolved_mask.sum())
+    analyzed_days = pd.to_datetime(games["game_date"], errors="coerce").nunique()
+
+    consensus_mask = resolved_mask & games["consensus_pick"].isin(["OVER", "UNDER"])
+    consensus_n = int(consensus_mask.sum())
+    consensus_acc = (
+        (
+            games.loc[consensus_mask, "consensus_pick"]
+            == games.loc[consensus_mask, "actual_side"]
+        ).mean()
+        if consensus_n
+        else np.nan
+    )
+
+    top_cols = st.columns(4)
+    with top_cols[0]:
+        st.metric("Games", total_games)
+    with top_cols[1]:
+        st.metric("Resolved", resolved_games)
+    with top_cols[2]:
+        st.metric("Days", int(analyzed_days))
+    with top_cols[3]:
+        st.metric(
+            "Weighted Consensus",
+            f"{(consensus_acc * 100):.2f}%" if pd.notna(consensus_acc) else "N/A",
+        )
+
+    st.markdown("### 💰 Overall Model Statistics")
+    st.markdown("")
+    summary_df = summarize_model_performance(games)
+    st.dataframe(summary_df, width="stretch", hide_index=True)
+
+    st.markdown("")
+    st.markdown("### 🎯 Accuracy by |Diff vs O/U Line|")
+    st.caption(
+        "Full/Recent: thresholds at >=0, >=1, >=2. TabPFN: thresholds at >=0, >=0.5, >=1, >=1.5, >=2."
+    )
+    threshold_df = compute_threshold_accuracy_table(games)
+    st.dataframe(
+        threshold_df,
+        width="stretch",
+        hide_index=True,
+        height=240,
+    )
+
+    st.markdown("---")
+    st.markdown("### 📅 Daily Accuracy")
+    daily = compute_daily_metrics(games)
+
+    if daily.empty:
+        st.warning("No daily metrics available.")
+        return
+
+    accuracy_pivot = (
+        daily.pivot(index="game_date", columns="model_label", values="accuracy")
+        .sort_index()
+        .mul(100)
+    )
+
+    st.dataframe(
+        accuracy_pivot.reset_index().rename(columns={"game_date": "Date"}).round(2),
+        width="stretch",
+        hide_index=True,
+        height=350,
+    )
+
+    smooth_window = st.slider("Smoothing window (days)", 1, 14, 1)
+
+    fig_acc, ax_acc = plt.subplots(figsize=(14, 6), dpi=140)
+    ax_acc.set_facecolor("white")
+    ax_acc.grid(True, alpha=0.2)
+
+    for model_label in accuracy_pivot.columns:
+        y = accuracy_pivot[model_label]
+        if smooth_window > 1:
+            y = y.rolling(window=smooth_window, min_periods=1).mean()
+        ax_acc.plot(accuracy_pivot.index, y, linewidth=2.5, label=model_label)
+        ax_acc.scatter(
+            accuracy_pivot.index, accuracy_pivot[model_label], s=16, alpha=0.25
+        )
+
+    ax_acc.axhline(50, linestyle="--", alpha=0.55, linewidth=1.3)
+    ax_acc.set_title("Daily Accuracy by Model", fontsize=16, fontweight="bold")
+    ax_acc.set_ylabel("Accuracy (%)")
+    ax_acc.set_xlabel("Date")
+    ax_acc.set_ylim(0, 100)
+    ax_acc.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=5, maxticks=9))
+    ax_acc.xaxis.set_major_formatter(
+        mdates.ConciseDateFormatter(ax_acc.xaxis.get_major_locator())
+    )
+    ax_acc.legend(frameon=False)
+    fig_acc.tight_layout()
+    st.pyplot(fig_acc, use_container_width=True)
+
+    st.markdown("---")
+    st.markdown("### 📉 Daily Mean Absolute Error")
+
+    mae_pivot = daily.pivot(
+        index="game_date", columns="model_label", values="mae"
+    ).sort_index()
+
+    fig_mae, ax_mae = plt.subplots(figsize=(14, 6), dpi=140)
+    ax_mae.set_facecolor("white")
+    ax_mae.grid(True, alpha=0.2)
+
+    for model_label in mae_pivot.columns:
+        y = mae_pivot[model_label]
+        if smooth_window > 1:
+            y = y.rolling(window=smooth_window, min_periods=1).mean()
+        ax_mae.plot(mae_pivot.index, y, linewidth=2.5, label=model_label)
+        ax_mae.scatter(mae_pivot.index, mae_pivot[model_label], s=16, alpha=0.25)
+
+    ax_mae.set_title("Daily MAE by Model", fontsize=16, fontweight="bold")
+    ax_mae.set_ylabel("MAE (points)")
+    ax_mae.set_xlabel("Date")
+    ax_mae.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=5, maxticks=9))
+    ax_mae.xaxis.set_major_formatter(
+        mdates.ConciseDateFormatter(ax_mae.xaxis.get_major_locator())
+    )
+    ax_mae.legend(frameon=False)
+    fig_mae.tight_layout()
+    st.pyplot(fig_mae, use_container_width=True)
+
+
+def main() -> None:
     st.set_page_config(
         page_title="NBA Over/Under Predictor",
         page_icon="🏀",
@@ -246,13 +1218,9 @@ def main():
         },
     )
 
+    set_runtime_env_from_secrets()
     inject_global_css()
 
-    # Check password before showing content
-    # if not check_password():
-    #     st.stop()
-
-    # Sidebar navigation (cleaner than huge radios across the top)
     with st.sidebar:
         st.markdown("### NBA Predictor Menu")
         view_option = st.radio(
@@ -264,935 +1232,16 @@ def main():
             ],
             index=0,
         )
-
         st.markdown("---")
 
-    # Main header
     render_header()
 
-    # Route to views
     if view_option == "Upcoming Predictions":
         show_upcoming_predictions()
     elif view_option == "Past Games Results":
         show_past_games_results()
     else:
         show_historical_performance()
-
-
-def show_upcoming_predictions():
-    """Display upcoming game predictions."""
-
-    # Add button to run predictor - always show this first
-    st.markdown("### 🔄 Update Predictions")
-    st.caption(
-        "Run the prediction model to generate fresh predictions for today's games."
-    )
-    st.markdown("")
-
-    if run_nba_predictor is None:
-        st.warning(
-            "⚠️ NBA Predictor module not available. Please check your installation."
-        )
-    else:
-        if st.button("🚀 Run Predictor Now", type="primary", use_container_width=True):
-            try:
-                # Save original sys.argv
-                original_argv = sys.argv.copy()
-
-                # Set sys.argv to simulate command-line call without saving Excel
-                sys.argv = ["streamlit_app.py"]
-
-                with st.spinner(
-                    "🔄 Running NBA predictor... This may take a few minutes."
-                ):
-                    # Run the predictor
-                    result = run_nba_predictor()
-
-                # Restore original sys.argv
-                sys.argv = original_argv
-
-                if result == 0:
-                    st.success("✅ Predictions updated successfully! Reloading page...")
-                    time.sleep(2)  # Brief pause to show success message
-                    st.rerun()
-                else:
-                    st.error(
-                        "❌ Predictor completed with errors. Please check the logs."
-                    )
-
-            except Exception as e:
-                # Restore original sys.argv in case of error
-                sys.argv = original_argv
-                st.error(f"❌ Error running predictor: {str(e)}")
-                st.exception(e)
-
-    st.markdown("---")
-
-    # Fetch upcoming games
-    with st.spinner("Loading upcoming games..."):
-        df_upcoming = get_games_with_total_scored_points(only_null=True)
-
-    if df_upcoming.empty:
-        st.info(
-            "No upcoming games with predictions available. Run the predictor above to generate new predictions."
-        )
-        return
-
-    # Get most recent prediction for each game
-    df_upcoming = (
-        df_upcoming.sort_values("prediction_date")
-        .groupby("game_id", as_index=False)
-        .tail(1)
-    )
-
-    # Display summary metrics
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Upcoming Games", len(df_upcoming))
-    with col2:
-        n_agree = (
-            df_upcoming["regressor_prediction"]
-            == df_upcoming["classifier_prediction_model2"]
-        ).sum()
-        st.metric("Models Agree", f"{n_agree}/{len(df_upcoming)}")
-    with col3:
-        latest_pred = pd.to_datetime(df_upcoming["prediction_date"]).max()
-        # Convert to Madrid timezone
-        if latest_pred.tz is None:
-            latest_pred = latest_pred.tz_localize("UTC")
-        latest_pred_madrid = latest_pred.tz_convert("Europe/Madrid")
-        st.metric("Latest Prediction", latest_pred_madrid.strftime("%Y-%m-%d %H:%M"))
-
-    st.markdown("---")
-    st.markdown("## Today's Predictions")
-    st.caption("View upcoming games with AI-powered over/under predictions.")
-    st.markdown("")
-
-    # Add a toggle for display mode
-    use_cards = st.toggle("Use Card View", value=True)
-
-    if use_cards:
-        # Render games as cards with logos
-        render_game_cards(df_upcoming)
-    else:
-        # Fallback to table view
-        display_df = format_upcoming_games_display(df_upcoming)
-        st.dataframe(
-            display_df,
-            width="stretch",
-            height=600,
-            hide_index=True,
-        )
-
-    # Add footer with explanation
-    st.markdown("---")
-    st.markdown("")
-    with st.expander("ℹ️ **How to Read the Predictions**", expanded=False):
-        st.markdown("""
-        ### 📊 Understanding the Predictions
-        
-        - **🏀 Matchup**: Home team vs Away team with logos
-        - **⏰ Game Time**: When the game starts (Madrid timezone)
-        - **📏 O/U Line**: The bookmaker's over/under betting line
-        - **🎯 Predicted Total**: Our AI model's prediction for total points scored
-        - **📈 Margin**: How far our prediction is from the bookmaker's line
-          - *Negative value* = We predict UNDER
-          - *Positive value* = We predict OVER
-        - **🤖 Regressor**: Prediction from our regression model
-        - **🧠 Classifier**: Prediction from our classification model
-        - **✅ Agreement**: Shows if both models agree on the prediction
-        - **Both Agree**: ✅ if both models agree, ❌ if they disagree
-        - **Over Odds / Under Odds**: Decimal odds for betting
-        - **Time to Game**: Minutes until game starts
-        
-        **Note**: Predictions are updated periodically. Most recent prediction time shown above.
-        """)
-
-
-def show_past_games_results():
-    """Display past game predictions with actual results."""
-    st.markdown("## Past Games Results")
-    st.caption("Compare predictions vs actual totals for a selected date.")
-    st.markdown("")
-
-    # Date selector - default to yesterday
-    from datetime import datetime, timedelta
-
-    yesterday = datetime.now() - timedelta(days=1)
-
-    selected_date = st.date_input(
-        "Select Date:",
-        value=yesterday,
-        help="Choose a date to see predictions and actual results",
-    )
-
-    st.markdown("---")
-
-    # Load data for selected date
-    with st.spinner("Loading games for selected date..."):
-        date_str = selected_date.strftime("%Y-%m-%d")
-        df_games = get_games_with_total_scored_points(
-            only_null=False,
-            date=date_str,
-        )
-
-    if df_games.empty:
-        st.warning(f"No completed games found for {date_str}.")
-        return
-
-    # Get unique prediction times available for this date
-    df_games["prediction_datetime"] = pd.to_datetime(df_games["prediction_date"])
-
-    # Normalize to UTC for consistent comparison
-    if df_games["prediction_datetime"].dt.tz is None:
-        df_games["prediction_datetime"] = df_games[
-            "prediction_datetime"
-        ].dt.tz_localize("UTC")
-    else:
-        df_games["prediction_datetime"] = df_games["prediction_datetime"].dt.tz_convert(
-            "UTC"
-        )
-
-    unique_prediction_times = sorted(
-        df_games["prediction_datetime"].unique(), reverse=True
-    )
-
-    if len(unique_prediction_times) == 0:
-        st.warning(f"No predictions found for {date_str}.")
-        return
-
-    # Add prediction time selector
-    st.markdown("### ⏰ Select Prediction Time")
-    st.caption("Choose which prediction time to analyze (most recent is default).")
-
-    # Format prediction times for display and create mapping
-    prediction_time_mapping = {}
-    prediction_time_options = []
-
-    for pred_time in unique_prediction_times:
-        pred_time_madrid = pred_time.tz_convert("Europe/Madrid")
-        display_str = pred_time_madrid.strftime("%Y-%m-%d %H:%M:%S")
-        prediction_time_options.append(display_str)
-        prediction_time_mapping[display_str] = pred_time
-
-    selected_prediction_time = st.selectbox(
-        "Prediction Time:",
-        options=prediction_time_options,
-        index=0,  # Default to most recent (first in list since sorted reverse=True)
-        help="Select which prediction to analyze. The most recent prediction is selected by default.",
-    )
-
-    # Get the actual UTC timestamp for filtering
-    selected_pred_dt = prediction_time_mapping[selected_prediction_time]
-
-    # Filter to keep predictions at or before the selected time
-    # For each game, use the selected time if available, otherwise use the closest earlier prediction
-    df_games = df_games[df_games["prediction_datetime"] <= selected_pred_dt].copy()
-
-    # For each game, keep only the most recent prediction (at or before selected time)
-    df_games = (
-        df_games.sort_values("prediction_datetime", ascending=False)
-        .groupby("game_id", as_index=False)
-        .first()
-    )
-
-    # Add betting metrics to get correctness
-    df_with_metrics = add_ou_betting_metrics(df_games)
-
-    # Display summary metrics
-    n_games = len(df_with_metrics)
-    reg_correct = df_with_metrics["regressor_correct"].sum()
-    clf_correct = df_with_metrics["classifier_correct"].sum()
-    both_correct = df_with_metrics["both_agree_correct"].sum()
-    both_agree_count = df_with_metrics["both_agree"].sum()
-
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("🎮 Games Played", n_games)
-    with col2:
-        st.metric("🤖 Regressor Correct", f"{reg_correct}/{n_games}")
-    with col3:
-        st.metric("🧠 Classifier Correct", f"{clf_correct}/{n_games}")
-    with col4:
-        st.metric("✅ Both Agree Correct", f"{both_correct}/{both_agree_count}")
-
-    st.markdown("---")
-    st.markdown(f"### 🏀 Games on {date_str}")
-    st.markdown("")
-
-    # Add toggle for card/table view
-    use_cards = st.toggle("Use Card View", value=True, key="past_games_toggle")
-
-    if use_cards:
-        # Render games as cards with results
-        render_past_game_cards(df_with_metrics)
-    else:
-        # Fallback to table view
-        display_df = format_past_games_display(df_with_metrics)
-        st.dataframe(
-            display_df,
-            width="stretch",
-            height=600,
-            hide_index=True,
-        )
-
-
-def render_past_game_cards(df: pd.DataFrame):
-    """Render past games as cards showing predictions vs actual results."""
-    # Sort by game time
-    df = df.sort_values("game_time").reset_index(drop=True)
-
-    # Create two-column layout
-    cols_per_row = 2
-
-    for idx in range(0, len(df), cols_per_row):
-        cols = st.columns(cols_per_row)
-
-        for col_idx, col in enumerate(cols):
-            row_idx = idx + col_idx
-            if row_idx >= len(df):
-                break
-
-            row = df.iloc[row_idx]
-
-            with col:
-                home_team = row["team_name_team_home"]
-                away_team = row["team_name_team_away"]
-                # Convert to Madrid timezone
-                game_dt = pd.to_datetime(row["game_time"])
-                if game_dt.tz is None:
-                    game_dt = game_dt.tz_localize("UTC")
-                game_dt_madrid = game_dt.tz_convert("Europe/Madrid")
-                game_time = game_dt_madrid.strftime("%I:%M %p")
-                game_date = game_dt_madrid.strftime("%b %d, %Y")
-
-                # Get predictions and actual
-                regressor_pred = row["regressor_prediction"]
-                classifier_pred = row["classifier_prediction_model2"]
-                both_agree = row["both_agree"]
-
-                regressor_correct = row["regressor_correct"]
-                classifier_correct = row["classifier_correct"]
-
-                # Actual results
-                actual_total = row["total_scored_points"]
-                ou_line = row["total_over_under_line"]
-                actual_side = row["actual_side"]
-
-                predicted_total = row["predicted_total_score"]
-                margin = row["margin_difference_prediction_vs_over_under"]
-                over_odds = row["average_total_over_money"]
-                under_odds = row["average_total_under_money"]
-
-                # Calculate prediction error (actual - predicted)
-                prediction_error = actual_total - predicted_total
-
-                # Determine styling based on correctness
-                if regressor_correct and classifier_correct:
-                    border_color = "#4CAF50"  # Green - both correct
-                elif regressor_correct or classifier_correct:
-                    border_color = "#FFA500"  # Orange - one correct
-                else:
-                    border_color = "#F44336"  # Red - both wrong
-
-                # Create card header
-                header_html = f"""
-                <div style="
-                    border: 2px solid {border_color};
-                    border-radius: 12px 12px 0 0;
-                    overflow: hidden;
-                    box-shadow: 0 3px 6px rgba(0,0,0,0.15);
-                ">
-                    <div style="
-                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                        padding: 20px;
-                        color: white;
-                    ">
-                        <div style="display: flex; align-items: center; justify-content: space-between;">
-                            <div style="flex: 1; text-align: center;">
-                                <img src="{st.session_state.get('logo_' + home_team, f'https://a.espncdn.com/i/teamlogos/nba/500/1.png')}" width="100" style="margin-bottom: 8px;" onerror="this.style.display='none'">
-                                <div style="font-size: 1.1rem; font-weight: 700;">{home_team}</div>
-                            </div>
-                            
-                            <div style="flex: 0.4; text-align: center;">
-                                <div style="font-size: 2rem; font-weight: 900; margin-bottom: 5px;">VS</div>
-                                <div style="font-size: 0.95rem; font-weight: 600;">{game_date}</div>
-                                <div style="font-size: 1.1rem; font-weight: 700; margin-top: 3px;">🕐 {game_time}</div>
-                            </div>
-                            
-                            <div style="flex: 1; text-align: center;">
-                                <img src="{st.session_state.get('logo_' + away_team, f'https://a.espncdn.com/i/teamlogos/nba/500/1.png')}" width="100" style="margin-bottom: 8px;" onerror="this.style.display='none'">
-                                <div style="font-size: 1.1rem; font-weight: 700;">{away_team}</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                """
-
-                from utils.streamlit_utils import get_team_logo_url
-
-                header_html = f"""
-                <div style="
-                    border: 2px solid {border_color};
-                    border-radius: 12px 12px 0 0;
-                    overflow: hidden;
-                    box-shadow: 0 3px 6px rgba(0,0,0,0.15);
-                ">
-                    <div style="
-                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                        padding: 20px;
-                        color: white;
-                    ">
-                        <div style="display: flex; align-items: center; justify-content: space-between;">
-                            <div style="flex: 1; text-align: center;">
-                                <img src="{get_team_logo_url(home_team)}" width="100" style="margin-bottom: 8px;">
-                                <div style="font-size: 1.1rem; font-weight: 700;">{home_team}</div>
-                            </div>
-                            
-                            <div style="flex: 0.4; text-align: center;">
-                                <div style="font-size: 2rem; font-weight: 900; margin-bottom: 5px;">VS</div>
-                                <div style="font-size: 0.95rem; font-weight: 600;">{game_date}</div>
-                                <div style="font-size: 1.1rem; font-weight: 700; margin-top: 3px;">🕐 {game_time}</div>
-                            </div>
-                            
-                            <div style="flex: 1; text-align: center;">
-                                <img src="{get_team_logo_url(away_team)}" width="100" style="margin-bottom: 8px;">
-                                <div style="font-size: 1.1rem; font-weight: 700;">{away_team}</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                """
-
-                st.components.v1.html(header_html, height=200)
-
-                # Stats section
-                with st.container():
-                    st.markdown(
-                        f"""
-                        <div style="border: 2px solid {border_color}; border-top: none; 
-                             border-radius: 0 0 12px 12px; padding: 15px; margin-top: -5px; 
-                             background: white;">
-                        """,
-                        unsafe_allow_html=True,
-                    )
-
-                    # Actual result indicator
-                    actual_color = "#2196F3" if actual_side == "under" else "#FF5722"
-                    st.markdown(
-                        f"""
-                        <div style="text-align: center; margin-bottom: 10px; padding: 10px; 
-                             background: {actual_color}; color: white; border-radius: 8px;">
-                            <span style="font-size: 1.3rem; font-weight: 700;">
-                                ⚡ ACTUAL: {actual_side.upper() if actual_side else 'N/A'} ({actual_total:.1f} points)
-                            </span>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-
-                    # Predictions row
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("O/U Line", f"{ou_line:.1f}")
-                    with col2:
-                        st.metric("Predicted", f"{predicted_total:.1f}")
-                    with col3:
-                        st.metric("Actual", f"{actual_total:.1f}")
-                    with col4:
-                        error_color = (
-                            "normal" if abs(prediction_error) <= 5 else "inverse"
-                        )
-                        st.metric(
-                            "Pred. Error",
-                            f"{prediction_error:+.1f}",
-                            delta=None,
-                            delta_color=error_color,
-                        )
-
-                    # Model predictions with correctness
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        reg_icon = "🔵" if regressor_pred == "Under" else "🔴"
-                        reg_status = "✅" if regressor_correct else "❌"
-                        st.metric(
-                            "🤖 Regressor", f"{reg_icon} {regressor_pred} {reg_status}"
-                        )
-                    with col2:
-                        clf_icon = "🔵" if classifier_pred == "Under" else "🔴"
-                        clf_status = "✅" if classifier_correct else "❌"
-                        st.metric(
-                            "🧠 Classifier",
-                            f"{clf_icon} {classifier_pred} {clf_status}",
-                        )
-
-                    # Odds
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.metric("Over Odds", f"{over_odds:.2f}")
-                    with col2:
-                        st.metric("Under Odds", f"{under_odds:.2f}")
-
-                    # Close div
-                    st.markdown("</div>", unsafe_allow_html=True)
-
-
-def format_past_games_display(df: pd.DataFrame) -> pd.DataFrame:
-    """Format past games dataframe for table display."""
-    display_df = pd.DataFrame()
-
-    display_df["Matchup"] = (
-        df["team_name_team_home"] + " vs " + df["team_name_team_away"]
-    )
-    # Convert to Madrid timezone
-    game_times = pd.to_datetime(df["game_time"])
-    if game_times.dt.tz is None:
-        game_times = game_times.dt.tz_localize("UTC")
-    display_df["Game Time"] = game_times.dt.tz_convert("Europe/Madrid").dt.strftime(
-        "%H:%M"
-    )
-    display_df["O/U Line"] = df["total_over_under_line"].round(1)
-    display_df["Predicted"] = df["predicted_total_score"].round(1)
-    display_df["Actual"] = df["total_scored_points"].round(1)
-    display_df["Pred. Error"] = (
-        df["total_scored_points"] - df["predicted_total_score"]
-    ).round(1)
-    display_df["Actual Side"] = df["actual_side"].str.upper()
-    display_df["Regressor"] = (
-        df["regressor_prediction"]
-        + " "
-        + df["regressor_correct"].map({True: "✅", False: "❌"})
-    )
-    display_df["Classifier"] = (
-        df["classifier_prediction_model2"]
-        + " "
-        + df["classifier_correct"].map({True: "✅", False: "❌"})
-    )
-    display_df["Over Odds"] = df["average_total_over_money"].round(2)
-    display_df["Under Odds"] = df["average_total_under_money"].round(2)
-
-    return display_df
-
-
-def show_historical_performance():
-    """Display historical betting performance analysis."""
-    st.markdown("## Historical Betting Performance")
-    st.caption("Analyze prediction accuracy and profitability over time.")
-    st.markdown("")
-
-    # Optional date filter in an expander
-    use_date_filter = st.checkbox("🗓️ Filter by Date Range", value=False)
-
-    start_date = None
-    end_date = None
-
-    if use_date_filter:
-        col1, col2 = st.columns(2)
-        with col1:
-            start_date = st.date_input(
-                "Start Date",
-                value=pd.to_datetime("2026-01-01"),
-                help="Select the start date for analysis",
-            )
-        with col2:
-            end_date = st.date_input(
-                "End Date",
-                value=pd.to_datetime("today"),
-                help="Select the end date for analysis",
-            )
-
-    st.markdown("---")
-
-    # Load data automatically
-    with st.spinner("Loading historical data and computing statistics..."):
-        # Fetch past games
-        df_past = get_games_with_total_scored_points(
-            only_null=False,
-            start_date=start_date.strftime("%Y-%m-%d") if start_date else None,
-            end_date=end_date.strftime("%Y-%m-%d") if end_date else None,
-        )
-
-        if df_past.empty:
-            st.warning("No historical data found for the selected date range.")
-            return
-
-        # Keep only the most recent prediction for each game_id
-        df_past = (
-            df_past.sort_values("prediction_date")
-            .groupby("game_id", as_index=False)
-            .tail(1)
-        )
-
-        # Add betting metrics
-        df_with_metrics = add_ou_betting_metrics(df_past)
-
-        # Display overall statistics
-        st.markdown("### 💰 Overall Betting Statistics")
-        st.markdown("")
-
-        # Compute stats but don't print (we'll display in Streamlit)
-        stats = compute_ou_betting_statistics(df_with_metrics, print_report=False)
-
-        # Extract stats
-        row = stats.iloc[0]
-        n_games = int(row["n_games_total"])
-        n_resolved = int(row["n_resolved"])
-        n_days = int(row["n_days"])
-        mean_error = row["mean_prediction_error"]
-        mean_abs_error = row["mean_abs_prediction_error"]
-
-        # Display summary metrics
-        col1, col2, col3, col4, col5 = st.columns(5)
-        with col1:
-            st.metric("📊 Total Games", n_games)
-        with col2:
-            st.metric("✅ Resolved Games", n_resolved)
-        with col3:
-            st.metric("📅 Days Analyzed", n_days)
-        with col4:
-            st.metric(
-                "📏 Mean Error (pts)",
-                f"{mean_error:+.2f}" if not pd.isna(mean_error) else "N/A",
-            )
-        with col5:
-            st.metric(
-                "📐 Mean Abs Error (pts)",
-                f"{mean_abs_error:.2f}" if not pd.isna(mean_abs_error) else "N/A",
-            )
-
-        st.markdown("")
-
-        # Create comparison table with larger styling
-        comparison_data = {
-            "🎯 Strategy": ["🤖 Regressor", "🧠 Classifier", "✅ Both Agree"],
-            "Bets": [
-                int(row["regressor_n_bets"]),
-                int(row["classifier_n_bets"]),
-                int(row["both_agree_n_bets"]),
-            ],
-            "Accuracy (%)": [
-                f"{row['regressor_accuracy']*100:.2f}",
-                f"{row['classifier_accuracy']*100:.2f}",
-                f"{row['both_agree_accuracy']*100:.2f}",
-            ],
-            "Total Profit (€)": [
-                f"{row['regressor_total_profit']:.2f}",
-                f"{row['classifier_total_profit']:.2f}",
-                f"{row['both_agree_total_profit']:.2f}",
-            ],
-            "Avg Profit/Bet (€)": [
-                f"{row['regressor_avg_profit_per_bet']:.2f}",
-                f"{row['classifier_avg_profit_per_bet']:.2f}",
-                f"{row['both_agree_avg_profit_per_bet']:.2f}",
-            ],
-            "Avg Profit/Day (€)": [
-                f"{row['regressor_avg_profit_per_day']:.2f}",
-                f"{row['classifier_avg_profit_per_day']:.2f}",
-                f"{row['both_agree_avg_profit_per_day']:.2f}",
-            ],
-            "Avg Stake/Day (€)": [
-                f"{row['regressor_avg_stake_per_day']:.2f}",
-                f"{row['classifier_avg_stake_per_day']:.2f}",
-                f"{row['both_agree_avg_stake_per_day']:.2f}",
-            ],
-        }
-
-        comparison_df = pd.DataFrame(comparison_data)
-
-        # Display with larger column config
-        st.dataframe(
-            comparison_df,
-            width="stretch",
-            hide_index=True,
-            height=200,
-        )
-
-        st.markdown("")
-        st.info(
-            "💡 **Note**: Accuracy = correct predictions / resolved games (excluding pushes). "
-            "Profit assumes 1€ stake per bet. Win profit = (odds - 1), Loss = -1€."
-        )
-
-        # Daily accuracy analysis
-        st.markdown("---")
-        st.markdown("### 📅 Daily Accuracy Breakdown")
-        st.markdown("")
-
-        daily_accuracy = compute_daily_accuracy(df_with_metrics)
-
-        if not daily_accuracy.empty:
-            # Format daily accuracy for display
-            daily_display = daily_accuracy.copy()
-            daily_display["regressor_accuracy"] = (
-                daily_display["regressor_accuracy"] * 100
-            ).round(2)
-            daily_display["classifier_accuracy"] = (
-                daily_display["classifier_accuracy"] * 100
-            ).round(2)
-            daily_display["both_agree_accuracy"] = (
-                daily_display["both_agree_accuracy"] * 100
-            ).round(2)
-
-            # Rename columns for display with emojis
-            daily_display.columns = [
-                "📅 Date",
-                "🎮 Games",
-                "🤖 Regressor (%)",
-                "🧠 Classifier (%)",
-                "✅ Both Agree (%)",
-            ]
-
-            st.dataframe(
-                daily_display,
-                width="stretch",
-                hide_index=True,
-                height=500,
-            )
-
-            # Plot daily accuracy
-            st.markdown("---")
-            st.markdown("### 📈 Daily Accuracy Chart")
-
-            st.markdown("")
-
-            # --- Prep ---
-            df = daily_accuracy.copy()
-            df["game_date"] = pd.to_datetime(df["game_date"])
-            df = df.sort_values("game_date")
-
-            # Optional: choose smoothing window (in days/points)
-            smooth_window = st.slider(
-                "Smoothing window (rolling average of days)", 1, 14, 1
-            )
-            use_smoothing = smooth_window > 1
-
-            series_cols = {
-                "Regressor": "regressor_accuracy",
-                "Classifier": "classifier_accuracy",
-                "Both Agree": "both_agree_accuracy",
-            }
-
-            # --- Figure ---
-            fig, ax = plt.subplots(figsize=(14, 7), dpi=140)
-
-            # Subtle styling
-            ax.set_facecolor("white")
-            for spine in ("top", "right"):
-                ax.spines[spine].set_visible(False)
-
-            ax.grid(True, which="major", axis="both", alpha=0.18, linewidth=1)
-            ax.grid(True, which="minor", axis="y", alpha=0.08, linewidth=0.8)
-
-            dates = df["game_date"]
-
-            for label, col in series_cols.items():
-                y = df[col].astype(float) * 100.0
-
-                if use_smoothing:
-                    y_smooth = y.rolling(window=smooth_window, min_periods=1).mean()
-                    ax.plot(
-                        dates,
-                        y_smooth,
-                        label=f"{label} (smoothed)",
-                        linewidth=2.6,
-                    )
-                    # Optional: show raw points faintly for context
-                    ax.scatter(dates, y, s=18, alpha=0.25)
-
-                else:
-                    ax.plot(dates, y, label=label, linewidth=2.6)
-                    ax.scatter(dates, y, s=26, alpha=0.9)
-
-            # 50% reference line
-            ax.axhline(50, linestyle="--", alpha=0.6, linewidth=1.4)
-            ax.text(
-                dates.iloc[0],
-                50.8,
-                "50% break-even",
-                fontsize=11,
-                alpha=0.75,
-                va="bottom",
-            )
-
-            # Labels / title
-            ax.set_title(
-                "Daily Prediction Accuracy by Strategy",
-                fontsize=18,
-                fontweight="bold",
-                pad=14,
-            )
-            ax.set_xlabel("Date", fontsize=13, fontweight="bold")
-            ax.set_ylabel("Accuracy (%)", fontsize=13, fontweight="bold")
-            ax.set_ylim(0, 100)
-
-            # Date axis: fewer, smarter ticks
-            ax.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=5, maxticks=9))
-            ax.xaxis.set_major_formatter(
-                mdates.ConciseDateFormatter(ax.xaxis.get_major_locator())
-            )
-            plt.setp(ax.get_xticklabels(), rotation=0, ha="center")
-
-            # Minor ticks on Y for nicer grid
-            ax.yaxis.set_minor_locator(plt.MultipleLocator(5))
-
-            ax.legend(frameon=False, fontsize=11, ncol=2)
-
-            fig.tight_layout()
-
-            # Streamlit rendering: responsive + crisp
-            st.pyplot(fig, width="stretch")
-
-        else:
-            st.warning("No daily accuracy data available for the selected range.")
-
-        # Prediction Error Analysis
-        st.markdown("---")
-        st.markdown("### 📉 Daily Prediction Error Analysis")
-        st.markdown("")
-        st.caption(
-            "Analyze how far off our predictions were from actual game totals over time."
-        )
-        st.markdown("")
-
-        daily_errors = compute_daily_prediction_errors(df_with_metrics)
-
-        if not daily_errors.empty:
-            # Display error statistics
-            col1, col2 = st.columns(2)
-            with col1:
-                overall_mean_error = daily_errors["mean_error"].mean()
-                st.metric("Overall Mean Error", f"{overall_mean_error:+.2f} pts")
-            with col2:
-                overall_mean_abs_error = daily_errors["mean_abs_error"].mean()
-                st.metric("Overall Mean Abs Error", f"{overall_mean_abs_error:.2f} pts")
-
-            st.markdown("")
-            st.info(
-                "💡 **Mean Error**: Average difference (predicted - actual). Positive = predicting too high, Negative = predicting too low.\\n\\n"
-                "**Mean Absolute Error**: Average magnitude of errors regardless of direction."
-            )
-
-            # Smoothing option
-            st.markdown("")
-            smooth_window_errors = st.slider(
-                "Smoothing window for error chart (rolling average of days)",
-                1,
-                14,
-                2,
-                key="error_smooth_slider",
-            )
-            use_smoothing_errors = smooth_window_errors > 1
-
-            # --- Figure ---
-            fig_errors, ax_errors = plt.subplots(figsize=(14, 7), dpi=140)
-
-            # Styling
-            ax_errors.set_facecolor("white")
-            for spine in ("top", "right"):
-                ax_errors.spines[spine].set_visible(False)
-
-            ax_errors.grid(True, which="major", axis="both", alpha=0.18, linewidth=1)
-            ax_errors.grid(True, which="minor", axis="y", alpha=0.08, linewidth=0.8)
-
-            dates = pd.to_datetime(daily_errors["game_date"])
-            daily_errors = daily_errors.sort_values("game_date")
-
-            # Plot mean error (can be positive or negative)
-            if use_smoothing_errors:
-                mean_error_smooth = (
-                    daily_errors["mean_error"]
-                    .rolling(window=smooth_window_errors, min_periods=1)
-                    .mean()
-                )
-                ax_errors.plot(
-                    dates,
-                    mean_error_smooth,
-                    color="#667eea",
-                    linewidth=2.5,
-                    label=f"Mean Error ({smooth_window_errors}-day avg)",
-                    alpha=0.9,
-                )
-            else:
-                ax_errors.plot(
-                    dates,
-                    daily_errors["mean_error"],
-                    color="#667eea",
-                    linewidth=2,
-                    marker="o",
-                    markersize=5,
-                    label="Mean Error",
-                    alpha=0.8,
-                )
-
-            # Plot mean absolute error (always positive)
-            if use_smoothing_errors:
-                mean_abs_error_smooth = (
-                    daily_errors["mean_abs_error"]
-                    .rolling(window=smooth_window_errors, min_periods=1)
-                    .mean()
-                )
-                ax_errors.plot(
-                    dates,
-                    mean_abs_error_smooth,
-                    color="#FF6B6B",
-                    linewidth=2.5,
-                    label=f"Mean Abs Error ({smooth_window_errors}-day avg)",
-                    alpha=0.9,
-                )
-            else:
-                ax_errors.plot(
-                    dates,
-                    daily_errors["mean_abs_error"],
-                    color="#FF6B6B",
-                    linewidth=2,
-                    marker="s",
-                    markersize=5,
-                    label="Mean Abs Error",
-                    alpha=0.8,
-                )
-
-            # Zero reference line
-            ax_errors.axhline(0, linestyle="--", alpha=0.6, linewidth=1.4, color="gray")
-            ax_errors.text(
-                dates.iloc[0],
-                0.5,
-                "Perfect prediction",
-                fontsize=11,
-                alpha=0.75,
-                va="bottom",
-            )
-
-            # Labels / title
-            ax_errors.set_title(
-                "Daily Prediction Error (Predicted - Actual Points)",
-                fontsize=18,
-                fontweight="bold",
-                pad=14,
-            )
-            ax_errors.set_xlabel("Date", fontsize=13, fontweight="bold")
-            ax_errors.set_ylabel("Error (points)", fontsize=13, fontweight="bold")
-
-            # Date axis formatting
-            ax_errors.xaxis.set_major_locator(
-                mdates.AutoDateLocator(minticks=5, maxticks=9)
-            )
-            ax_errors.xaxis.set_major_formatter(
-                mdates.ConciseDateFormatter(ax_errors.xaxis.get_major_locator())
-            )
-            plt.setp(ax_errors.get_xticklabels(), rotation=0, ha="center")
-
-            # Minor ticks on Y for nicer grid
-            ax_errors.yaxis.set_minor_locator(plt.MultipleLocator(1))
-
-            ax_errors.legend(frameon=False, fontsize=11, ncol=2)
-
-            fig_errors.tight_layout()
-
-            # Streamlit rendering
-            st.pyplot(fig_errors, width="stretch")
-
-        else:
-            st.warning("No prediction error data available for the selected range.")
 
 
 if __name__ == "__main__":
