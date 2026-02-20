@@ -1,4 +1,5 @@
-from datetime import datetime, timedelta
+import argparse
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from nba_ou.config.settings import SETTINGS
@@ -61,9 +62,7 @@ def predict_nba_games(run_tabpfn_client: bool = False) -> None:
     6. Saves results to Excel
     """
 
-    date_to_predict = (
-        datetime.now(ZoneInfo("US/Pacific"))
-    ).strftime("%Y-%m-%d")
+    date_to_predict = (datetime.now(ZoneInfo("US/Pacific"))).strftime("%Y-%m-%d")
 
     # Print welcome banner
     print_banner(date_to_predict)
@@ -115,7 +114,9 @@ def predict_nba_games(run_tabpfn_client: bool = False) -> None:
             recent_limit_to_include=date_to_predict,
             strict_mode=2,
         )
-        df_to_predict = df_to_predict_total[df_to_predict_total["GAME_DATE"] == date_to_predict].copy()
+        df_to_predict = df_to_predict_total[
+            df_to_predict_total["GAME_DATE"] == date_to_predict
+        ].copy()
         print_status("Feature DataFrame prepared")
     except Exception as e:
         print_status(f"Failed to prepare features: {e}", ok=False)
@@ -183,4 +184,12 @@ def predict_nba_games(run_tabpfn_client: bool = False) -> None:
 
 
 if __name__ == "__main__":
-    predict_nba_games(run_tabpfn_client=True)
+    parser = argparse.ArgumentParser(description="Generate NBA over/under predictions")
+    parser.add_argument(
+        "--no-tabpfn",
+        action="store_true",
+        help="Disable TabPFN predictions",
+    )
+    args = parser.parse_args()
+
+    predict_nba_games(run_tabpfn_client=not args.no_tabpfn)

@@ -70,4 +70,4 @@ jobs:
                   pip install -r requirements.txt
 
             - name: Run NBA predictor
-              run: python scripts/predict_nba_games.py
+              run: python scripts/predict_nba_games.py --no-tabpfn
