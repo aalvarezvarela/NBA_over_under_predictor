@@ -122,15 +122,6 @@ def merge_stats(player_trad, player_adv, team_trad, team_adv, game_id):
 
     return player_stats, team_stats
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
-    "Referer": "https://www.nba.com/",
-    "Origin": "https://www.nba.com",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Connection": "keep-alive",
-}
-
 
 def fetch_nba_data(
     season_nullable: str,
@@ -182,12 +173,10 @@ def fetch_nba_data(
         try:
             time.sleep(random.uniform(0.1, 0.3))  # Avoid rate limiting
 
-            print("Attempting to fecth scheduled games for a given season")
+            print("Attempting to fetch scheduled games for a given season")
             game_finder = LeagueGameFinder(
                 season_nullable=season_nullable,
                 league_id_nullable="00",
-                headers=HEADERS,
-                timeout=50,
             )
             time.sleep(random.uniform(0.1, 0.3))  # Avoid rate limiting
             games = game_finder.get_data_frames()[0]
