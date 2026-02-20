@@ -41,12 +41,7 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    headless = False if args.headed else None
-
-    mode_text = (
-        "config default" if headless is None else "headless" if headless else "headed"
-    )
-    print(f"Playwright mode: {mode_text}")
+    headless = False if args.headed else True
 
     update_all_databases(
         start_season_year=args.start,

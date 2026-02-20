@@ -108,6 +108,7 @@ def update_odds_yahoo_database(
         else scrape_dates_original
     )
     print(f"Scraping Yahoo for {len(scrape_dates)} date(s)...")
+    print(f"Scrape dates: {[d.isoformat() for d in scrape_dates]}")
     raw_scraped_df = asyncio.run(scrape_yahoo_days(scrape_dates, headless=headless))
 
     if raw_scraped_df.empty:
