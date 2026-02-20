@@ -53,25 +53,56 @@ def update_all_databases(
 
         print(f"\n--- Updating sportsbook odds for season {y} ---")
 
-        sportsbook_results = update_odds_sportsbook_database(
-            season_year=season_year,
-            headless=headless,
-        )
-        print(f"Sportsbook update results: {sportsbook_results}")
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            try:
+                sportsbook_results = update_odds_sportsbook_database(
+                    season_year=season_year,
+                    headless=headless,
+                )
+                print(f"Sportsbook update results: {sportsbook_results}")
+                break
+            except Exception as e:
+                if attempt < max_retries:
+                    print(
+                        f"Sportsbook update failed (attempt {attempt + 1}/{max_retries + 1}): {e}"
+                    )
+                    print("Retrying...")
+                    time.sleep(2.0)
+                else:
+                    print(
+                        f"Sportsbook update failed after {max_retries + 1} attempts: {e}"
+                    )
+                    raise RuntimeError("Sportsbook update failed during backfill.") from e
 
         print(f"\n--- Updating Yahoo odds for season {y} ---")
 
-        yahoo_results = update_odds_yahoo_database(
-            season_year=season_year,
-            headless=headless,
-            add_one_day=True,  # Add one day to catch any late updates for yesterday's games
-        )
-        print(f"Yahoo update results: {yahoo_results}")
-        print("Rechecking Yahoo odds after 1 day to catch any date issue games...")
-        yahoo_results = update_odds_yahoo_database(
-            season_year=season_year, headless=headless, add_one_day=False
-        )
-        print(f"Yahoo reupdate results: {yahoo_results}")
+        for attempt in range(max_retries + 1):
+            try:
+                yahoo_results = update_odds_yahoo_database(
+                    season_year=season_year,
+                    headless=headless,
+                    add_one_day=True,  # Add one day to catch any late updates for yesterday's games
+                )
+                print(f"Yahoo update results: {yahoo_results}")
+                print(
+                    "Rechecking Yahoo odds after 1 day to catch any date issue games..."
+                )
+                yahoo_results = update_odds_yahoo_database(
+                    season_year=season_year, headless=headless, add_one_day=False
+                )
+                print(f"Yahoo reupdate results: {yahoo_results}")
+                break
+            except Exception as e:
+                if attempt < max_retries:
+                    print(
+                        f"Yahoo update failed (attempt {attempt + 1}/{max_retries + 1}): {e}"
+                    )
+                    print("Retrying...")
+                    time.sleep(2.0)
+                else:
+                    print(f"Yahoo update failed after {max_retries + 1} attempts: {e}")
+                    raise RuntimeError("Yahoo update failed during backfill.") from e
 
         print(f"\n--- Updating refs/injuries for season {y} ---")
         limit_reached = update_refs_injuries_database(
