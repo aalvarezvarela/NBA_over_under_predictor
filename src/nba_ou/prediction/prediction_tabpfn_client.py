@@ -79,19 +79,28 @@ def _init_tabpfn_client() -> type:
         ) from exc
 
     token = os.getenv("TABPFN_ACCESS_TOKEN")
-    init_fn = getattr(tabpfn_client, "init", None)
-    set_token_fn = getattr(tabpfn_client, "set_access_token", None)
 
-    if callable(init_fn):
-        if token:
-            try:
-                init_fn(token=token)
-            except TypeError:
-                init_fn()
+    # If we have a token, set it directly
+    if token:
+        set_token_fn = getattr(tabpfn_client, "set_access_token", None)
+        if callable(set_token_fn):
+            set_token_fn(token)
         else:
+            raise RuntimeError(
+                "tabpfn_client.set_access_token not found. "
+                "Ensure tabpfn-client is properly installed."
+            )
+    else:
+        # No token provided - try init() for interactive auth
+        # This will fail in non-interactive environments (e.g., GitHub Actions)
+        init_fn = getattr(tabpfn_client, "init", None)
+        if callable(init_fn):
             init_fn()
-    elif token and callable(set_token_fn):
-        set_token_fn(token)
+        else:
+            raise RuntimeError(
+                "TABPFN_ACCESS_TOKEN environment variable not set and "
+                "tabpfn_client.init() not available for interactive auth."
+            )
 
     return tabpfn_client.TabPFNRegressor
 
