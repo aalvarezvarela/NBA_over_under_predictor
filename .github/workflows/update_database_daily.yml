@@ -48,12 +48,6 @@ jobs:
               print(cur.fetchone())
           PY
 
-      - name: Run backfill script
+      - name: Update all databases
         run: |
-          cd src
-          python update_games_players_database.py --start 2025 --end 2025 --update-odds
-
-      - name: Update referees and injuries
-        run: |
-          cd src
-          python update_referees_injuries_database.py --start 2025 --end 2025
+          python scripts/update_databases/update_all_databases.py --start 2025 --end 2025
