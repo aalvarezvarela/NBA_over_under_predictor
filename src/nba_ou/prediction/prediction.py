@@ -90,7 +90,7 @@ def load_and_predict_model_for_nba_games(
             "MATCHUP_TEAM_HOME",
         ],
         keep_all_cols=True,
-        verbose=2,
+        verbose=1,
         strict_mode=2,
     )
 

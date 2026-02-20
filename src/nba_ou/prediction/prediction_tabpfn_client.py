@@ -170,7 +170,7 @@ def load_and_predict_tabpfn_client_for_nba_games(
             "MATCHUP_TEAM_HOME",
         ],
         keep_all_cols=True,
-        verbose=2,
+        verbose=1,
     )
     cleaned_df = _add_na_tracking_columns(cleaned_df)
 
