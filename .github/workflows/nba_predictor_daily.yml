@@ -27,7 +27,7 @@ jobs:
     run:
         runs-on: self-hosted
         env:
-            PYTHONWARNINGS: "ignore::UserWarning,ignore::DeprecationWarning,ignore::FutureWarning"
+            PYTHONWARNINGS: "ignore::UserWarning,ignore::DeprecationWarning,ignore::FutureWarning,ignore::PerformanceWarning"
 
             # Critical for resolving imports that live under src/
             PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/src

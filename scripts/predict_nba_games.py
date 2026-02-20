@@ -118,6 +118,7 @@ def predict_nba_games(run_tabpfn_client: bool = False) -> None:
             df_to_predict_total["GAME_DATE"] == date_to_predict
         ].copy()
         print_status("Feature DataFrame prepared")
+    
     except Exception as e:
         print_status(f"Failed to prepare features: {e}", ok=False)
         raise
