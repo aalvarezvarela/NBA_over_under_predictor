@@ -289,7 +289,11 @@ async def extract_full_game_public_bet_percentages(
 
 
 async def scrape_yahoo_day(
-    page: Page, d: date, *, skip_navigation: bool = False
+    page: Page,
+    d: date,
+    *,
+    skip_navigation: bool = False,
+    target_date: date | None = None,
 ) -> tuple[pd.DataFrame | None, str]:
     season_year = season_year_for_date(d)
     schedule_url = build_schedule_url(season_year, d)
@@ -320,6 +324,20 @@ async def scrape_yahoo_day(
 
     for matchup_url in matchup_urls:
         odds_url = with_section_odds(matchup_url)
+
+        # Validate URL date matches target date if specified
+        if target_date is not None:
+            try:
+                url_date_str = date_from_matchup_url(odds_url)
+                url_date = date.fromisoformat(url_date_str)
+                if url_date != target_date:
+                    print(
+                        f"Skipping {odds_url}: URL date {url_date_str} doesn't match target {target_date.isoformat()}"
+                    )
+                    continue
+            except (ValueError, AttributeError) as e:
+                print(f"Failed to parse date from {odds_url}: {e}")
+                pass
 
         await random_sleep()
         await page.goto(odds_url, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
@@ -396,9 +414,16 @@ async def scrape_yahoo_day(
     return pd.concat(daily_dfs, ignore_index=True), actual_url
 
 
-async def scrape_yahoo_days(days: list[date], *, headless: bool = True) -> pd.DataFrame:
+async def scrape_yahoo_days(
+    days: list[date], *, headless: bool = True, target_dates: list[date] | None = None
+) -> pd.DataFrame:
     if not days:
         return pd.DataFrame()
+
+    if target_dates is not None and len(target_dates) != len(days):
+        raise ValueError(
+            f"target_dates length ({len(target_dates)}) must match days length ({len(days)})"
+        )
 
     all_rows: list[pd.DataFrame] = []
 
@@ -409,7 +434,8 @@ async def scrape_yahoo_days(days: list[date], *, headless: bool = True) -> pd.Da
 
         last_actual_url = None
 
-        for d in days:
+        for i, d in enumerate(days):
+            print(f"Scraping Yahoo for {d.isoformat()}...")
             try:
                 # Build the schedule URL for this day
                 season_year = season_year_for_date(d)
@@ -418,8 +444,11 @@ async def scrape_yahoo_days(days: list[date], *, headless: bool = True) -> pd.Da
                 # Skip navigation if the actual URL from last scrape matches where we're going
                 skip_nav = current_schedule_url == last_actual_url
 
+                # Get target date for validation if provided
+                target_d = target_dates[i] if target_dates is not None else None
+
                 df_day, actual_url = await scrape_yahoo_day(
-                    page, d, skip_navigation=skip_nav
+                    page, d, skip_navigation=skip_nav, target_date=target_d
                 )
                 if df_day is not None and not df_day.empty:
                     all_rows.append(df_day)

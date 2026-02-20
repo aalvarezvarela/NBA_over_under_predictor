@@ -109,7 +109,14 @@ def update_odds_yahoo_database(
     )
     print(f"Scraping Yahoo for {len(scrape_dates)} date(s)...")
     print(f"Scrape dates: {[d.isoformat() for d in scrape_dates]}")
-    raw_scraped_df = asyncio.run(scrape_yahoo_days(scrape_dates, headless=headless))
+    print(
+        f"Target dates for validation: {[d.isoformat() for d in scrape_dates_original]}"
+    )
+    raw_scraped_df = asyncio.run(
+        scrape_yahoo_days(
+            scrape_dates, headless=headless, target_dates=scrape_dates_original
+        )
+    )
 
     if raw_scraped_df.empty:
         print("No Yahoo rows scraped for missing games.")
@@ -209,11 +216,10 @@ if __name__ == "__main__":
     print("Update summary:")
     for k, v in results.items():
         print(f"  {k}: {v}")
-    
+
     results = update_odds_yahoo_database(
         last_n_games=args.last_n_games,
         season_year=args.season_year,
         add_one_day=False,
         headless=not args.headed,
-
     )
