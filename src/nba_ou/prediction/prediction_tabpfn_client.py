@@ -20,6 +20,24 @@ from nba_ou.utils.s3_models import (
 )
 
 
+def _add_na_tracking_columns(
+    df: pd.DataFrame,
+    *,
+    count_col: str = "NA_COLUMNS_COUNT",
+    names_col: str = "NA_COLUMNS_NAMES",
+) -> pd.DataFrame:
+    """Add per-row NA count and NA column-name list."""
+    out = df.copy()
+    na_mask = out.isna()
+    col_names = na_mask.columns.to_numpy()
+    out[count_col] = na_mask.sum(axis=1).astype(int)
+    out[names_col] = [
+        ",".join(col_names[row_mask]) if row_mask.any() else None
+        for row_mask in na_mask.to_numpy()
+    ]
+    return out
+
+
 def _select_latest_historical_train_key(s3_client, bucket: str, prefix: str) -> str:
     """Select the latest historical parquet by YYYYMMDD suffix in key name."""
     objects = list_s3_objects(s3_client=s3_client, bucket=bucket, prefix=prefix)
@@ -154,6 +172,7 @@ def load_and_predict_tabpfn_client_for_nba_games(
         keep_all_cols=True,
         verbose=2,
     )
+    cleaned_df = _add_na_tracking_columns(cleaned_df)
 
     if "TOTAL_OVER_UNDER_LINE" not in cleaned_df.columns:
         raise ValueError("TOTAL_OVER_UNDER_LINE is required for prediction")
@@ -218,8 +237,10 @@ def load_and_predict_tabpfn_client_for_nba_games(
     TabPFNRegressor = _init_tabpfn_client()
     regressor = TabPFNRegressor()
 
-    print("Remove This line after testing TabPFN client fit/predict")
-    regressor.fit(X_train[:100], y_train[:100])  # Temporary limit for testing
+    # print("Remove This line after testing TabPFN client fit/predict")
+    print("Training TabPFN client regressor on historical data")
+    regressor.fit(X_train, y_train)  # Temporary limit for testing
+    print("Predicting with TabPFN client regressor for incoming games")
     pred_line_error = regressor.predict(X_pred)
 
     df_predictable["PRED_LINE_ERROR"] = pred_line_error
@@ -249,6 +270,8 @@ def load_and_predict_tabpfn_client_for_nba_games(
         "PRED_LINE_ERROR",
         "PRED_TOTAL_POINTS",
         "PRED_PICK",
+        "NA_COLUMNS_COUNT",
+        "NA_COLUMNS_NAMES",
     ]
     missing_summary = [c for c in summary_columns if c not in df_predictable.columns]
     if missing_summary:

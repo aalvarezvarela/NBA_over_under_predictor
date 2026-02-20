@@ -352,7 +352,7 @@ def clean_dataframe_for_training(
     keep_columns: list[str] | None = None,
     keep_all_cols: bool = False,
     verbose: int = 1,
-    strict_mode: bool = False,
+    strict_mode: int = -1,
     strict_mode_exclude_cols: list[str] | None = None,
 ) -> tuple[pd.DataFrame, dict] | pd.DataFrame:
     """
@@ -374,7 +374,8 @@ def clean_dataframe_for_training(
         keep_all_cols (bool): If True, only drops ID, NAME, and string columns; keeps all others.
             Default: False
         verbose (int): Verbosity level (0=silent, 1=basic, 2=detailed). Default: 1
-        strict_mode (bool): If True, raises an error if any NaN values remain after cleaning. Default: False
+        strict_mode (int): Maximum number of columns allowed to have NaN values (excluding strict_mode_exclude_cols).
+            Use 0 for no NaN columns allowed, -1 or any negative value to disable the check. Default: -1
         strict_mode_exclude_cols (list[str] | None): Columns to exclude from strict mode check.
             Defaults to ['MATCHUP_TEAM_HOME', 'TOTAL_POINTS'] if None.
 
@@ -441,7 +442,7 @@ def clean_dataframe_for_training(
             print(f"Removed {initial_rows - len(df_cleaned)} all-NaN rows")
 
     # Check for remaining NaN values in strict mode
-    if strict_mode:
+    if strict_mode >= 0:
         # Default exclusions: columns kept for info but not used in model
         if strict_mode_exclude_cols is None:
             strict_mode_exclude_cols = ["MATCHUP_TEAM_HOME", "TOTAL_POINTS"]
@@ -454,8 +455,10 @@ def clean_dataframe_for_training(
             ~columns_with_nan.index.isin(strict_mode_exclude_cols)
         ]
 
-        if not columns_with_nan.empty:
-            error_msg = "Strict mode: NaN values found after cleaning pipeline:\n"
+        num_cols_with_nan = len(columns_with_nan)
+        
+        if num_cols_with_nan > strict_mode:
+            error_msg = f"Strict mode: Found {num_cols_with_nan} columns with NaN values, but only {strict_mode} allowed:\n"
             for col, count in columns_with_nan.items():
                 pct = (count / len(df_cleaned)) * 100
                 error_msg += f"  - {col}: {count} NaN values ({pct:.2f}%)\n"
@@ -467,7 +470,7 @@ def clean_dataframe_for_training(
                 if strict_mode_exclude_cols
                 else ""
             )
-            print(f"\nStrict mode check passed: No NaN values remaining{excluded_info}")
+            print(f"\nStrict mode check passed: {num_cols_with_nan}/{strict_mode} columns with NaN values{excluded_info}")
 
     if verbose >= 1:
         print("=" * 80)

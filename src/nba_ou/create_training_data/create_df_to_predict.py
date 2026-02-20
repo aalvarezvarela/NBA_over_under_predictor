@@ -166,7 +166,7 @@ def create_df_to_predict(
     scheduled_data: dict = None,
     recent_limit_to_include: str = None,
     older_limit_to_include: str = None,
-    strict_mode: bool = True,
+    strict_mode: int = 2,
 ) -> pd.DataFrame:
     """
     Create prediction dataset for NBA over/under prediction models.

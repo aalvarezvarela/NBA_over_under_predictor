@@ -8,7 +8,7 @@ def merge_and_validate_scheduled_odds(
     df_odds: pd.DataFrame,
     df_odds_yahoo: pd.DataFrame,
     df_odds_sportsbook: pd.DataFrame,
-    strict_mode: bool = True,
+    strict_mode: int = 0,
 ) -> pd.DataFrame:
     """Merge and validate scheduled odds with historical odds data.
 
@@ -19,13 +19,14 @@ def merge_and_validate_scheduled_odds(
         df_odds (pd.DataFrame): Historical odds data from database
         df_odds_yahoo (pd.DataFrame): Yahoo odds for scheduled games
         df_odds_sportsbook (pd.DataFrame): Sportsbook odds for scheduled games
-        strict_mode (bool, optional): If True, raises error if merged odds have NaN/None values. Default is True.
+        strict_mode (int, optional): Maximum number of columns allowed to have NaN/None values.
+            Use 0 for no columns with nulls allowed, -1 or any negative value to disable the check. Default is 0.
 
     Returns:
         pd.DataFrame: Combined odds dataframe with historical and scheduled games
 
     Raises:
-        ValueError: If column validation fails or if strict_mode is True and nulls are found
+        ValueError: If column validation fails or if number of columns with nulls exceeds strict_mode threshold
     """
     # Merge Yahoo and Sportsbook scheduled odds
     df_odds_predict = merge_yahoo_sportsbook_odds(df_odds_yahoo, df_odds_sportsbook)
@@ -48,12 +49,14 @@ def merge_and_validate_scheduled_odds(
         df_odds_predict = df_odds_predict.drop(columns=list(extra_in_predict))
 
     # Strict mode: check for NaN or None values
-    if strict_mode:
+    if strict_mode >= 0:
         null_counts = df_odds_predict.isnull().sum()
         cols_with_nulls = null_counts[null_counts > 0]
-        if not cols_with_nulls.empty:
+        num_cols_with_nulls = len(cols_with_nulls)
+
+        if num_cols_with_nulls > strict_mode:
             raise ValueError(
-                f"Strict mode: df_odds_predict contains NaN/None values in columns:\n{cols_with_nulls}"
+                f"Strict mode: Found {num_cols_with_nulls} columns with NaN/None values, but only {strict_mode} allowed:\n{cols_with_nulls}"
             )
 
     # Concatenate and sort

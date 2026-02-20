@@ -113,7 +113,7 @@ def predict_nba_games(run_tabpfn_client: bool = False) -> None:
             todays_prediction=True,
             scheduled_data=scheduled_data,
             recent_limit_to_include=date_to_predict,
-            strict_mode=True,
+            strict_mode=2,
         )
         df_to_predict = df_to_predict_total[df_to_predict_total["GAME_DATE"] == date_to_predict].copy()
         print_status("Feature DataFrame prepared")
@@ -133,39 +133,39 @@ def predict_nba_games(run_tabpfn_client: bool = False) -> None:
 
     # Step 4: Generate predictions with full dataset regressor
     print_step_header(4, "Generating Predictions (Full Dataset Model)")
-    # try:
-    #     _ = load_s3_model_and_predict(
-    #         s3_client=s3,
-    #         bucket=SETTINGS.s3_bucket,
-    #         prefix=SETTINGS.s3_regressor_full_dataset_prefix,
-    #         df=df_to_predict,
-    #         model_id="full_dataset",
-    #         prediction_datetime=prediction_time,
-    #     )
-    #     print_status("Full dataset predictions generated")
-    # except Exception as e:
-    #     print_status(f"Failed to generate full dataset predictions: {e}", ok=False)
-    #     raise
+    try:
+        _ = load_s3_model_and_predict(
+            s3_client=s3,
+            bucket=SETTINGS.s3_bucket,
+            prefix=SETTINGS.s3_regressor_full_dataset_prefix,
+            df=df_to_predict,
+            model_id="full_dataset",
+            prediction_datetime=prediction_time,
+        )
+        print_status("Full dataset predictions generated")
+    except Exception as e:
+        print_status(f"Failed to generate full dataset predictions: {e}", ok=False)
+        raise
 
-    # # Step 5: Generate predictions with recent games regressor
-    # print_step_header(5, "Generating Predictions (Recent Games Model)")
-    # try:
-    #     _ = load_s3_model_and_predict(
-    #         s3_client=s3,
-    #         bucket=SETTINGS.s3_bucket,
-    #         prefix=SETTINGS.s3_regressor_recent_games_prefix,
-    #         df=df_to_predict,
-    #         model_id="recent_games",
-    #         prediction_datetime=prediction_time,
-    #     )
-    #     print_status("Recent games predictions generated")
-    # except Exception as e:
-    #     print_status(f"Failed to generate recent games predictions: {e}", ok=False)
-    #     raise
+    # Step 5: Generate predictions with recent games regressor
+    print_step_header(5, "Generating Predictions (Recent Games Model)")
+    try:
+        _ = load_s3_model_and_predict(
+            s3_client=s3,
+            bucket=SETTINGS.s3_bucket,
+            prefix=SETTINGS.s3_regressor_recent_games_prefix,
+            df=df_to_predict,
+            model_id="recent_games",
+            prediction_datetime=prediction_time,
+        )
+        print_status("Recent games predictions generated")
+    except Exception as e:
+        print_status(f"Failed to generate recent games predictions: {e}", ok=False)
+        raise
 
-    # if not run_tabpfn_client:
-    #     print("\nPrediction pipeline completed successfully.")
-    #     return
+    if not run_tabpfn_client:
+        print("\nPrediction pipeline completed successfully.")
+        return
 
     # Step 6: Generate predictions with TabPFN client
     print_step_header(6, "Generating Predictions (TabPFN Client)")
@@ -183,4 +183,4 @@ def predict_nba_games(run_tabpfn_client: bool = False) -> None:
 
 
 if __name__ == "__main__":
-    predict_nba_games()
+    predict_nba_games(run_tabpfn_client=True)

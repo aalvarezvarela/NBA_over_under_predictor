@@ -35,6 +35,8 @@ def get_game_ids_with_null_total_scored_points() -> pd.DataFrame:
             FROM {}.{}
             WHERE total_scored_points IS NULL
             OR total_scored_points < %s
+            OR home_pts IS NULL
+            OR away_pts IS NULL
         """).format(
             sql.Identifier(schema),
             sql.Identifier(table),
@@ -47,7 +49,9 @@ def get_game_ids_with_null_total_scored_points() -> pd.DataFrame:
 
     game_ids = df["game_id"].dropna().unique().tolist()
     if not game_ids:
-        return pd.DataFrame(columns=["game_id", "total_scored_points"])
+        return pd.DataFrame(
+            columns=["game_id", "total_scored_points", "home_pts", "away_pts"]
+        )
 
     dates = pd.to_datetime(df["game_date"], errors="coerce").dropna().unique()
     seasons = {get_nba_season_nullable_from_date(d) for d in dates}
@@ -64,19 +68,37 @@ def get_game_ids_with_null_total_scored_points() -> pd.DataFrame:
 
     assert all(games.groupby("game_id").size() == 2), "Not all games have two rows"
 
+    # Calculate total scored points
     games["total_scored_points"] = games.groupby("game_id")["PTS"].transform("sum")
     games = games[games["total_scored_points"] >= 140]
     # drop rows that WL is empty or None or NaN
-    games = games[games["WL"].notna()]    
-    
-    games = games[["game_id", "total_scored_points"]].drop_duplicates(keep = "first")
-    updates = games.dropna(subset=["game_id", "total_scored_points"]).copy()
+    games = games[games["WL"].notna()]
+
+    # Determine home/away based on MATCHUP column
+    # MATCHUP format: "TOR @ BOS" (away @ home) or "BOS vs. TOR" (home vs. away)
+    games["is_home"] = games["MATCHUP"].str.contains("vs.", case=False, na=False)
+
+    # Split into home and away
+    home_games = games[games["is_home"]].copy()
+    away_games = games[~games["is_home"]].copy()
+
+    # Rename PTS to home_pts and away_pts
+    home_games = home_games[["game_id", "PTS", "total_scored_points"]].rename(
+        columns={"PTS": "home_pts"}
+    )
+    away_games = away_games[["game_id", "PTS"]].rename(columns={"PTS": "away_pts"})
+
+    # Merge home and away
+    updates = home_games.merge(away_games, on="game_id", how="inner")
+    updates = updates.dropna(
+        subset=["game_id", "total_scored_points", "home_pts", "away_pts"]
+    ).copy()
     return updates
 
 
 def update_total_scored_points(updates: pd.DataFrame) -> None:
     """
-    updates must have columns: ['game_id', 'total_scored_points']
+    updates must have columns: ['game_id', 'total_scored_points', 'home_pts', 'away_pts']
     """
     if updates.empty:
         return
@@ -86,10 +108,14 @@ def update_total_scored_points(updates: pd.DataFrame) -> None:
     updates["total_scored_points"] = pd.to_numeric(
         updates["total_scored_points"], errors="coerce"
     )
+    updates["home_pts"] = pd.to_numeric(updates["home_pts"], errors="coerce")
+    updates["away_pts"] = pd.to_numeric(updates["away_pts"], errors="coerce")
 
     rows = [
-        (r["total_scored_points"], r["game_id"])
-        for _, r in updates.dropna(subset=["game_id", "total_scored_points"]).iterrows()
+        (r["total_scored_points"], r["home_pts"], r["away_pts"], r["game_id"])
+        for _, r in updates.dropna(
+            subset=["game_id", "total_scored_points", "home_pts", "away_pts"]
+        ).iterrows()
     ]
     if not rows:
         return
@@ -98,7 +124,9 @@ def update_total_scored_points(updates: pd.DataFrame) -> None:
 
     update_stmt = sql.SQL("""
         UPDATE {}.{}
-        SET total_scored_points = %s
+        SET total_scored_points = %s,
+            home_pts = %s,
+            away_pts = %s
         WHERE game_id = %s
     """).format(sql.Identifier(schema), sql.Identifier(table))
 

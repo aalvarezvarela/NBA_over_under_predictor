@@ -92,11 +92,25 @@ def create_predictions_table(drop: bool = False):
                         prediction_date TEXT,
                         prediction_datetime TIMESTAMP NOT NULL,
                         time_to_match_minutes INTEGER,
+                        na_columns_count INTEGER,
+                        na_columns_names TEXT,
                         total_scored_points NUMERIC,
                         home_pts NUMERIC,
                         away_pts NUMERIC
                     )
                     """
+                ).format(sql.Identifier(schema), sql.Identifier(table))
+            )
+
+            # Forward-compatible migration for existing tables
+            cur.execute(
+                sql.SQL(
+                    "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS na_columns_count INTEGER"
+                ).format(sql.Identifier(schema), sql.Identifier(table))
+            )
+            cur.execute(
+                sql.SQL(
+                    "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS na_columns_names TEXT"
                 ).format(sql.Identifier(schema), sql.Identifier(table))
             )
 
@@ -157,6 +171,8 @@ def upload_predictions_to_postgre(df: "pd.DataFrame"):
                 "PREDICTION_DATE": "prediction_date",
                 "PREDICTION_DATETIME": "prediction_datetime",
                 "TIME_TO_MATCH_MINUTES": "time_to_match_minutes",
+                "NA_COLUMNS_COUNT": "na_columns_count",
+                "NA_COLUMNS_NAMES": "na_columns_names",
                 "HOME_PTS": "home_pts",
                 "AWAY_PTS": "away_pts",
             }
@@ -169,8 +185,14 @@ def upload_predictions_to_postgre(df: "pd.DataFrame"):
             df = df.loc[:, df.columns != col]
             df[col] = dup_values.bfill(axis=1).iloc[:, 0]
 
-        # Ensure optional score columns exist after normalization.
-        for col in ("total_scored_points", "home_pts", "away_pts"):
+        # Ensure optional enrichment columns exist after normalization.
+        for col in (
+            "na_columns_count",
+            "na_columns_names",
+            "total_scored_points",
+            "home_pts",
+            "away_pts",
+        ):
             if col not in df.columns:
                 df[col] = None
 
@@ -192,6 +214,8 @@ def upload_predictions_to_postgre(df: "pd.DataFrame"):
             "prediction_date",
             "prediction_datetime",
             "time_to_match_minutes",
+            "na_columns_count",
+            "na_columns_names",
             "total_scored_points",
             "home_pts",
             "away_pts",
@@ -239,5 +263,5 @@ def upload_predictions_to_postgre(df: "pd.DataFrame"):
 
 
 if __name__ == "__main__":
-    create_predictions_table(False)
+    create_predictions_table(True)
     print("nba_predictions table is ready.")

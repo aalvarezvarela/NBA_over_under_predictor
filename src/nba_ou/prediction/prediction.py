@@ -17,6 +17,35 @@ from nba_ou.utils.s3_models import (
 )
 
 
+def _add_na_tracking_columns(
+    df: pd.DataFrame,
+    *,
+    count_col: str = "NA_COLUMNS_COUNT",
+    names_col: str = "NA_COLUMNS_NAMES",
+) -> pd.DataFrame:
+    """Add per-row NA count and NA column-name list.
+
+    Excludes TOTAL_POINTS and columns containing 'MATCHUP' (case insensitive) from tracking.
+    """
+    out = df.copy()
+
+    # Filter columns: exclude TOTAL_POINTS and any column containing 'MATCHUP'
+    cols_to_check = [
+        col
+        for col in out.columns
+        if col != "TOTAL_POINTS" and "matchup" not in col.lower()
+    ]
+
+    na_mask = out[cols_to_check].isna()
+    col_names = na_mask.columns.to_numpy()
+    out[count_col] = na_mask.sum(axis=1).astype(int)
+    out[names_col] = [
+        ",".join(col_names[row_mask]) if row_mask.any() else None
+        for row_mask in na_mask.to_numpy()
+    ]
+    return out
+
+
 def load_and_predict_model_for_nba_games(
     df: pd.DataFrame,
     regressor,
@@ -62,8 +91,10 @@ def load_and_predict_model_for_nba_games(
         ],
         keep_all_cols=True,
         verbose=2,
-        strict_mode=True,
+        strict_mode=2,
     )
+
+    df_predictable = _add_na_tracking_columns(df_predictable)
 
     # Load the model using joblib
     model = regressor
@@ -123,6 +154,8 @@ def load_and_predict_model_for_nba_games(
         "PRED_LINE_ERROR",
         "PRED_TOTAL_POINTS",
         "PRED_PICK",
+        "NA_COLUMNS_COUNT",
+        "NA_COLUMNS_NAMES",
     ]
 
     df_summary = df_predictable[summary_columns].copy()

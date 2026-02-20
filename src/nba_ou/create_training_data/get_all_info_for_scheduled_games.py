@@ -127,7 +127,7 @@ def get_yahoo_prediction_data(
     next_date = base_date + timedelta(days=1)
 
     # Scrape both dates to account for timezone differences
-    days_to_scrape = [base_date, next_date]
+    days_to_scrape = [ next_date, base_date]
     df_yahoo = asyncio.run(scrape_yahoo_days(days_to_scrape, headless=headless))
 
     # Check if we got any data
