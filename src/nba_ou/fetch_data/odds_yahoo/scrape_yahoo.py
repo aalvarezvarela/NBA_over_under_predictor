@@ -13,7 +13,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 BASE = "https://sports.yahoo.com"
 MATCHUP_HREF_RE = re.compile(r"^/nba/.+-\d{10}/?$")
 BOARD_ID_FULL = "odds-board-six-pack-FULL"
-TIMEOUT_MS = 45_000
+TIMEOUT_MS = 10_000
 TIMEOUT_MS_PUBLIC = 5_200
 SLEEP_MIN_S = 1.0
 SLEEP_MAX_S = 2.0
@@ -323,6 +323,15 @@ async def scrape_yahoo_day(
 
         await random_sleep()
         await page.goto(odds_url, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
+
+        # Check for "No Bets Available" empty state
+        try:
+            no_bets_section = await page.query_selector("#odds-empty-state")
+            if no_bets_section:
+                print(f"No bets available for matchup {odds_url}, skipping...")
+                continue
+        except Exception:
+            pass  # If check fails, continue normally
 
         has_board = True
         try:

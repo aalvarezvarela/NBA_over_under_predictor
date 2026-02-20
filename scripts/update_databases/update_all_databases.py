@@ -33,11 +33,24 @@ if __name__ == "__main__":
         default=False,
         help="Only update odds and refs/injuries if new games are found",
     )
+    parser.add_argument(
+        "--headed",
+        action="store_true",
+        default=False,
+        help="Run Playwright in headed mode (default uses config.ini)",
+    )
 
     args = parser.parse_args()
+    headless = False if args.headed else None
+
+    mode_text = (
+        "config default" if headless is None else "headless" if headless else "headed"
+    )
+    print(f"Playwright mode: {mode_text}")
 
     update_all_databases(
         start_season_year=args.start,
         end_season_year=args.end,
         only_new_games=args.only_new_games,
+        headless=headless,
     )
