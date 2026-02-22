@@ -222,7 +222,7 @@ def compute_all_rolling_statistics(df):
     # Compute trends for all total lines
     for col in total_line_cols:
         if col in df.columns:
-            df = compute_trend_slope(df, parameter=col, window=5, shift_current_game=False)
+            df = compute_trend_slope(df, parameter=col, window=5, shift_current_game=True)
 
     return df
 

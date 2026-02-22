@@ -20,13 +20,12 @@ from nba_ou.postgre_db.config.db_config import (
     get_schema_name_injuries,
     get_schema_name_refs,
 )
-from psycopg import sql
-from tqdm import tqdm
-
 from nba_ou.postgre_db.injuries_refs.mapping_v3_v2_injuries_refs import (
     V3_TO_V2_INJURIES_MAP,
     V3_TO_V2_OFFICIALS_MAP,
 )
+from psycopg import sql
+from tqdm import tqdm
 
 
 def get_existing_injury_game_ids_from_db(season_year: str, db_connection=None) -> set:

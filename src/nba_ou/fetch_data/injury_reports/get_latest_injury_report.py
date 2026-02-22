@@ -174,6 +174,7 @@ def read_injury_report(pdf_data):
         doc = pymupdf.open(stream=pdf_data, filetype="pdf")
     else:
         doc = pymupdf.open(pdf_data)
+    
     col_names = [
         "Game Date",
         "Game Time",

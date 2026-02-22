@@ -3,6 +3,7 @@ from collections import defaultdict
 import pandas as pd
 from nba_api.stats.endpoints import commonplayerinfo
 from nba_api.stats.static import players, teams
+from nba_ou.config.constants import OUT_STATUSES
 from nba_ou.config.constants import TEAM_ID_MAP as TEAM_CONVERSION_DICT
 
 
@@ -43,10 +44,11 @@ def get_player_id(player_name, team_name=None):
 
 def get_out_players_by_game_and_team(df: pd.DataFrame) -> dict:
     out_df = df[
-        (df["Current Status"] == "Out")
+        df["Current Status"].isin(OUT_STATUSES)
         & df["GAME_ID"].notna()
         & df["Player ID"].notna()
     ]
+
     result = defaultdict(lambda: defaultdict(list))
     for _, row in out_df.iterrows():
         game_id = row["GAME_ID"]

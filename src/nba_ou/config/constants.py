@@ -4,6 +4,7 @@ NBA Over/Under Predictor - Constants Module
 This module contains all constant values used throughout the application,
 including team mappings, season type definitions, and configuration values.
 """
+OUT_STATUSES = {"Out", "Doubtful"}
 
 # ==============================================================================
 # TEAM MAPPINGS
