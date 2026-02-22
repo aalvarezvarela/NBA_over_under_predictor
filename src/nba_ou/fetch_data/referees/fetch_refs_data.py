@@ -41,3 +41,12 @@ def fetch_nba_referee_assignments_today(nba_official_url: str) -> pd.DataFrame:
         raise RuntimeError("No referee assignments found for today yet, please check back later.")
 
     return nba_tbl
+
+
+if __name__ == "__main__":
+    url = "https://official.nba.com/referee-assignments/"
+    try:
+        df_refs = fetch_nba_referee_assignments_today(url)
+        print(df_refs)
+    except Exception as e:
+        print(f"Error fetching referee assignments: {e}")

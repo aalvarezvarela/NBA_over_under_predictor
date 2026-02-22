@@ -5,6 +5,7 @@ This module handles loading and processing referee data for NBA games,
 including computing referee-specific features based on historical performance.
 """
 
+import re
 import pandas as pd
 from nba_ou.postgre_db.injuries_refs.fetch_refs_db.get_refs_db import get_refs_data_from_db
 from tqdm import tqdm
@@ -15,6 +16,17 @@ REFEREE_METRICS = [
     "DIFFERENCE_FROM_LINE",  # Difference from over/under line
     "TOTAL_PF",  # Personal fouls called in the game
 ]
+
+
+def _canonicalize_referee_name(name: str) -> str:
+    """Normalize referee names so scheduled and historical sources match."""
+    if pd.isna(name):
+        return pd.NA
+    name = str(name).strip()
+    name = re.sub(r"\s*\(#\d+\)", "", name)  # remove assignment-site jersey suffix
+    name = name.replace(".", "")
+    name = re.sub(r"\s+", " ", name)
+    return name or pd.NA
 
 
 def compute_referee_features(df_refs_pivot):
@@ -171,7 +183,9 @@ def process_referee_data_for_training(seasons, df_merged, df_referees_scheduled=
     # Transform referee data to have one row per game with REF_1, REF_2, REF_3
     if not df_refs.empty and "GAME_ID" in df_refs.columns:
         # Create full name column
-        df_refs["FULL_NAME"] = df_refs["FIRST_NAME"] + " " + df_refs["LAST_NAME"]
+        df_refs["FULL_NAME"] = (df_refs["FIRST_NAME"] + " " + df_refs["LAST_NAME"]).map(
+            _canonicalize_referee_name
+        )
 
         # Ensure GAME_DATE is datetime in df_refs
         df_refs["GAME_DATE"] = pd.to_datetime(df_refs["GAME_DATE"])
@@ -198,6 +212,10 @@ def process_referee_data_for_training(seasons, df_merged, df_referees_scheduled=
             new_ref_data_subset = df_referees_scheduled[
                 ["GAME_ID", "REF_1", "REF_2", "REF_3"]
             ].copy()
+            for ref_col in ["REF_1", "REF_2", "REF_3"]:
+                new_ref_data_subset[ref_col] = new_ref_data_subset[ref_col].map(
+                    _canonicalize_referee_name
+                )
 
             # Append new referee data to df_refs_pivot
             df_refs_pivot = pd.concat(
@@ -209,6 +227,8 @@ def process_referee_data_for_training(seasons, df_merged, df_referees_scheduled=
 
         df_refs_pivot["GAME_ID"] = df_refs_pivot["GAME_ID"].astype(str)
         df_refs["GAME_ID"] = df_refs["GAME_ID"].astype(str)
+        # Ensure exactly one crew row per game; prefer scheduled rows when provided.
+        df_refs_pivot = df_refs_pivot.drop_duplicates(subset=["GAME_ID"], keep="last")
 
         df_merged_temp = df_merged[
             [
