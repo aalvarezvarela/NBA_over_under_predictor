@@ -224,3 +224,5 @@ lab/train_classifier/AutogluonModels/*
 models/*
 data/odds_data/raw_matches/*
 data/*
+*.csv
+*.ods

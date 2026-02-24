@@ -48,7 +48,7 @@ if __name__ == "__main__":
         "--limit",
         "-l",
         dest="limit",
-        default="2026-02-21",
+        default="2026-02-24",
         help="Limit date to train (YYYY-MM-DD). Defaults to 2026-02-14",
     )
     parser.add_argument(
