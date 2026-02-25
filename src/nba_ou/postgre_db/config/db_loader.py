@@ -121,7 +121,7 @@ def load_refs_from_db(seasons=None) -> pd.DataFrame | None:
             conn.close()
 
 
-def load_all_nba_data_from_db(seasons=None):
+def load_all_nba_data_from_db(seasons=None, extra_game_ids=None):
     """
     Load both games and players from Postgres and normalize column names.
 
@@ -130,8 +130,8 @@ def load_all_nba_data_from_db(seasons=None):
     """
     print("Loading NBA data from PostgreSQL...")
 
-    df_games = load_games_from_db(seasons=seasons)
-    df_players = load_players_from_db(seasons=seasons)
+    df_games = load_games_from_db(seasons=seasons, extra_game_ids=extra_game_ids)
+    df_players = load_players_from_db(seasons=seasons, extra_game_ids=extra_game_ids)
 
     if df_games is None or df_players is None:
         print("Failed to load data from databases")

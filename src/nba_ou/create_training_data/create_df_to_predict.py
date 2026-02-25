@@ -16,6 +16,11 @@ from nba_ou.config.settings import SETTINGS
 from nba_ou.create_training_data.get_all_info_for_scheduled_games import (
     get_all_info_for_scheduled_games,
 )
+from nba_ou.create_training_data.predict_data_utils import (
+    extract_home_away_pairs_from_scheduled_games,
+    filter_by_date_range_with_extra_game_ids,
+    normalize_game_ids,
+)
 from nba_ou.data_preparation.merged_home_away_data.add_features_after_merging import (
     add_derived_features_after_computed_stats,
     add_game_date_features,
@@ -61,13 +66,15 @@ from nba_ou.data_preparation.team.rolling import compute_all_rolling_statistics
 from nba_ou.data_preparation.team.totals import compute_total_points_features
 from nba_ou.data_preparation.travel.travel_processing import compute_travel_features
 from nba_ou.postgre_db import load_all_nba_data_from_db
+from nba_ou.postgre_db.games.fetch_data_from_db.fetch_data_from_games_db import (
+    get_historical_game_ids_for_home_away_matchups,
+)
 from nba_ou.postgre_db.injuries_refs.fetch_injury_db.get_injury_data_from_db import (
     get_injury_data_from_db,
 )
 from nba_ou.postgre_db.odds.merge_odds_data import (
     load_and_merge_odds_yahoo_sportsbookreview,
 )
-from nba_ou.utils.filter_by_date_range import filter_by_date_range
 from nba_ou.utils.seasons import get_seasons_between_dates
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
@@ -124,6 +131,7 @@ def process_player_statistics_for_training(
     older_limit_to_include,
     recent_limit_to_include,
     injury_dict_scheduled=None,
+    extra_game_ids=None,
 ):
     """
     Process player statistics and prepare for training.
@@ -143,8 +151,11 @@ def process_player_statistics_for_training(
     """
 
     df_players = clear_player_statistics(df_players, df_team)
-    df_players = filter_by_date_range(
-        df_players, older_limit_to_include, recent_limit_to_include
+    df_players = filter_by_date_range_with_extra_game_ids(
+        df_players,
+        older_limit_to_include,
+        recent_limit_to_include,
+        extra_game_ids=extra_game_ids,
     )
     # Define statistics to compute for top players
     stats = ["PTS", "PACE_PER40", "DEF_RATING", "OFF_RATING", "TS_PCT", "MIN"]
@@ -235,22 +246,51 @@ def create_df_to_predict(
     # Determine which seasons to load
     seasons = get_seasons_between_dates(older_limit_to_include, recent_limit_to_include)
 
+    extra_game_ids = []
+    if todays_prediction:
+        home_away_pairs = extract_home_away_pairs_from_scheduled_games(scheduled_games)
+        scheduled_game_ids = (
+            normalize_game_ids(scheduled_games["GAME_ID"].tolist())
+            if "GAME_ID" in scheduled_games.columns
+            else []
+        )
+        if home_away_pairs:
+            extra_game_ids = get_historical_game_ids_for_home_away_matchups(
+                home_away_pairs=home_away_pairs,
+                exclude_game_ids=scheduled_game_ids,
+                max_game_date=recent_limit_to_include,
+            )
+        print(
+            f"Found {len(extra_game_ids)} extra historical game IDs for today's home/away matchups"
+        )
+
+    # Load game and player data from database
+    print(f"Loading games and players data for seasons: {seasons}")
+    df, df_players = load_all_nba_data_from_db(
+        seasons=seasons, extra_game_ids=extra_game_ids
+    )
+
+    # Ensure GAME_DATE column is pandas Timestamp for df (df_players doesn't have it yet)
+    df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
+
+    # Filter df by date range while preserving any explicit extra historical GAME_IDs
+    df = filter_by_date_range_with_extra_game_ids(
+        df,
+        older_limit_to_include,
+        recent_limit_to_include,
+        extra_game_ids=extra_game_ids,
+    )
+
     # Load and merge Yahoo and Sportsbook odds data
-    df_odds = load_and_merge_odds_yahoo_sportsbookreview(season_years=seasons)
+    df_odds = load_and_merge_odds_yahoo_sportsbookreview(
+        season_years=seasons,
+        extra_game_ids=extra_game_ids,
+    )
 
     if todays_prediction:
         df_odds = merge_and_validate_scheduled_odds(
             df_odds, df_odds_yahoo, df_odds_sportsbook, strict_mode=strict_mode
         )
-
-    # Load game and player data from database
-    df, df_players = load_all_nba_data_from_db(seasons=seasons)
-
-    # Ensure GAME_DATE column is pandas Timestamp for df (df_players doesn't have it yet)
-    df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
-
-    # Filter df by date range
-    df = filter_by_date_range(df, older_limit_to_include, recent_limit_to_include)
 
     original_columns = df.columns.tolist()
     # Get today day to predict
@@ -262,7 +302,7 @@ def create_df_to_predict(
         df, df_odds, scheduled_games=scheduled_games if todays_prediction else None
     )
     # Load injury data from database
-    df_injuries = get_injury_data_from_db(seasons)
+    df_injuries = get_injury_data_from_db(seasons, extra_game_ids=extra_game_ids)
 
     # Add Players Statistics
 
@@ -273,6 +313,7 @@ def create_df_to_predict(
         older_limit_to_include,
         recent_limit_to_include,
         injury_dict_scheduled=injury_dict_scheduled if todays_prediction else None,
+        extra_game_ids=extra_game_ids,
     )
 
     df_merged = merge_home_away_data(df, todays_prediction=todays_prediction)
@@ -289,6 +330,7 @@ def create_df_to_predict(
         seasons,
         df_merged,
         df_referees_scheduled=df_referees_scheduled if todays_prediction else None,
+        extra_game_ids=extra_game_ids,
     )
 
     df_training = select_training_columns(

@@ -419,8 +419,8 @@ def build_game_level_predictions(
         weighted_numerator += pred_total.fillna(0.0) * weight
         weighted_denominator += valid_mask.astype(float) * weight
 
-    base["consensus_pred_total"] = (
-        weighted_numerator / weighted_denominator.replace(0, np.nan)
+    base["consensus_pred_total"] = weighted_numerator / weighted_denominator.replace(
+        0, np.nan
     )
     base["consensus_line_diff"] = base["consensus_pred_total"] - line
     base["consensus_pick"] = pick_from_diff(base["consensus_line_diff"])
@@ -428,6 +428,33 @@ def build_game_level_predictions(
     base["consensus_correct"] = (base["consensus_pick"] == base["actual_side"]) & base[
         "actual_side"
     ].isin(["OVER", "UNDER"])
+
+    # Consensus without TabPFN (average of full_dataset and recent_games only)
+    no_tabpfn_numerator = pd.Series(0.0, index=base.index)
+    no_tabpfn_denominator = pd.Series(0.0, index=base.index)
+    for model_type in ["full_dataset", "recent_games"]:
+        prefix = MODEL_PREFIXES[model_type]
+        pred_total_col = f"pred_total_{prefix}"
+        pred_total = pd.to_numeric(base[pred_total_col], errors="coerce")
+        valid_mask = pred_total.notna()
+        no_tabpfn_numerator += pred_total.fillna(0.0)
+        no_tabpfn_denominator += valid_mask.astype(float)
+
+    base["consensus_no_tabpfn_pred_total"] = (
+        no_tabpfn_numerator / no_tabpfn_denominator.replace(0, np.nan)
+    )
+    base["consensus_no_tabpfn_line_diff"] = (
+        base["consensus_no_tabpfn_pred_total"] - line
+    )
+    base["consensus_no_tabpfn_pick"] = pick_from_diff(
+        base["consensus_no_tabpfn_line_diff"]
+    )
+    base["consensus_no_tabpfn_error"] = (
+        base["consensus_no_tabpfn_pred_total"] - actual_total
+    )
+    base["consensus_no_tabpfn_correct"] = (
+        base["consensus_no_tabpfn_pick"] == base["actual_side"]
+    ) & base["actual_side"].isin(["OVER", "UNDER"])
 
     base["all_models_available"] = base[model_total_cols].notna().all(axis=1)
     base["all_models_agree"] = (
@@ -469,6 +496,15 @@ def build_upcoming_display(df: pd.DataFrame) -> pd.DataFrame:
         df["consensus_line_diff"], errors="coerce"
     ).round(2)
     display["Consensus Pick"] = df["consensus_pick"]
+
+    display["Consensus (No TabPFN) Total"] = pd.to_numeric(
+        df["consensus_no_tabpfn_pred_total"], errors="coerce"
+    ).round(1)
+    display["Consensus (No TabPFN) Diff"] = pd.to_numeric(
+        df["consensus_no_tabpfn_line_diff"], errors="coerce"
+    ).round(2)
+    display["Consensus (No TabPFN) Pick"] = df["consensus_no_tabpfn_pick"]
+
     if "time_to_match_minutes" in df.columns:
         display["Time to Game (min)"] = (
             pd.to_numeric(df["time_to_match_minutes"], errors="coerce")
@@ -512,7 +548,21 @@ def build_past_display(df: pd.DataFrame) -> pd.DataFrame:
         df["consensus_line_diff"], errors="coerce"
     ).round(2)
     display["Consensus Pick"] = df["consensus_pick"]
-    display["Consensus Correct"] = df["consensus_correct"].map({True: "✅", False: "❌"})
+    display["Consensus Correct"] = df["consensus_correct"].map(
+        {True: "✅", False: "❌"}
+    )
+
+    display["Consensus (No TabPFN) Total"] = pd.to_numeric(
+        df["consensus_no_tabpfn_pred_total"], errors="coerce"
+    ).round(1)
+    display["Consensus (No TabPFN) Diff"] = pd.to_numeric(
+        df["consensus_no_tabpfn_line_diff"], errors="coerce"
+    ).round(2)
+    display["Consensus (No TabPFN) Pick"] = df["consensus_no_tabpfn_pick"]
+    display["Consensus (No TabPFN) Correct"] = df["consensus_no_tabpfn_correct"].map(
+        {True: "✅", False: "❌"}
+    )
+
     return display
 
 
@@ -556,7 +606,9 @@ def render_prediction_cards(df: pd.DataFrame, include_actual: bool = False) -> N
                 home_team = row["team_name_team_home"]
                 away_team = row["team_name_team_away"]
 
-                game_dt = pd.to_datetime(row["game_time_utc"], errors="coerce", utc=True)
+                game_dt = pd.to_datetime(
+                    row["game_time_utc"], errors="coerce", utc=True
+                )
                 if pd.isna(game_dt):
                     game_time = "TBD"
                     game_date = "TBD"
@@ -565,7 +617,9 @@ def render_prediction_cards(df: pd.DataFrame, include_actual: bool = False) -> N
                     game_time = game_dt_madrid.strftime("%I:%M %p")
                     game_date = game_dt_madrid.strftime("%b %d, %Y")
 
-                line_value = pd.to_numeric(row.get("total_over_under_line"), errors="coerce")
+                line_value = pd.to_numeric(
+                    row.get("total_over_under_line"), errors="coerce"
+                )
                 line_text = f"{line_value:.1f}" if pd.notna(line_value) else "N/A"
 
                 picks = {
@@ -575,9 +629,15 @@ def render_prediction_cards(df: pd.DataFrame, include_actual: bool = False) -> N
                 }
 
                 totals = {
-                    "Full Dataset": pd.to_numeric(row.get("pred_total_full"), errors="coerce"),
-                    "Recent Games": pd.to_numeric(row.get("pred_total_recent"), errors="coerce"),
-                    "TabPFN": pd.to_numeric(row.get("pred_total_tabpfn"), errors="coerce"),
+                    "Full Dataset": pd.to_numeric(
+                        row.get("pred_total_full"), errors="coerce"
+                    ),
+                    "Recent Games": pd.to_numeric(
+                        row.get("pred_total_recent"), errors="coerce"
+                    ),
+                    "TabPFN": pd.to_numeric(
+                        row.get("pred_total_tabpfn"), errors="coerce"
+                    ),
                 }
 
                 if include_actual:
@@ -597,7 +657,9 @@ def render_prediction_cards(df: pd.DataFrame, include_actual: bool = False) -> N
                         border_color = "#F44336"
                 else:
                     consensus_pick = row.get("consensus_pick")
-                    border_color = "#4CAF50" if consensus_pick in {"OVER", "UNDER"} else "#FF9800"
+                    border_color = (
+                        "#4CAF50" if consensus_pick in {"OVER", "UNDER"} else "#FF9800"
+                    )
 
                 header_html = f"""
                 <div style="
@@ -642,11 +704,19 @@ def render_prediction_cards(df: pd.DataFrame, include_actual: bool = False) -> N
                     )
 
                     if include_actual:
-                        actual_total = pd.to_numeric(row.get("total_scored_points"), errors="coerce")
+                        actual_total = pd.to_numeric(
+                            row.get("total_scored_points"), errors="coerce"
+                        )
                         actual_side = row.get("actual_side")
-                        actual_side_text = actual_side if pd.notna(actual_side) else "N/A"
-                        actual_total_text = f"{actual_total:.1f}" if pd.notna(actual_total) else "N/A"
-                        actual_color = "#2196F3" if actual_side == "UNDER" else "#FF5722"
+                        actual_side_text = (
+                            actual_side if pd.notna(actual_side) else "N/A"
+                        )
+                        actual_total_text = (
+                            f"{actual_total:.1f}" if pd.notna(actual_total) else "N/A"
+                        )
+                        actual_color = (
+                            "#2196F3" if actual_side == "UNDER" else "#FF5722"
+                        )
                         st.markdown(
                             f"""
                             <div style="text-align: center; margin-bottom: 10px; padding: 10px;
@@ -678,13 +748,19 @@ def render_prediction_cards(df: pd.DataFrame, include_actual: bool = False) -> N
                         st.metric("O/U Line", line_text)
                     with col2:
                         val = totals["Full Dataset"]
-                        st.metric("Full Total", f"{val:.1f}" if pd.notna(val) else "N/A")
+                        st.metric(
+                            "Full Total", f"{val:.1f}" if pd.notna(val) else "N/A"
+                        )
                     with col3:
                         val = totals["Recent Games"]
-                        st.metric("Recent Total", f"{val:.1f}" if pd.notna(val) else "N/A")
+                        st.metric(
+                            "Recent Total", f"{val:.1f}" if pd.notna(val) else "N/A"
+                        )
                     with col4:
                         val = totals["TabPFN"]
-                        st.metric("TabPFN Total", f"{val:.1f}" if pd.notna(val) else "N/A")
+                        st.metric(
+                            "TabPFN Total", f"{val:.1f}" if pd.notna(val) else "N/A"
+                        )
 
                     consensus_total = pd.to_numeric(
                         row.get("consensus_pred_total"), errors="coerce"
@@ -698,12 +774,16 @@ def render_prediction_cards(df: pd.DataFrame, include_actual: bool = False) -> N
                     with col1:
                         st.metric(
                             "Consensus Total",
-                            f"{consensus_total:.1f}" if pd.notna(consensus_total) else "N/A",
+                            f"{consensus_total:.1f}"
+                            if pd.notna(consensus_total)
+                            else "N/A",
                         )
                     with col2:
                         st.metric(
                             "Consensus Diff",
-                            f"{consensus_diff:+.2f}" if pd.notna(consensus_diff) else "N/A",
+                            f"{consensus_diff:+.2f}"
+                            if pd.notna(consensus_diff)
+                            else "N/A",
                         )
                     with col3:
                         st.metric("Consensus Pick", consensus_pick)
@@ -711,13 +791,23 @@ def render_prediction_cards(df: pd.DataFrame, include_actual: bool = False) -> N
                     col1, col2, col3 = st.columns(3)
                     with col1:
                         diff = pd.to_numeric(row.get("line_diff_full"), errors="coerce")
-                        st.metric("Full Diff", f"{diff:+.2f}" if pd.notna(diff) else "N/A")
+                        st.metric(
+                            "Full Diff", f"{diff:+.2f}" if pd.notna(diff) else "N/A"
+                        )
                     with col2:
-                        diff = pd.to_numeric(row.get("line_diff_recent"), errors="coerce")
-                        st.metric("Recent Diff", f"{diff:+.2f}" if pd.notna(diff) else "N/A")
+                        diff = pd.to_numeric(
+                            row.get("line_diff_recent"), errors="coerce"
+                        )
+                        st.metric(
+                            "Recent Diff", f"{diff:+.2f}" if pd.notna(diff) else "N/A"
+                        )
                     with col3:
-                        diff = pd.to_numeric(row.get("line_diff_tabpfn"), errors="coerce")
-                        st.metric("TabPFN Diff", f"{diff:+.2f}" if pd.notna(diff) else "N/A")
+                        diff = pd.to_numeric(
+                            row.get("line_diff_tabpfn"), errors="coerce"
+                        )
+                        st.metric(
+                            "TabPFN Diff", f"{diff:+.2f}" if pd.notna(diff) else "N/A"
+                        )
 
                     model_cols = st.columns(3)
                     model_keys = [
@@ -780,6 +870,108 @@ def summarize_model_performance(df: pd.DataFrame) -> pd.DataFrame:
             }
         )
 
+    # Add consensus row
+    consensus_picks = df["consensus_pick"]
+    consensus_valid_mask = resolved_mask & consensus_picks.isin(["OVER", "UNDER"])
+
+    n_consensus_games = int(consensus_valid_mask.sum())
+    consensus_accuracy = (
+        float(df.loc[consensus_valid_mask, "consensus_correct"].mean())
+        if n_consensus_games
+        else np.nan
+    )
+    consensus_mean_error = (
+        float(df.loc[consensus_valid_mask, "consensus_error"].mean())
+        if n_consensus_games
+        else np.nan
+    )
+    consensus_mae = (
+        float(df.loc[consensus_valid_mask, "consensus_error"].abs().mean())
+        if n_consensus_games
+        else np.nan
+    )
+    consensus_mean_abs_line_diff = (
+        float(df.loc[consensus_valid_mask, "consensus_line_diff"].abs().mean())
+        if n_consensus_games
+        else np.nan
+    )
+
+    rows.append(
+        {
+            "Model": "Consensus",
+            "Games": n_consensus_games,
+            "Accuracy (%)": None
+            if pd.isna(consensus_accuracy)
+            else round(consensus_accuracy * 100, 2),
+            "Mean Error": None
+            if pd.isna(consensus_mean_error)
+            else round(consensus_mean_error, 2),
+            "MAE": None if pd.isna(consensus_mae) else round(consensus_mae, 2),
+            "Avg |Diff vs Line|": None
+            if pd.isna(consensus_mean_abs_line_diff)
+            else round(consensus_mean_abs_line_diff, 2),
+        }
+    )
+
+    # Add consensus (no TabPFN) row
+    consensus_no_tabpfn_picks = df["consensus_no_tabpfn_pick"]
+    consensus_no_tabpfn_valid_mask = resolved_mask & consensus_no_tabpfn_picks.isin(
+        ["OVER", "UNDER"]
+    )
+
+    n_consensus_no_tabpfn_games = int(consensus_no_tabpfn_valid_mask.sum())
+    consensus_no_tabpfn_accuracy = (
+        float(
+            df.loc[consensus_no_tabpfn_valid_mask, "consensus_no_tabpfn_correct"].mean()
+        )
+        if n_consensus_no_tabpfn_games
+        else np.nan
+    )
+    consensus_no_tabpfn_mean_error = (
+        float(
+            df.loc[consensus_no_tabpfn_valid_mask, "consensus_no_tabpfn_error"].mean()
+        )
+        if n_consensus_no_tabpfn_games
+        else np.nan
+    )
+    consensus_no_tabpfn_mae = (
+        float(
+            df.loc[consensus_no_tabpfn_valid_mask, "consensus_no_tabpfn_error"]
+            .abs()
+            .mean()
+        )
+        if n_consensus_no_tabpfn_games
+        else np.nan
+    )
+    consensus_no_tabpfn_mean_abs_line_diff = (
+        float(
+            df.loc[consensus_no_tabpfn_valid_mask, "consensus_no_tabpfn_line_diff"]
+            .abs()
+            .mean()
+        )
+        if n_consensus_no_tabpfn_games
+        else np.nan
+    )
+
+    rows.append(
+        {
+            "Model": "Consensus (No TabPFN)",
+            "Games": n_consensus_no_tabpfn_games,
+            "Accuracy (%)": None
+            if pd.isna(consensus_no_tabpfn_accuracy)
+            else round(consensus_no_tabpfn_accuracy * 100, 2),
+            "Mean Error": None
+            if pd.isna(consensus_no_tabpfn_mean_error)
+            else round(consensus_no_tabpfn_mean_error, 2),
+            "MAE": None
+            if pd.isna(consensus_no_tabpfn_mae)
+            else round(consensus_no_tabpfn_mae, 2),
+            "Avg |Diff vs Line|": None
+            if pd.isna(consensus_no_tabpfn_mean_abs_line_diff)
+            else round(consensus_no_tabpfn_mean_abs_line_diff, 2),
+        }
+    )
+
     return pd.DataFrame(rows)
 
 
@@ -793,16 +985,30 @@ def compute_threshold_accuracy_table(
             "full_dataset": (0.0, 1.0, 2.0),
             "recent_games": (0.0, 1.0, 2.0),
             "TabPFNRegressor": (0.0, 0.5, 1.0, 1.5, 2.0),
+            "consensus": (0.0, 0.5, 1.0, 1.5, 2.0),
+            "consensus_no_tabpfn": (0.0, 0.5, 1.0, 1.5, 2.0),
         }
 
     resolved_mask = df["actual_side"].isin(["OVER", "UNDER"])
     rows: list[dict] = []
 
     for model_type, thresholds in model_thresholds.items():
-        prefix = MODEL_PREFIXES[model_type]
-        pick_col = f"pick_{prefix}"
-        correct_col = f"correct_{prefix}"
-        line_diff_col = f"line_diff_{prefix}"
+        if model_type == "consensus":
+            pick_col = "consensus_pick"
+            correct_col = "consensus_correct"
+            line_diff_col = "consensus_line_diff"
+            model_label = "Consensus"
+        elif model_type == "consensus_no_tabpfn":
+            pick_col = "consensus_no_tabpfn_pick"
+            correct_col = "consensus_no_tabpfn_correct"
+            line_diff_col = "consensus_no_tabpfn_line_diff"
+            model_label = "Consensus (No TabPFN)"
+        else:
+            prefix = MODEL_PREFIXES[model_type]
+            pick_col = f"pick_{prefix}"
+            correct_col = f"correct_{prefix}"
+            line_diff_col = f"line_diff_{prefix}"
+            model_label = MODEL_LABELS[model_type]
 
         for threshold in thresholds:
             mask = (
@@ -815,7 +1021,7 @@ def compute_threshold_accuracy_table(
 
             rows.append(
                 {
-                    "Model": MODEL_LABELS[model_type],
+                    "Model": model_label,
                     "Filter": f"|Diff vs Line| >= {threshold:g}",
                     "Games": n_games,
                     "Accuracy (%)": None
@@ -857,12 +1063,58 @@ def compute_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
                 }
             )
 
+        # Add consensus metrics for this date
+        consensus_valid = resolved[resolved["consensus_pick"].isin(["OVER", "UNDER"])]
+        n_consensus_games = len(consensus_valid)
+
+        out_rows.append(
+            {
+                "game_date": pd.to_datetime(game_date),
+                "model_type": "consensus",
+                "model_label": "Consensus",
+                "n_games": n_consensus_games,
+                "accuracy": consensus_valid["consensus_correct"].mean()
+                if n_consensus_games
+                else np.nan,
+                "mae": consensus_valid["consensus_error"].abs().mean()
+                if n_consensus_games
+                else np.nan,
+            }
+        )
+
+        # Add consensus (no TabPFN) metrics for this date
+        consensus_no_tabpfn_valid = resolved[
+            resolved["consensus_no_tabpfn_pick"].isin(["OVER", "UNDER"])
+        ]
+        n_consensus_no_tabpfn_games = len(consensus_no_tabpfn_valid)
+
+        out_rows.append(
+            {
+                "game_date": pd.to_datetime(game_date),
+                "model_type": "consensus_no_tabpfn",
+                "model_label": "Consensus (No TabPFN)",
+                "n_games": n_consensus_no_tabpfn_games,
+                "accuracy": consensus_no_tabpfn_valid[
+                    "consensus_no_tabpfn_correct"
+                ].mean()
+                if n_consensus_no_tabpfn_games
+                else np.nan,
+                "mae": consensus_no_tabpfn_valid["consensus_no_tabpfn_error"]
+                .abs()
+                .mean()
+                if n_consensus_no_tabpfn_games
+                else np.nan,
+            }
+        )
+
     return pd.DataFrame(out_rows).sort_values(["game_date", "model_type"])
 
 
 def show_upcoming_predictions() -> None:
     st.markdown("### 🔄 Update Predictions")
-    st.caption("Run the prediction model to generate fresh predictions for today's games.")
+    st.caption(
+        "Run the prediction model to generate fresh predictions for today's games."
+    )
     st.markdown("")
 
     if run_nba_predictor is None:
@@ -1021,7 +1273,7 @@ def show_past_games_results() -> None:
     resolved_mask = games["actual_side"].isin(["OVER", "UNDER"])
     n_resolved = int(resolved_mask.sum())
 
-    metrics_cols = st.columns(4)
+    metrics_cols = st.columns(5)
     with metrics_cols[0]:
         st.metric("🎮 Games Played", n_resolved)
 
@@ -1037,6 +1289,29 @@ def show_past_games_results() -> None:
         total = int(model_mask.sum())
         with metrics_cols[idx]:
             st.metric(metric_labels[model_type], f"{correct}/{total}")
+
+    # Add consensus metric
+    with metrics_cols[4]:
+        consensus_mask = resolved_mask & games["consensus_pick"].isin(["OVER", "UNDER"])
+        consensus_correct = int(games.loc[consensus_mask, "consensus_correct"].sum())
+        consensus_total = int(consensus_mask.sum())
+        st.metric("🎯 Consensus Correct", f"{consensus_correct}/{consensus_total}")
+
+    # Add a second row of metrics for consensus no tabpfn
+    st.markdown("")
+    metrics_cols2 = st.columns(5)
+    with metrics_cols2[4]:
+        consensus_no_tabpfn_mask = resolved_mask & games[
+            "consensus_no_tabpfn_pick"
+        ].isin(["OVER", "UNDER"])
+        consensus_no_tabpfn_correct = int(
+            games.loc[consensus_no_tabpfn_mask, "consensus_no_tabpfn_correct"].sum()
+        )
+        consensus_no_tabpfn_total = int(consensus_no_tabpfn_mask.sum())
+        st.metric(
+            "📊 Consensus (No TabPFN)",
+            f"{consensus_no_tabpfn_correct}/{consensus_no_tabpfn_total}",
+        )
 
     st.markdown("---")
     st.markdown(f"### 🏀 Games on {date_str}")
@@ -1116,7 +1391,7 @@ def show_historical_performance() -> None:
     st.markdown("")
     st.markdown("### 🎯 Accuracy by |Diff vs O/U Line|")
     st.caption(
-        "Full/Recent: thresholds at >=0, >=1, >=2. TabPFN: thresholds at >=0, >=0.5, >=1, >=1.5, >=2."
+        "Full/Recent: thresholds at >=0, >=1, >=2. TabPFN/Consensus/Consensus(No TabPFN): thresholds at >=0, >=0.5, >=1, >=1.5, >=2."
     )
     threshold_df = compute_threshold_accuracy_table(games)
     st.dataframe(

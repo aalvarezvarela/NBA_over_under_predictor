@@ -159,7 +159,9 @@ def compute_referee_features(df_refs_pivot):
     return df
 
 
-def process_referee_data_for_training(seasons, df_merged, df_referees_scheduled=None):
+def process_referee_data_for_training(
+    seasons, df_merged, df_referees_scheduled=None, extra_game_ids=None
+):
     """
     Load referee data from database, transform it, merge with training data,
     and compute referee-specific features.
@@ -172,7 +174,7 @@ def process_referee_data_for_training(seasons, df_merged, df_referees_scheduled=
     Returns:
         pd.DataFrame: DataFrame with referee features, or None if no referee data available
     """
-    df_refs = get_refs_data_from_db(seasons)
+    df_refs = get_refs_data_from_db(seasons, extra_game_ids=extra_game_ids)
 
     # Transform referee data to have one row per game with REF_1, REF_2, REF_3
     if not df_refs.empty and "GAME_ID" in df_refs.columns:
@@ -256,7 +258,7 @@ def process_referee_data_for_training(seasons, df_merged, df_referees_scheduled=
 
 
 def add_referee_features_to_training_data(
-    seasons, df_merged, df_referees_scheduled=None
+    seasons, df_merged, df_referees_scheduled=None, extra_game_ids=None
 ):
     """
     Add referee-specific features to the training DataFrame.
@@ -269,7 +271,10 @@ def add_referee_features_to_training_data(
         pd.DataFrame: Training DataFrame with added referee features
     """
     df_refs_pivot = process_referee_data_for_training(
-        seasons, df_merged, df_referees_scheduled=df_referees_scheduled
+        seasons,
+        df_merged,
+        df_referees_scheduled=df_referees_scheduled,
+        extra_game_ids=extra_game_ids,
     )
 
     # Merge referee features into training data

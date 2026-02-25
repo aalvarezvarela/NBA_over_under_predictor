@@ -6,7 +6,25 @@ from nba_ou.postgre_db.config.db_config import (
 from psycopg import sql
 
 
-def get_injury_data_from_db(seasons):
+def _normalize_game_ids(game_ids) -> list[str]:
+    """Normalize GAME_ID inputs into a unique, non-empty string list."""
+    if game_ids is None:
+        return []
+
+    normalized = []
+    seen = set()
+    for game_id in game_ids:
+        if pd.isna(game_id):
+            continue
+        game_id_str = str(game_id).strip()
+        if not game_id_str or game_id_str in seen:
+            continue
+        seen.add(game_id_str)
+        normalized.append(game_id_str)
+    return normalized
+
+
+def get_injury_data_from_db(seasons=None, extra_game_ids=None):
     """
     Load injury data from database for the specified seasons.
 
@@ -24,17 +42,39 @@ def get_injury_data_from_db(seasons):
     try:
         conn = connect_nba_db()
 
-        # Convert season format from "2023-24" to 2023 (year only)
-        season_years = [int(s.split("-")[0]) for s in seasons]
+        where_parts = []
+        query_params = []
+
+        if seasons is not None and len(seasons) > 0:
+            # Convert season format from "2023-24" to 2023 (year only)
+            season_years = [int(s.split("-")[0]) for s in seasons]
+            where_parts.append(sql.SQL("season_year = ANY(%s)"))
+            query_params.append(season_years)
+
+        normalized_extra_game_ids = _normalize_game_ids(extra_game_ids)
+        if normalized_extra_game_ids:
+            where_parts.append(sql.SQL("game_id = ANY(%s)"))
+            query_params.append(normalized_extra_game_ids)
+
+        where_clause = sql.SQL("")
+        if where_parts:
+            where_clause = sql.SQL("WHERE ") + sql.SQL(" OR ").join(where_parts)
 
         query_obj = sql.SQL("""
             SELECT *
             FROM {}.{}
-            WHERE season_year = ANY(%s)
-        """).format(sql.Identifier(schema), sql.Identifier(table))
+            {}
+        """).format(
+            sql.Identifier(schema),
+            sql.Identifier(table),
+            where_clause,
+        )
 
         query = query_obj.as_string(conn)
-        df_injuries = pd.read_sql_query(query, conn, params=(season_years,))
+        if query_params:
+            df_injuries = pd.read_sql_query(query, conn, params=tuple(query_params))
+        else:
+            df_injuries = pd.read_sql_query(query, conn)
 
         # Convert column names to uppercase to match expected format
         df_injuries.columns = df_injuries.columns.str.upper()

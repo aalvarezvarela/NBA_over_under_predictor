@@ -79,16 +79,23 @@ def add_conference_division_features(
         home_division.notna() & away_division.notna() & (home_division == away_division)
     )
 
-    df["SAME_CONFERENCE"] = same_conference.astype(int)
-    df["SAME_DIVISION"] = same_division.astype(int)
+    # 4) West flags - compute all new columns first
+    new_columns = pd.DataFrame(
+        {
+            "SAME_CONFERENCE": same_conference.astype(int),
+            "SAME_DIVISION": same_division.astype(int),
+            "IS_HOME_WEST_CONFERENCE": (home_conference == "West")
+            .fillna(False)
+            .astype(int),
+            "IS_AWAY_WEST_COMFERENCE": (away_conference == "West")
+            .fillna(False)
+            .astype(int),
+        },
+        index=df.index,
+    )
 
-    # 4) West flags
-    df["IS_HOME_WEST_CONFERENCE"] = (
-        (home_conference == "West").fillna(False).astype(int)
-    )
-    df["IS_AWAY_WEST_COMFERENCE"] = (
-        (away_conference == "West").fillna(False).astype(int)
-    )
+    # Add all at once using concat
+    df = pd.concat([df, new_columns], axis=1)
 
     return df
 
@@ -110,10 +117,8 @@ def add_game_date_features(
     """
     dates = pd.to_datetime(df[date_col], errors="coerce")
 
-    # Weekend and month
-    df["IS_WEEKEND"] = (dates.dt.weekday >= 5).fillna(False).astype(int)
-    df["MONTH"] = dates.dt.month.astype("Int64")  # keep nullable int
-    df["MONTH"] = df["MONTH"].fillna(0).astype(int)
+    # Compute all new columns first
+    month_values = dates.dt.month.astype("Int64").fillna(0).astype(int)
 
     # US Federal holidays within observed min/max date range
     cal = USFederalHolidayCalendar()
@@ -122,12 +127,22 @@ def add_game_date_features(
         start = dates.min().normalize()
         end = dates.max().normalize()
         us_holidays = cal.holidays(start=start, end=end)  # DatetimeIndex (normalized)
-
-        df["IS_US_HOLIDAY"] = (
-            dates.dt.normalize().isin(us_holidays).fillna(False).astype(int)
-        )
+        is_us_holiday = dates.dt.normalize().isin(us_holidays).fillna(False).astype(int)
     else:
-        df["IS_US_HOLIDAY"] = 0
+        is_us_holiday = 0
+
+    # Create all new columns at once
+    new_columns = pd.DataFrame(
+        {
+            "IS_WEEKEND": (dates.dt.weekday >= 5).fillna(False).astype(int),
+            "MONTH": month_values,
+            "IS_US_HOLIDAY": is_us_holiday,
+        },
+        index=df.index,
+    )
+
+    # Add all at once using concat
+    df = pd.concat([df, new_columns], axis=1)
 
     return df
 
@@ -144,28 +159,36 @@ def add_derived_features_after_computed_stats(df_training):
     """
     df_training = add_conference_division_features(df_training)
 
-    df_training["TOTAL_PTS_SEASON_BEFORE_AVG"] = (
-        df_training["PTS_SEASON_BEFORE_AVG_TEAM_HOME"]
-        + df_training["PTS_SEASON_BEFORE_AVG_TEAM_AWAY"]
+    # Compute all new columns first
+    new_columns = pd.DataFrame(
+        {
+            "TOTAL_PTS_SEASON_BEFORE_AVG": (
+                df_training["PTS_SEASON_BEFORE_AVG_TEAM_HOME"]
+                + df_training["PTS_SEASON_BEFORE_AVG_TEAM_AWAY"]
+            ),
+            "TOTAL_PTS_LAST_GAMES_AVG": (
+                df_training["PTS_LAST_HOME_AWAY_5_MATCHES_BEFORE_TEAM_HOME"]
+                + df_training["PTS_LAST_HOME_AWAY_5_MATCHES_BEFORE_TEAM_AWAY"]
+            ),
+            "BACK_TO_BACK": (
+                (df_training["REST_DAYS_BEFORE_MATCH_TEAM_AWAY"] <= 1)
+                & (df_training["REST_DAYS_BEFORE_MATCH_TEAM_HOME"] <= 1)
+            ),
+            "DIFERENCE_HOME_OFF_AWAY_DEF_BEFORE_MATCH": (
+                df_training["OFF_RATING_LAST_HOME_AWAY_5_MATCHES_BEFORE_TEAM_HOME"]
+                - df_training["DEF_RATING_LAST_HOME_AWAY_5_MATCHES_BEFORE_TEAM_AWAY"]
+            ),
+            "DIFERENCE_AWAY_OFF_HOME_DEF_BEFORE_MATCH": (
+                df_training["OFF_RATING_LAST_HOME_AWAY_5_MATCHES_BEFORE_TEAM_AWAY"]
+                - df_training["DEF_RATING_LAST_HOME_AWAY_5_MATCHES_BEFORE_TEAM_HOME"]
+            ),
+        },
+        index=df_training.index,
     )
 
-    df_training["TOTAL_PTS_LAST_GAMES_AVG"] = (
-        df_training["PTS_LAST_HOME_AWAY_5_MATCHES_BEFORE_TEAM_HOME"]
-        + df_training["PTS_LAST_HOME_AWAY_5_MATCHES_BEFORE_TEAM_AWAY"]
-    )
+    # Add all at once using concat
+    df_training = pd.concat([df_training, new_columns], axis=1)
 
-    df_training["BACK_TO_BACK"] = (
-        df_training["REST_DAYS_BEFORE_MATCH_TEAM_AWAY"] <= 1
-    ) & (df_training["REST_DAYS_BEFORE_MATCH_TEAM_HOME"] <= 1)
-
-    df_training["DIFERENCE_HOME_OFF_AWAY_DEF_BEFORE_MATCH"] = (
-        df_training["OFF_RATING_LAST_HOME_AWAY_5_MATCHES_BEFORE_TEAM_HOME"]
-        - df_training["DEF_RATING_LAST_HOME_AWAY_5_MATCHES_BEFORE_TEAM_AWAY"]
-    )
-    df_training["DIFERENCE_AWAY_OFF_HOME_DEF_BEFORE_MATCH"] = (
-        df_training["OFF_RATING_LAST_HOME_AWAY_5_MATCHES_BEFORE_TEAM_AWAY"]
-        - df_training["DEF_RATING_LAST_HOME_AWAY_5_MATCHES_BEFORE_TEAM_HOME"]
-    )
     df_training = apply_final_transformations(df_training)
 
     return df_training
@@ -186,6 +209,9 @@ def add_high_value_features_for_team_points(df: pd.DataFrame) -> pd.DataFrame:
     """
     out = df.copy()
 
+    # Dictionary to collect all new columns
+    new_cols = {}
+
     def _has(cols):
         return all(c in out.columns for c in cols)
 
@@ -197,7 +223,7 @@ def add_high_value_features_for_team_points(df: pd.DataFrame) -> pd.DataFrame:
         # Add only if it does not already exist (avoid overwriting any preexisting column).
         if name in out.columns:
             return
-        out[name] = pd.to_numeric(series, errors="coerce")
+        new_cols[name] = pd.to_numeric(series, errors="coerce")
 
     # ---------------------------------------------------------------------
     # 1) Market-derived: implied team totals (strong, non-leaky)
@@ -322,7 +348,6 @@ def add_high_value_features_for_team_points(df: pd.DataFrame) -> pd.DataFrame:
     # 4) Fatigue and travel compression
     # ---------------------------------------------------------------------
 
-
     # Travel intensity: concentration of travel in last 2 vs 14 days
     if _has(
         ["TOTAL_KM_IN_LAST_2_DAYS_HOME_TEAM", "TOTAL_KM_IN_LAST_14_DAYS_HOME_TEAM"]
@@ -401,8 +426,13 @@ def add_high_value_features_for_team_points(df: pd.DataFrame) -> pd.DataFrame:
         )
 
     # ---------------------------------------------------------------------
-    # Final: replace inf with nan, keep NaNs (XGBoost can handle missing)
+    # Final: add all new columns at once to avoid fragmentation
     # ---------------------------------------------------------------------
+    if new_cols:
+        new_df = pd.DataFrame(new_cols, index=out.index)
+        out = pd.concat([out, new_df], axis=1)
+
+    # Replace inf with nan, keep NaNs (XGBoost can handle missing)
     out.replace([np.inf, -np.inf], np.nan, inplace=True)
 
     return out
