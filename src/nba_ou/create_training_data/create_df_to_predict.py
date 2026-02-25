@@ -203,6 +203,7 @@ def create_df_to_predict(
         scheduled_games = scheduled_data["scheduled_games"]
         df_referees_scheduled = scheduled_data["df_referees_scheduled"]
         injury_dict_scheduled = scheduled_data["injury_dict_scheduled"]
+        games_not_updated = scheduled_data.get("games_not_updated", [])
 
         df_odds_yahoo = scheduled_data["df_odds_yahoo_scheduled"]
         df_odds_sportsbook = scheduled_data["df_odds_sportsbook_scheduled"]
@@ -384,6 +385,22 @@ def create_df_to_predict(
     df_training = compute_travel_features(df_training, log_scale=True)
     df_training = add_high_value_features_for_team_points(df_training)
     df_training = add_game_date_features(df_training)
+
+    # Filter out games with "NOT YET SUBMITTED" injury status when doing today's prediction
+    if todays_prediction and games_not_updated:
+        initial_count = len(df_training)
+        df_training = df_training[
+            ~df_training["GAME_ID"]
+            .astype(str)
+            .isin([str(gid) for gid in games_not_updated])
+        ]
+        filtered_count = initial_count - len(df_training)
+        if filtered_count > 0:
+            print()
+            print(
+                f"Filtered out {filtered_count} game(s) with 'NOT YET SUBMITTED' injury status"
+            )
+            print(f"Game IDs filtered: {games_not_updated}")
 
     print()
     print("--" * 20)

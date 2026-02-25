@@ -127,7 +127,7 @@ def get_yahoo_prediction_data(
     next_date = base_date + timedelta(days=1)
 
     # Scrape both dates to account for timezone differences
-    days_to_scrape = [ next_date, base_date]
+    days_to_scrape = [next_date, base_date]
     df_yahoo = asyncio.run(scrape_yahoo_days(days_to_scrape, headless=headless))
 
     # Check if we got any data
@@ -189,7 +189,7 @@ def get_sportsbook_prediction_data(
 def get_all_info_for_scheduled_games(
     date_to_predict: str,
     nba_injury_reports_url,
-    save_reports_path = None,
+    save_reports_path=None,
     headless: bool | None = None,
 ) -> dict:
     """Get all information needed for scheduled games prediction.
@@ -228,6 +228,7 @@ def get_all_info_for_scheduled_games(
             "injury_dict_scheduled": {},
             "df_odds_yahoo_scheduled": pd.DataFrame(),
             "df_odds_sportsbook_scheduled": pd.DataFrame(),
+            "games_not_updated": [],
         }
 
     # Convert team IDs to team names using TEAM_ID_MAP
@@ -279,4 +280,5 @@ def get_all_info_for_scheduled_games(
         "injury_dict_scheduled": injury_dict_scheduled,
         "df_odds_yahoo_scheduled": df_odds_yahoo_scheduled,
         "df_odds_sportsbook_scheduled": df_odds_sportsbook_scheduled,
+        "games_not_updated": games_not_updated,
     }
