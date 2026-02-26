@@ -34,12 +34,11 @@ def get_top_n_averages_with_names(
     if df.empty:
         return []
 
-
     if injured:
         # For injured players: last game *before* `date`
-        df_inj = df[df["GAME_DATE"] < date]
+        df_inj = df[df["GAME_DATE"] < date].sort_values(["PLAYER_ID", "GAME_DATE"])
         df_last = df_inj.groupby("PLAYER_ID", as_index=False).tail(1).copy()
-    
+
     else:
         # For non-injured players, keep existing behavior for historical rows.
         # For scheduled games (no same-day player boxscore yet), fallback to each
@@ -69,7 +68,7 @@ def get_top_n_averages_with_names(
     cum_col = f"{stat_col}_CUM_AVG"
 
     # Create extra variable to check if player meets the minimum threshold
-    df_last["MEETS_MIN_THRESHOLD"] = (
+    df_last.loc[:, "MEETS_MIN_THRESHOLD"] = (
         df_last["MIN_CUM_AVG"].fillna(0) >= min_minutes
     ).astype(int)
 

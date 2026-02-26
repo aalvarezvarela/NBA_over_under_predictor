@@ -8,22 +8,77 @@ N_TOP_PLAYERS_NON_INJURED = 8
 N_TOP_PLAYERS_INJURED = 6
 
 
-def get_injured_players_dict(df_injuries):
+def get_injured_players_dict(df_injuries, df_players=None):
     """
     Build a dictionary: injured_dict[game_id][team_id] -> list of injured players for that game/team.
 
+    Injured players are collected from:
+    - `df_injuries` (inactive/injury feed)
+    - `df_players` comments when injury wording appears (e.g. "DND - Injury/Illness")
+
     Args:
         df_injuries (pd.DataFrame): Injury data with GAME_ID, TEAM_ID, PLAYER_ID
+        df_players (pd.DataFrame, optional): Player boxscore data with GAME_ID, TEAM_ID,
+            PLAYER_ID and COMMENT/COMMENTS column
 
     Returns:
         dict: Nested dictionary mapping game_id -> team_id -> list of injured player_ids
     """
-    injured_dict = {}
-    for game_id, df_g in df_injuries.groupby("GAME_ID"):
-        team_map = {}
-        for t_id, df_t in df_g.groupby("TEAM_ID"):
-            team_map[t_id] = df_t["PLAYER_ID"].unique().tolist()
-        injured_dict[game_id] = team_map
+    injured_dict = defaultdict(lambda: defaultdict(set))
+
+    # Source 1: official injuries table
+    if (
+        df_injuries is not None
+        and not df_injuries.empty
+        and {"GAME_ID", "TEAM_ID", "PLAYER_ID"}.issubset(df_injuries.columns)
+    ):
+        valid_injuries = df_injuries.loc[
+            df_injuries["GAME_ID"].notna()
+            & df_injuries["TEAM_ID"].notna()
+            & df_injuries["PLAYER_ID"].notna(),
+            ["GAME_ID", "TEAM_ID", "PLAYER_ID"],
+        ].drop_duplicates()
+
+        for game_id, team_id, player_id in valid_injuries.itertuples(index=False):
+            injured_dict[game_id][team_id].add(player_id)
+
+    # Source 2: player comment field includes injury text
+    if (
+        df_players is not None
+        and not df_players.empty
+        and {"GAME_ID", "TEAM_ID", "PLAYER_ID"}.issubset(df_players.columns)
+    ):
+        comment_col = None
+        for candidate in ["COMMENT", "COMMENTS", "comment", "comments"]:
+            if candidate in df_players.columns:
+                comment_col = candidate
+                break
+
+        if comment_col is not None:
+            injury_mask = (
+                df_players[comment_col]
+                .fillna("")
+                .astype(str)
+                .str.contains(r"injur|injry", case=False, regex=True)
+            )
+            valid_comment_injuries = df_players.loc[
+                injury_mask
+                & df_players["GAME_ID"].notna()
+                & df_players["TEAM_ID"].notna()
+                & df_players["PLAYER_ID"].notna(),
+                ["GAME_ID", "TEAM_ID", "PLAYER_ID"],
+            ].drop_duplicates()
+
+            for game_id, team_id, player_id in valid_comment_injuries.itertuples(
+                index=False
+            ):
+                injured_dict[game_id][team_id].add(player_id)
+
+    injured_dict = {
+        game_id: {team_id: list(player_ids) for team_id, player_ids in team_map.items()}
+        for game_id, team_map in injured_dict.items()
+    }
+
     return injured_dict
 
 

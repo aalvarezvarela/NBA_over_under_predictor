@@ -90,7 +90,8 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
         dict: Updated injured players dictionary
     """
     # Build injuries lookup
-    injured_dict = get_injured_players_dict(df_injuries)
+    injured_dict = get_injured_players_dict(df_injuries, df_players=df_players)
+    
     if injury_dict_scheduled:
         injured_dict.update(injury_dict_scheduled)
 
@@ -131,6 +132,8 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
             ],
             f"AVG_INJURED_{stat_col}",
         ]
+        if stat_col in {"PTS", "MIN"}:
+            new_cols.append(f"TOTAL_INJURED_PLAYER_{stat_col}_BEFORE")
         all_new_cols.extend(new_cols)
 
     # Create all columns at once to avoid fragmentation
@@ -151,7 +154,7 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
     # Collect all updates in a list for bulk assignment
     updates_list = []
 
-    for idx, (game_id, team_id, season_id, game_date) in enumerate(
+    for _, (game_id, team_id, season_id, game_date) in enumerate(
         tqdm(
             df_team[cols_needed].itertuples(index=False, name=None),
             total=len(df_team),
@@ -192,6 +195,13 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
                 n_players=n_players_inj,
                 injured=True,
             )
+            total_inj_all = get_top_n_averages_with_names(
+                df_inj,
+                date=game_date,
+                stat_col=stat_col,
+                n_players=df_inj["PLAYER_ID"].nunique(),
+                injured=True,
+            )
 
             # Pad to required length with None for IDs/names, 0 for stats
             while len(topn_non_inj) < n_players_noninj:
@@ -213,6 +223,10 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
             row_update[f"AVG_INJURED_{stat_col}"] = (
                 sum(inj_values) / len(inj_values) if inj_values else 0
             )
+            if stat_col in {"PTS", "MIN"}:
+                row_update[f"TOTAL_INJURED_PLAYER_{stat_col}_BEFORE"] = sum(
+                    val for (_, _, val) in total_inj_all if val != 0
+                )
 
         updates_list.append(row_update)
 
@@ -221,16 +235,30 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
     for col in updates_df.columns:
         df_team[col] = updates_df[col]
 
-    df_team["TOTAL_INJURED_PLAYER_PTS_BEFORE"] = (
-        df_team[
-            [
-                "TOP1_INJURED_PLAYER_PTS",
-                "TOP2_INJURED_PLAYER_PTS",
-                "TOP3_INJURED_PLAYER_PTS",
+    if 'PTS' in stat_cols:
+        df_team["TOTAL_TOP_INJURED_PLAYER_PTS_BEFORE"] = (
+            df_team[
+                [
+                    "TOP1_INJURED_PLAYER_PTS",
+                    "TOP2_INJURED_PLAYER_PTS",
+                    "TOP3_INJURED_PLAYER_PTS",
+                ]
             ]
-        ]
-        .sum(axis=1, skipna=True)
-        .fillna(0)
-    )
+            .sum(axis=1, skipna=True)
+            .fillna(0)
+        )
+        
+    if 'MIN' in stat_cols:
+        df_team["TOTAL_TOP_INJURED_PLAYER_MIN_BEFORE"] = (
+            df_team[
+                [
+                    "TOP1_INJURED_PLAYER_MIN",
+                    "TOP2_INJURED_PLAYER_MIN",
+                    "TOP3_INJURED_PLAYER_MIN",
+                ]
+            ]
+            .sum(axis=1, skipna=True)
+            .fillna(0)
+        )
 
     return df_team, injured_dict
