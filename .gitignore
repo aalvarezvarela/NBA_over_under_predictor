@@ -226,3 +226,8 @@ data/odds_data/raw_matches/*
 data/*
 *.csv
 *.ods
+*.pkl
+*.ubj
+*.json
+*.txt
+*.joblib
