@@ -10,11 +10,14 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
+DEFAULT_PRIMARY_BOOK = "consensus_opener"
+
 
 def merge_total_spread_moneyline_by_game_id(
     df_odds: pd.DataFrame,
     df_team: pd.DataFrame,
-    book: str = "bet365",
+    book: str = DEFAULT_PRIMARY_BOOK,
+    total_line_book: str | None = None,
     total_lines_mode: Literal["selected", "all", "none"] = "all",
     debug: bool = False,
     exclude_yahoo: bool = False,
@@ -24,12 +27,15 @@ def merge_total_spread_moneyline_by_game_id(
 
     total_lines_mode:
       - "none": do not merge any total line
-      - "selected": merge TOTAL_OVER_UNDER_LINE from the selected `book` only
+      - "selected": merge TOTAL_OVER_UNDER_LINE from the selected `total_line_book` only
       - "all": merge total lines for all known books into TOTAL_LINE_<book> columns
 
     exclude_yahoo: If True, exclude Yahoo-specific betting columns (pct_bets, pct_money)
                    but keep metadata columns (game_date, teams, etc.)
     """
+    if total_line_book is None:
+        total_line_book = book
+
     if df_odds.empty:
         print("Warning: Odds dataframe is empty")
         return df_team
@@ -101,12 +107,16 @@ def merge_total_spread_moneyline_by_game_id(
         ("fanatics_sportsbook", "total_fanatics_sportsbook_line_over"),
     ]
 
+    total_selected_col = f"total_{total_line_book}_line_over"
+
     if total_lines_mode == "selected":
-        total_selected_col = f"total_{book}_line_over"
         required_cols.append(total_selected_col)
 
     elif total_lines_mode == "all":
-        required_cols.extend([col for _, col in known_total_sources])
+        required_cols.append(total_selected_col)
+        required_cols.extend(
+            [col for _, col in known_total_sources if col != total_selected_col]
+        )
 
     # Check required columns exist
     missing_cols = [c for c in required_cols if c not in df_odds.columns]
@@ -149,12 +159,12 @@ def merge_total_spread_moneyline_by_game_id(
         ml_away_col: "MONEYLINE_AWAY",
     }
 
-    rename_map[f"total_{book}_line_over"] = "TOTAL_OVER_UNDER_LINE"
+    rename_map[total_selected_col] = "TOTAL_OVER_UNDER_LINE"
 
     if total_lines_mode == "all":
         for src, col in known_total_sources:
-            if src == book:
-                continue  # already handled by selected mode
+            if col == total_selected_col:
+                continue  # already mapped to TOTAL_OVER_UNDER_LINE
             rename_map[col] = f"TOTAL_LINE_{src}"
 
     df_odds_subset = df_odds_subset.rename(columns=rename_map)
@@ -189,6 +199,7 @@ def merge_total_spread_moneyline_by_game_id(
 
     print(
         f"Merged {len(df_merged)} rows with odds data from {book} "
+        f"(total_line_book={total_line_book}) "
         f"(total_lines_mode={total_lines_mode}, exclude_yahoo={exclude_yahoo})"
     )
     return df_merged
@@ -197,7 +208,7 @@ def merge_total_spread_moneyline_by_game_id(
 def merge_remaining_odds_by_game_id(
     df_odds: pd.DataFrame,
     df_merged: pd.DataFrame,
-    exclude_books: list[str] | None = ["bet365"],
+    exclude_books: list[str] | None = None,
     exclude_yahoo: bool = False,
 ) -> pd.DataFrame:
     """
@@ -210,7 +221,7 @@ def merge_remaining_odds_by_game_id(
     Args:
         df_odds: Merged odds dataframe (from Yahoo + Sportsbook merge)
         df_merged: Merged home/away dataframe (one row per game) with GAME_ID column
-        exclude_books: List of books to exclude specific columns for (default: ["bet365"])
+        exclude_books: List of books to exclude specific columns for (default: none)
             This will exclude total_X_line_over/under, spread_X_line_home/away,
             ml_X_price_home/away for each book in the list.
         exclude_yahoo: If True, exclude Yahoo-specific betting columns (pct_bets, pct_money)
@@ -219,7 +230,9 @@ def merge_remaining_odds_by_game_id(
     Returns:
         pd.DataFrame: Merged dataframe with all remaining odds columns added
     """
-    if isinstance(exclude_books, str):
+    if exclude_books is None:
+        exclude_books = []
+    elif isinstance(exclude_books, str):
         exclude_books = [exclude_books]
 
     if df_odds.empty:

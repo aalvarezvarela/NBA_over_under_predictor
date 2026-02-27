@@ -79,8 +79,17 @@ from nba_ou.utils.seasons import get_seasons_between_dates
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
+DEFAULT_SPREAD_ML_BOOK = "consensus_opener"
+DEFAULT_TOTAL_LINE_BOOK = "consensus_opener"
 
-def process_team_statistics_for_training(df, df_odds, scheduled_games=None):
+
+def process_team_statistics_for_training(
+    df,
+    df_odds,
+    scheduled_games=None,
+    spread_ml_book: str = DEFAULT_SPREAD_ML_BOOK,
+    total_line_book: str = DEFAULT_TOTAL_LINE_BOOK,
+):
     """
     Process and compute team statistics for training.
 
@@ -94,6 +103,8 @@ def process_team_statistics_for_training(df, df_odds, scheduled_games=None):
         df (pd.DataFrame): Team game statistics DataFrame
         df_odds (pd.DataFrame): Betting odds DataFrame
         scheduled_games (pd.DataFrame, optional): Scheduled games DataFrame
+        spread_ml_book (str): Book used for spread and moneyline columns
+        total_line_book (str): Book/source used for TOTAL_OVER_UNDER_LINE
     Returns:
         pd.DataFrame: Processed team DataFrame
     """
@@ -104,7 +115,10 @@ def process_team_statistics_for_training(df, df_odds, scheduled_games=None):
         df = standardize_and_merge_scheduled_games_to_team_data(df, scheduled_games)
 
     df = merge_total_spread_moneyline_by_game_id(
-        df_odds=df_odds, df_team=df, book="bet365"
+        df_odds=df_odds,
+        df_team=df,
+        book=spread_ml_book,
+        total_line_book=total_line_book,
     )
     df = compute_total_points_features(df)
     df = filter_valid_games(df)
@@ -300,7 +314,11 @@ def create_df_to_predict(
 
     # Process team statistics
     df = process_team_statistics_for_training(
-        df, df_odds, scheduled_games=scheduled_games if todays_prediction else None
+        df,
+        df_odds,
+        scheduled_games=scheduled_games if todays_prediction else None,
+        spread_ml_book=DEFAULT_SPREAD_ML_BOOK,
+        total_line_book=DEFAULT_TOTAL_LINE_BOOK,
     )
     # Load injury data from database
     df_injuries = get_injury_data_from_db(seasons, extra_game_ids=extra_game_ids)
@@ -323,7 +341,7 @@ def create_df_to_predict(
     df_merged = merge_remaining_odds_by_game_id(
         df_odds=df_odds,
         df_merged=df_merged,
-        exclude_books=["bet365"],
+        exclude_books=[DEFAULT_SPREAD_ML_BOOK],
         exclude_yahoo=False,
     )
 
