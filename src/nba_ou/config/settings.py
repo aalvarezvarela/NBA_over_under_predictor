@@ -99,6 +99,18 @@ CONFIG_SCHEMA = {
         str,
         None,
     ),
+    "s3_regressor_full_dataset_total_points_prefix": (
+        "S3",
+        "REGRESSOR_FULL_DATASET_TOTAL_POINTS_PREFIX",
+        str,
+        None,
+    ),
+    "s3_regressor_recent_games_total_points_prefix": (
+        "S3",
+        "REGRESSOR_RECENT_GAMES_TOTAL_POINTS_PREFIX",
+        str,
+        None,
+    ),
     "s3_local_model_cache_dir": ("S3", "LOCAL_MODEL_CACHE_DIR", str, None),
 }
 

@@ -105,12 +105,64 @@ def create_predictions_table(drop: bool = False):
             # Forward-compatible migration for existing tables
             cur.execute(
                 sql.SQL(
+                    "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS total_over_under_line NUMERIC"
+                ).format(sql.Identifier(schema), sql.Identifier(table))
+            )
+            cur.execute(
+                sql.SQL(
+                    "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS pred_line_error NUMERIC"
+                ).format(sql.Identifier(schema), sql.Identifier(table))
+            )
+            cur.execute(
+                sql.SQL(
+                    "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS pred_total_points NUMERIC"
+                ).format(sql.Identifier(schema), sql.Identifier(table))
+            )
+            cur.execute(
+                sql.SQL(
+                    "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS pred_pick TEXT"
+                ).format(sql.Identifier(schema), sql.Identifier(table))
+            )
+
+            cur.execute(
+                sql.SQL(
+                    "ALTER TABLE {}.{} ALTER COLUMN pred_line_error DROP NOT NULL"
+                ).format(sql.Identifier(schema), sql.Identifier(table))
+            )
+            cur.execute(
+                sql.SQL(
+                    "ALTER TABLE {}.{} ALTER COLUMN pred_total_points DROP NOT NULL"
+                ).format(sql.Identifier(schema), sql.Identifier(table))
+            )
+
+            cur.execute(
+                sql.SQL(
                     "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS na_columns_count INTEGER"
                 ).format(sql.Identifier(schema), sql.Identifier(table))
             )
             cur.execute(
                 sql.SQL(
                     "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS na_columns_names TEXT"
+                ).format(sql.Identifier(schema), sql.Identifier(table))
+            )
+
+            # Ensure table allows either prediction target:
+            # line error OR total points (at least one must be present).
+            cur.execute(
+                sql.SQL(
+                    "ALTER TABLE {}.{} DROP CONSTRAINT IF EXISTS chk_prediction_target_present"
+                ).format(sql.Identifier(schema), sql.Identifier(table))
+            )
+            cur.execute(
+                sql.SQL(
+                    """
+                    ALTER TABLE {}.{}
+                    ADD CONSTRAINT chk_prediction_target_present
+                    CHECK (
+                        pred_line_error IS NOT NULL
+                        OR pred_total_points IS NOT NULL
+                    )
+                    """
                 ).format(sql.Identifier(schema), sql.Identifier(table))
             )
 
@@ -187,6 +239,10 @@ def upload_predictions_to_postgre(df: "pd.DataFrame"):
 
         # Ensure optional enrichment columns exist after normalization.
         for col in (
+            "total_over_under_line",
+            "pred_line_error",
+            "pred_total_points",
+            "pred_pick",
             "na_columns_count",
             "na_columns_names",
             "total_scored_points",
