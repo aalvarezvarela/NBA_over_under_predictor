@@ -20,6 +20,7 @@ from nba_ou.utils.s3_models import (
 )
 
 DEFAULT_TOTAL_POINTS_PICK_LINE_COL = "total_bet365_line_over"
+PREDICTION_VALUE_TYPE_TOTAL_POINTS = "TOTAL_POINTS"
 
 
 def _add_na_tracking_columns(
@@ -277,6 +278,8 @@ def load_and_predict_tabpfn_client_for_nba_games(
     df_predictable["PRED_LINE_ERROR"] = (
         pd.to_numeric(df_predictable["PRED_TOTAL_POINTS"], errors="coerce") - pick_line
     )
+    df_predictable["TOTAL_BET365_LINE_AT_PREDICTION"] = pick_line
+    df_predictable["PREDICTION_VALUE_TYPE"] = PREDICTION_VALUE_TYPE_TOTAL_POINTS
     if "TOTAL_OVER_UNDER_LINE" not in df_predictable.columns:
         df_predictable["TOTAL_OVER_UNDER_LINE"] = pick_line
     else:
@@ -309,7 +312,9 @@ def load_and_predict_tabpfn_client_for_nba_games(
         "GAME_TIME",
         "TEAM_NAME_TEAM_HOME",
         "TEAM_NAME_TEAM_AWAY",
+        "PREDICTION_VALUE_TYPE",
         "TOTAL_OVER_UNDER_LINE",
+        "TOTAL_BET365_LINE_AT_PREDICTION",
         "PRED_LINE_ERROR",
         "PRED_TOTAL_POINTS",
         "PRED_PICK",

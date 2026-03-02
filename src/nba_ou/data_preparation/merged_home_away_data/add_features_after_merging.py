@@ -87,7 +87,7 @@ def add_conference_division_features(
             "IS_HOME_WEST_CONFERENCE": (home_conference == "West")
             .fillna(False)
             .astype(int),
-            "IS_AWAY_WEST_COMFERENCE": (away_conference == "West")
+            "IS_AWAY_WEST_CONFERENCE": (away_conference == "West")
             .fillna(False)
             .astype(int),
         },

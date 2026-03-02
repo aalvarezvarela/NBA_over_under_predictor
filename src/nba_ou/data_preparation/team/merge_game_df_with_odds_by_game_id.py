@@ -210,6 +210,7 @@ def merge_remaining_odds_by_game_id(
     df_merged: pd.DataFrame,
     exclude_books: list[str] | None = None,
     exclude_yahoo: bool = False,
+    exclude_total_lines: bool = True,
 ) -> pd.DataFrame:
     """
     Merge all remaining odds data with merged home/away dataframe using game_id.
@@ -226,6 +227,9 @@ def merge_remaining_odds_by_game_id(
             ml_X_price_home/away for each book in the list.
         exclude_yahoo: If True, exclude Yahoo-specific betting columns (pct_bets, pct_money)
                        but keep metadata columns (game_date, teams, etc.)
+        exclude_total_lines: If True (default), exclude total line columns that were already merged
+                            by merge_total_spread_moneyline_by_game_id (only if they exist in df_merged).
+                            This prevents duplicates while allowing flexibility for different merge modes.
 
     Returns:
         pd.DataFrame: Merged dataframe with all remaining odds columns added
@@ -265,6 +269,34 @@ def merge_remaining_odds_by_game_id(
                 f"ml_{book}_price_away",
             ]
         )
+
+    # Exclude total line columns that were already merged (to prevent duplicates)
+    # Only exclude if the corresponding uppercase column already exists in df_merged
+    if exclude_total_lines:
+        known_total_sources = [
+            "consensus_opener",
+            "betmgm",
+            "fanduel",
+            "caesars",
+            "bet365",
+            "draftkings",
+            "fanatics_sportsbook",
+        ]
+        for book in known_total_sources:
+            # Check if the uppercase version already exists in df_merged
+            uppercase_col = (
+                f"TOTAL_LINE_{book}"
+                if book != "consensus_opener"
+                else "TOTAL_OVER_UNDER_LINE"
+            )
+            if uppercase_col in df_merged.columns:
+                # Only exclude if it was already merged
+                columns_to_exclude.update(
+                    [
+                        f"total_{book}_line_over",
+                        f"total_{book}_line_under",
+                    ]
+                )
 
     # Also exclude metadata columns that are already in df_merged
     columns_to_exclude.update(
@@ -320,7 +352,7 @@ def merge_remaining_odds_by_game_id(
 
     print(
         f"Merged {len(cols_to_merge) - 1} remaining odds columns to {len(df_result)} rows "
-        f"(exclude_yahoo={exclude_yahoo})"
+        f"(exclude_yahoo={exclude_yahoo}, exclude_total_lines={exclude_total_lines})"
     )
 
     return df_result

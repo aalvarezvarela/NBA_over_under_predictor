@@ -22,6 +22,8 @@ PredictionTarget = Literal["PRED_LINE_ERROR", "TOTAL_POINTS"]
 PREDICTION_TARGET_LINE_ERROR: PredictionTarget = "PRED_LINE_ERROR"
 PREDICTION_TARGET_TOTAL_POINTS: PredictionTarget = "TOTAL_POINTS"
 DEFAULT_TOTAL_POINTS_PICK_LINE_COL = "total_bet365_line_over"
+PREDICTION_VALUE_TYPE_TOTAL_POINTS = "TOTAL_POINTS"
+PREDICTION_VALUE_TYPE_DIFF_FROM_LINE = "DIFF_FROM_LINE"
 
 
 def _add_na_tracking_columns(
@@ -63,6 +65,46 @@ def _resolve_column_name(df: pd.DataFrame, desired_column: str) -> str | None:
         if col.lower() == desired_lower:
             return col
     return None
+
+
+def _prepare_required_features_for_prediction(
+    df: pd.DataFrame,
+    required_features: list[str],
+    *,
+    mandatory_bet365_col: str = DEFAULT_TOTAL_POINTS_PICK_LINE_COL,
+) -> tuple[list[str], list[str]]:
+    """Ensure required model features exist using bet365 fallback when possible."""
+    normalized_required = [str(feat) for feat in required_features]
+
+    bet365_col = _resolve_column_name(df, mandatory_bet365_col)
+    if bet365_col is None:
+        raise ValueError(
+            f"Column '{mandatory_bet365_col}' is mandatory for prediction."
+        )
+
+    created_as_nan: list[str] = []
+
+    for feat in normalized_required:
+        if feat in df.columns:
+            continue
+
+        source_col = None
+        feat_lower = feat.lower()
+
+        if "consensus_opener" in feat_lower:
+            bet365_equivalent = feat_lower.replace("consensus_opener", "bet365")
+            source_col = _resolve_column_name(df, bet365_equivalent)
+            if source_col is None and "total_consensus_opener_line_over" in feat_lower:
+                source_col = bet365_col
+
+        if source_col is not None:
+            df[feat] = pd.to_numeric(df[source_col], errors="coerce")
+            continue
+
+        df[feat] = np.nan
+        created_as_nan.append(feat)
+
+    return normalized_required, created_as_nan
 
 
 def load_and_predict_model_for_nba_games(
@@ -124,24 +166,28 @@ def load_and_predict_model_for_nba_games(
     model = regressor
 
     # Extract required features from model
-    required_features = model.feature_names_in_
-
-    # Ensure all required features are present in the DataFrame
-    missing_features = [
-        feat for feat in required_features if feat not in df_predictable.columns
-    ]
+    required_features_raw = model.feature_names_in_
+    required_features = [str(feat) for feat in required_features_raw]
 
     # Handle IS_TRAINING_DATA if it's missing - create it with all False values
-    if "IS_TRAINING_DATA" in missing_features:
+    if (
+        "IS_TRAINING_DATA" in required_features
+        and "IS_TRAINING_DATA" not in df_predictable
+    ):
         print(
             "⚠️  Warning: 'IS_TRAINING_DATA' column is missing. Creating it with default False values for prediction."
         )
         df_predictable["IS_TRAINING_DATA"] = False
-        missing_features = [f for f in missing_features if f != "IS_TRAINING_DATA"]
 
-    if missing_features:
-        raise ValueError(
-            f"Missing required features for prediction: {missing_features}"
+    required_features, created_nan_features = _prepare_required_features_for_prediction(
+        df_predictable,
+        required_features,
+        mandatory_bet365_col=DEFAULT_TOTAL_POINTS_PICK_LINE_COL,
+    )
+    if created_nan_features:
+        print(
+            "⚠️  Warning: Missing model features were auto-created as NaN "
+            f"({len(created_nan_features)} columns)."
         )
     X = df_predictable[required_features]
 
@@ -212,6 +258,22 @@ def load_and_predict_model_for_nba_games(
             default=None,
         )
 
+    bet365_line_col = _resolve_column_name(
+        df_predictable, DEFAULT_TOTAL_POINTS_PICK_LINE_COL
+    )
+    if bet365_line_col is None:
+        raise ValueError(
+            f"Column '{DEFAULT_TOTAL_POINTS_PICK_LINE_COL}' is mandatory for prediction."
+        )
+    df_predictable["TOTAL_BET365_LINE_AT_PREDICTION"] = pd.to_numeric(
+        df_predictable[bet365_line_col], errors="coerce"
+    )
+    df_predictable["PREDICTION_VALUE_TYPE"] = (
+        PREDICTION_VALUE_TYPE_TOTAL_POINTS
+        if prediction_target == PREDICTION_TARGET_TOTAL_POINTS
+        else PREDICTION_VALUE_TYPE_DIFF_FROM_LINE
+    )
+
     df_predictable.rename(columns={"MATCHUP_TEAM_HOME": "MATCHUP"}, inplace=True)
     df_predictable["GAME_DATE"] = (
         df_predictable["GAME_DATE"].astype(str).str.split("T").str[0]
@@ -225,7 +287,9 @@ def load_and_predict_model_for_nba_games(
         "GAME_TIME",
         "TEAM_NAME_TEAM_HOME",
         "TEAM_NAME_TEAM_AWAY",
+        "PREDICTION_VALUE_TYPE",
         "TOTAL_OVER_UNDER_LINE",
+        "TOTAL_BET365_LINE_AT_PREDICTION",
         "PRED_LINE_ERROR",
         "PRED_TOTAL_POINTS",
         "PRED_PICK",

@@ -89,6 +89,7 @@ def process_team_statistics_for_training(
     scheduled_games=None,
     spread_ml_book: str = DEFAULT_SPREAD_ML_BOOK,
     total_line_book: str = DEFAULT_TOTAL_LINE_BOOK,
+    exclude_yahoo: bool = False,
 ):
     """
     Process and compute team statistics for training.
@@ -105,6 +106,7 @@ def process_team_statistics_for_training(
         scheduled_games (pd.DataFrame, optional): Scheduled games DataFrame
         spread_ml_book (str): Book used for spread and moneyline columns
         total_line_book (str): Book/source used for TOTAL_OVER_UNDER_LINE
+        exclude_yahoo (bool): If True, exclude Yahoo betting columns from rolling stats. Default is False.
     Returns:
         pd.DataFrame: Processed team DataFrame
     """
@@ -129,7 +131,7 @@ def process_team_statistics_for_training(
     df = compute_rest_days_before_match(df)
 
     # Compute all rolling statistics
-    df = compute_all_rolling_statistics(df)
+    df = compute_all_rolling_statistics(df, exclude_yahoo=exclude_yahoo)
 
     df.loc[df["TOTAL_OVER_UNDER_LINE"] == 0, "TOTAL_OVER_UNDER_LINE"] = np.nan
 
