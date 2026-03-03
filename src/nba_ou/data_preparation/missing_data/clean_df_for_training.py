@@ -345,7 +345,7 @@ def advanced_column_cleaning(
 def clean_dataframe_for_training(
     df: pd.DataFrame,
     nan_threshold: float = 5.0,
-    corr_threshold: float = 0.99,
+    corr_threshold: float = 0.995,
     drop_all_na_rows: bool = False,
     drop_2017_na_rows: bool = True,
     create_missing_flags: bool = False,

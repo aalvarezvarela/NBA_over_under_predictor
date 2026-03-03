@@ -80,19 +80,20 @@ def engineer_odds_features(
     Keeps a small set of spread and moneyline features that are plausibly predictive of total points.
 
     Expected (if available):
-      - Total current lines/prices per book:
-          total_{book}_line_over, total_{book}_line_under
+      - Total current lines per book (UPPERCASE, from merge_total_spread_moneyline):
+          TOTAL_LINE_{book}   (e.g., TOTAL_LINE_betmgm)
+          TOTAL_OVER_UNDER_LINE   (consensus opener line)
+      - Total current prices per book (lowercase, from merge_remaining):
           total_{book}_price_over, total_{book}_price_under   (DECIMAL)
-      - Total opener per book (optional, preferred):
+      - Total opener per book (optional, preferred, from merge_remaining):
           total_{book}_opener_line_over, total_{book}_opener_line_under
           total_{book}_opener_price_over, total_{book}_opener_price_under   (DECIMAL)
-      - Consensus total opener (optional fallback):
-          total_consensus_opener_line_over, total_consensus_opener_line_under
+      - Consensus total opener prices (from merge_remaining):
           total_consensus_opener_price_over, total_consensus_opener_price_under   (DECIMAL)
-      - Spread per book (optional):
+      - Spread per book (from merge_remaining):
           spread_{book}_line_home, spread_{book}_line_away
           spread_consensus_opener_line_home, spread_consensus_opener_line_away   (optional)
-      - Moneyline per book (optional, DECIMAL):
+      - Moneyline per book (from merge_remaining, DECIMAL):
           ml_{book}_price_home, ml_{book}_price_away
     """
     out = df.copy()
@@ -101,18 +102,15 @@ def engineer_odds_features(
     # -----------------------------
     # 0) Consensus total opener (fallback)
     # -----------------------------
-    cons_open_over = "total_consensus_opener_line_over"
-    cons_open_under = "total_consensus_opener_line_under"
+    # Note: total_consensus_opener_line_over was renamed to TOTAL_OVER_UNDER_LINE
+    # by merge_total_spread_moneyline_by_game_id, so we use that.
     cons_open_price_over = "total_consensus_opener_price_over"
     cons_open_price_under = "total_consensus_opener_price_under"
 
-    if cons_open_over in out.columns and cons_open_under in out.columns:
-        tmp = (
-            out[[cons_open_over, cons_open_under]]
-            .apply(pd.to_numeric, errors="coerce")
-            .astype(float)
+    if "TOTAL_OVER_UNDER_LINE" in out.columns:
+        out[f"{prefix}consensus_total_opener_line_mid"] = as_float(
+            out["TOTAL_OVER_UNDER_LINE"]
         )
-        out[f"{prefix}consensus_total_opener_line_mid"] = safe_mean(tmp)
 
     if cons_open_price_over in out.columns and cons_open_price_under in out.columns:
         p_over = decimal_to_prob(out[cons_open_price_over])
@@ -136,13 +134,13 @@ def engineer_odds_features(
     total_price_log_ratios = []
 
     for book in books:
-        # Current
-        line_over = f"total_{book}_line_over"
-        line_under = f"total_{book}_line_under"
+        # Current total line: uses TOTAL_LINE_{book} (renamed from total_{book}_line_over
+        # by merge_total_spread_moneyline_by_game_id)
+        total_line_col = f"TOTAL_LINE_{book}"
         price_over = f"total_{book}_price_over"
         price_under = f"total_{book}_price_under"
 
-        has_lines = line_over in out.columns and line_under in out.columns
+        has_lines = total_line_col in out.columns
         has_prices = price_over in out.columns and price_under in out.columns
 
         # Opener (preferred per book)
@@ -158,15 +156,10 @@ def engineer_odds_features(
             open_price_over in out.columns and open_price_under in out.columns
         )
 
-        # Current total line mid
+        # Current total line mid (TOTAL_LINE_{book} is already the mid value)
         if has_lines:
             col_mid = f"{prefix}book_total_line_mid_{book}"
-            tmp = (
-                out[[line_over, line_under]]
-                .apply(pd.to_numeric, errors="coerce")
-                .astype(float)
-            )
-            out[col_mid] = safe_mean(tmp)
+            out[col_mid] = as_float(out[total_line_col])
             total_line_mids.append(col_mid)
 
         # Current total price asymmetry (decimal and prob space)

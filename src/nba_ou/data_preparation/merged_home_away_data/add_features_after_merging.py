@@ -8,6 +8,83 @@ from nba_ou.config.constants import (
 from pandas.tseries.holiday import USFederalHolidayCalendar
 
 
+def add_betting_stats_differences(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Create difference features (HOME - AWAY) for all betting-related rolling statistics.
+
+    This function identifies columns representing team-level betting stats with rolling
+    windows (those with _TEAM_HOME and _TEAM_AWAY suffixes) and creates difference features
+    to capture the betting market's relative assessment of each team.
+
+    For machine learning, differences often provide stronger signal than absolute values
+    because they directly encode relative strength/weakness between opponents.
+
+    Args:
+        df: Merged DataFrame with _TEAM_HOME and _TEAM_AWAY columns
+
+    Returns:
+        DataFrame with additional difference columns (suffix _DIFF)
+
+    Example:
+        TOTAL_OVER_UNDER_LINE_LAST_ALL_5_MATCHES_BEFORE_TEAM_HOME -
+        TOTAL_OVER_UNDER_LINE_LAST_ALL_5_MATCHES_BEFORE_TEAM_AWAY =
+        TOTAL_OVER_UNDER_LINE_LAST_ALL_5_MATCHES_BEFORE_DIFF
+    """
+    # Patterns that identify betting-related stats
+    betting_patterns = [
+        "TOTAL_OVER_UNDER_LINE",
+        "TOTAL_LINE_",
+        "DIFF_FROM_",
+        "IS_OVER_",
+        "MONEYLINE",
+        "SPREAD",
+        "_pct_bets_",
+        "_pct_money_",
+        "consensus_pct_",
+        "_price_",
+        "TOTAL_POINTS",  # Include total points predictions/actuals
+    ]
+
+    # Patterns that identify rolling/derived stat suffixes (team-specific features)
+    rolling_patterns = [
+        "_LAST_ALL_",
+        "_LAST_HOME_AWAY_",
+        "_SEASON_BEFORE_AVG",
+        "_SEASON_BEFORE_STD",
+        "_WEIGHTED_",
+        "_TREND_SLOPE_",
+    ]
+
+    # Find all home columns that match betting and rolling patterns
+    home_cols = [col for col in df.columns if col.endswith("_TEAM_HOME")]
+
+    new_features = {}
+
+    for home_col in home_cols:
+        # Check if this is a betting stat with rolling window/derived stat
+        is_betting_stat = any(pattern in home_col for pattern in betting_patterns)
+        is_rolling_stat = any(pattern in home_col for pattern in rolling_patterns)
+
+        if is_betting_stat and is_rolling_stat:
+            # Get corresponding away column
+            away_col = home_col.replace("_TEAM_HOME", "_TEAM_AWAY")
+
+            if away_col in df.columns:
+                # Create difference feature name
+                diff_col = home_col.replace("_TEAM_HOME", "_DIFF")
+
+                # Calculate difference (HOME - AWAY)
+                # Positive values indicate home team has higher value for this metric
+                new_features[diff_col] = df[home_col] - df[away_col]
+
+    # Add all new features at once to avoid fragmentation
+    if new_features:
+        df = pd.concat([df, pd.DataFrame(new_features, index=df.index)], axis=1)
+        print(f"Created {len(new_features)} betting statistics difference features")
+
+    return df
+
+
 def apply_final_transformations(df_training):
     """
     Apply final transformations to the training dataset.
@@ -230,14 +307,24 @@ def add_high_value_features_for_team_points(df: pd.DataFrame) -> pd.DataFrame:
     # ---------------------------------------------------------------------
     # Uses game-level TOTAL line and SPREAD (assumes SPREAD is from HOME perspective: home - away).
     # If your SPREAD is opposite, flip the sign.
-    if _has(["TOTAL_OVER_UNDER_LINE", "SPREAD"]):
+    # Uses spread_consensus_opener_line_home (from merge_remaining) as the home spread.
+    # SPREAD_TEAM_HOME is also available but spread_consensus_opener_line_home
+    # is the raw game-level value with the expected sign convention.
+    spread_col = None
+    if "spread_consensus_opener_line_home" in out.columns:
+        spread_col = "spread_consensus_opener_line_home"
+    elif "SPREAD_TEAM_HOME" in out.columns:
+        spread_col = "SPREAD_TEAM_HOME"
+
+    if spread_col and _has(["TOTAL_OVER_UNDER_LINE"]):
+        spread_val = pd.to_numeric(out[spread_col], errors="coerce")
         _add(
             "IMPLIED_PTS_HOME",
-            (out["TOTAL_OVER_UNDER_LINE"] / 2.0) - (out["SPREAD"] / 2.0),
+            (out["TOTAL_OVER_UNDER_LINE"] / 2.0) - (spread_val / 2.0),
         )
         _add(
             "IMPLIED_PTS_AWAY",
-            (out["TOTAL_OVER_UNDER_LINE"] / 2.0) + (out["SPREAD"] / 2.0),
+            (out["TOTAL_OVER_UNDER_LINE"] / 2.0) + (spread_val / 2.0),
         )
         # NOTE: Do NOT add implied sum/diff checks: they are algebraic restatements of
         # TOTAL_OVER_UNDER_LINE and SPREAD, hence redundant.

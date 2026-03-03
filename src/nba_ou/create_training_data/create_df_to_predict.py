@@ -22,6 +22,7 @@ from nba_ou.create_training_data.predict_data_utils import (
     normalize_game_ids,
 )
 from nba_ou.data_preparation.merged_home_away_data.add_features_after_merging import (
+    add_betting_stats_differences,
     add_derived_features_after_computed_stats,
     add_game_date_features,
     add_high_value_features_for_team_points,
@@ -54,6 +55,7 @@ from nba_ou.data_preparation.scheduled_games.merge_scheduled_with_existing_data 
 from nba_ou.data_preparation.team.cleaning_teams import adjust_overtime, clean_team_data
 from nba_ou.data_preparation.team.filters import filter_valid_games
 from nba_ou.data_preparation.team.merge_game_df_with_odds_by_game_id import (
+    merge_odds_percentages_and_prices_by_game_id,
     merge_remaining_odds_by_game_id,
     merge_total_spread_moneyline_by_game_id,
 )
@@ -129,6 +131,13 @@ def process_team_statistics_for_training(
 
     df = add_team_record_before_game(df)
     df = compute_rest_days_before_match(df)
+
+    # Merge odds percentages and prices BEFORE computing rolling stats
+    df = merge_odds_percentages_and_prices_by_game_id(
+        df_odds=df_odds,
+        df_team=df,
+        exclude_yahoo=exclude_yahoo,
+    )
 
     # Compute all rolling statistics
     df = compute_all_rolling_statistics(df, exclude_yahoo=exclude_yahoo)
@@ -339,13 +348,18 @@ def create_df_to_predict(
 
     df_merged = merge_home_away_data(df, todays_prediction=todays_prediction)
 
-    # Merge remaining odds data (Yahoo percentages, other sportsbooks, etc.)
+    # Merge remaining odds data - only additional spread/total lines not yet merged
+    # This safely merges any spread line columns from non-primary books without duplicating
+    # percentages or prices (which were already merged before rolling stats)
     df_merged = merge_remaining_odds_by_game_id(
         df_odds=df_odds,
         df_merged=df_merged,
         exclude_books=[DEFAULT_SPREAD_ML_BOOK],
         exclude_yahoo=False,
     )
+
+    # Create difference features for betting stats (HOME - AWAY)
+    df_merged = add_betting_stats_differences(df_merged)
 
     df_merged = add_referee_features_to_training_data(
         seasons,

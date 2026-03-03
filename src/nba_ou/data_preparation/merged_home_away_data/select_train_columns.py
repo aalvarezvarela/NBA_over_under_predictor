@@ -26,6 +26,9 @@ ODDS_COLUMNS = [
     "SPREAD",
     "MONEYLINE_TEAM_HOME",
     "MONEYLINE_TEAM_AWAY",
+    # SPREAD gets _TEAM_HOME/_TEAM_AWAY suffix after merge_home_away_data
+    "SPREAD_TEAM_HOME",
+    "SPREAD_TEAM_AWAY",
     # Yahoo odds columns
     "spread_home",
     "spread_away",

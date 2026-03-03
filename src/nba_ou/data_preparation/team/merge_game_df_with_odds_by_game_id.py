@@ -13,6 +13,173 @@ import pandas as pd
 DEFAULT_PRIMARY_BOOK = "consensus_opener"
 
 
+def merge_odds_percentages_and_prices_by_game_id(
+    df_odds: pd.DataFrame,
+    df_team: pd.DataFrame,
+    exclude_yahoo: bool = False,
+) -> pd.DataFrame:
+    """
+    Merge odds percentages and prices with team dataframe BEFORE computing rolling stats.
+
+    This function merges:
+    - Consensus percentages (game-level, same for both teams)
+    - Yahoo percentages (team-specific based on home/away)
+    - Price columns (total=game-level, spread/ml=team-specific)
+
+    Team-specific columns are assigned based on whether the team is home or away.
+
+    Args:
+        df_odds: Odds dataframe with game_id
+        df_team: Team dataframe (one row per team per game) with GAME_ID and HOME columns
+        exclude_yahoo: If True, exclude Yahoo-specific betting columns
+
+    Returns:
+        DataFrame with odds percentages and prices merged per team
+    """
+    if df_odds.empty or "game_id" not in df_odds.columns:
+        print("Warning: Odds dataframe empty or missing game_id")
+        return df_team
+
+    if "GAME_ID" not in df_team.columns or "HOME" not in df_team.columns:
+        print("Warning: Team dataframe missing GAME_ID or HOME column")
+        return df_team
+
+    # Identify available columns
+    consensus_pct_cols = [
+        c
+        for c in df_odds.columns
+        if c.startswith("total_consensus_pct_")
+        or c.startswith("spread_consensus_pct_")
+        or c.startswith("moneyline_consensus_pct_")
+    ]
+
+    yahoo_cols = []
+    if not exclude_yahoo:
+        yahoo_patterns = ["_pct_bets_", "_pct_money_"]
+        yahoo_cols = [c for c in df_odds.columns if any(p in c for p in yahoo_patterns)]
+
+    # Identify price columns
+    total_price_cols = [
+        c for c in df_odds.columns if c.startswith("total_") and "_price_" in c
+    ]
+    spread_price_cols = [
+        c for c in df_odds.columns if c.startswith("spread_") and "_price_" in c
+    ]
+    ml_price_cols = [
+        c for c in df_odds.columns if c.startswith("ml_") and "_price_" in c
+    ]
+
+    # Build subset of columns to merge
+    cols_to_merge = (
+        ["game_id"]
+        + consensus_pct_cols
+        + yahoo_cols
+        + total_price_cols
+        + spread_price_cols
+        + ml_price_cols
+    )
+    cols_to_merge = [c for c in cols_to_merge if c in df_odds.columns]
+
+    if len(cols_to_merge) <= 1:
+        print("Warning: No percentages or prices found in odds data")
+        return df_team
+
+    df_odds_subset = df_odds[cols_to_merge].copy()
+    df_odds_subset = df_odds_subset.rename(columns={"game_id": "GAME_ID"})
+
+    # Merge with team data
+    df_merged = df_team.merge(
+        df_odds_subset, on="GAME_ID", how="left", suffixes=("", "_odds")
+    )
+
+    # Process team-specific columns (Yahoo percentages, spread prices, ML prices)
+    home_mask = df_merged["HOME"].astype(bool)
+
+    # Yahoo percentages: assign based on home/away
+    if not exclude_yahoo:
+        yahoo_home_away_pairs = [
+            ("total_pct_bets_over", "total_pct_bets_over"),  # Same for both
+            ("total_pct_bets_under", "total_pct_bets_under"),  # Same for both
+            ("total_pct_money_over", "total_pct_money_over"),  # Same for both
+            ("total_pct_money_under", "total_pct_money_under"),  # Same for both
+            ("spread_pct_bets", "spread_pct_bets_home", "spread_pct_bets_away"),
+            ("spread_pct_money", "spread_pct_money_home", "spread_pct_money_away"),
+            (
+                "moneyline_pct_bets",
+                "moneyline_pct_bets_home",
+                "moneyline_pct_bets_away",
+            ),
+            (
+                "moneyline_pct_money",
+                "moneyline_pct_money_home",
+                "moneyline_pct_money_away",
+            ),
+        ]
+
+        for pair in yahoo_home_away_pairs:
+            if len(pair) == 2:  # Game-level (totals)
+                continue  # Already correct
+            elif len(pair) == 3:  # Team-specific
+                new_col, home_col, away_col = pair
+                if home_col in df_merged.columns and away_col in df_merged.columns:
+                    df_merged[new_col] = np.where(
+                        home_mask, df_merged[home_col], df_merged[away_col]
+                    )
+                    df_merged = df_merged.drop(
+                        columns=[home_col, away_col], errors="ignore"
+                    )
+
+    # Spread prices: assign based on home/away
+    spread_books = list(
+        set(
+            [
+                c.replace("spread_", "")
+                .replace("_price_home", "")
+                .replace("_price_away", "")
+                for c in spread_price_cols
+            ]
+        )
+    )
+    for book in spread_books:
+        home_col = f"spread_{book}_price_home"
+        away_col = f"spread_{book}_price_away"
+        if home_col in df_merged.columns and away_col in df_merged.columns:
+            new_col = f"spread_{book}_price"
+            df_merged[new_col] = np.where(
+                home_mask, df_merged[home_col], df_merged[away_col]
+            )
+            df_merged = df_merged.drop(columns=[home_col, away_col], errors="ignore")
+
+    # ML prices: assign based on home/away
+    ml_books = list(
+        set(
+            [
+                c.replace("ml_", "")
+                .replace("_price_home", "")
+                .replace("_price_away", "")
+                for c in ml_price_cols
+            ]
+        )
+    )
+    for book in ml_books:
+        home_col = f"ml_{book}_price_home"
+        away_col = f"ml_{book}_price_away"
+        if home_col in df_merged.columns and away_col in df_merged.columns:
+            new_col = f"ml_{book}_price"
+            df_merged[new_col] = np.where(
+                home_mask, df_merged[home_col], df_merged[away_col]
+            )
+            df_merged = df_merged.drop(columns=[home_col, away_col], errors="ignore")
+
+    # Total prices are already game-level (same for both teams), no changes needed
+
+    print(
+        f"Merged {len(cols_to_merge) - 1} odds percentage/price columns (exclude_yahoo={exclude_yahoo})"
+    )
+
+    return df_merged
+
+
 def merge_total_spread_moneyline_by_game_id(
     df_odds: pd.DataFrame,
     df_team: pd.DataFrame,
@@ -253,18 +420,20 @@ def merge_remaining_odds_by_game_id(
         return df_merged
 
     # Build list of columns to exclude
+    # For the primary book (exclude_books), only exclude columns that were RENAMED
+    # in merge_total_spread_moneyline_by_game_id:
+    #   - spread_{book}_line_home/away → renamed to SPREAD
+    #   - ml_{book}_price_home/away → renamed to MONEYLINE
+    # Total lines are handled separately by exclude_total_lines.
+    # Other columns (prices, opener prices, etc.) are allowed through because:
+    #   1. They have different names from the _TEAM_HOME/_TEAM_AWAY versions
+    #   2. They're needed by engineer_odds_features at game level
     columns_to_exclude = set()
     for book in exclude_books:
         columns_to_exclude.update(
             [
-                f"total_{book}_line_over",
-                f"total_{book}_line_under",
-                f"total_{book}_price_over",
-                f"total_{book}_price_under",
                 f"spread_{book}_line_home",
                 f"spread_{book}_line_away",
-                f"spread_{book}_price_home",
-                f"spread_{book}_price_away",
                 f"ml_{book}_price_home",
                 f"ml_{book}_price_away",
             ]
@@ -308,6 +477,13 @@ def merge_remaining_odds_by_game_id(
         ]
     )
 
+    # Note: We do NOT exclude prices, consensus %, or Yahoo % here.
+    # These columns were already merged at team-level by merge_odds_percentages_and_prices_by_game_id
+    # (for rolling stats), but those team-level versions have _TEAM_HOME/_TEAM_AWAY suffixes
+    # after merge_home_away_data — different names from the raw game-level columns here.
+    # The raw game-level columns are needed by engineer_odds_features downstream.
+    # select_training_columns handles which versions to keep.
+
     # Exclude Yahoo-specific betting columns if requested
     if exclude_yahoo:
         yahoo_cols = [
@@ -337,6 +513,21 @@ def merge_remaining_odds_by_game_id(
         print("Warning: No remaining odds columns to merge after exclusions")
         return df_merged
 
+    # Log what types of columns are being merged (for verification)
+    spread_lines = [
+        c for c in cols_to_merge if c.startswith("spread_") and "_line_" in c
+    ]
+    total_lines = [c for c in cols_to_merge if c.startswith("total_") and "_line_" in c]
+    other_cols = [
+        c for c in cols_to_merge if c not in spread_lines + total_lines + ["game_id"]
+    ]
+
+    if len(cols_to_merge) > 1:
+        print(
+            f"Merging remaining odds: {len(spread_lines)} spread lines, "
+            f"{len(total_lines)} total lines, {len(other_cols)} other columns"
+        )
+
     df_odds_subset = df_odds[cols_to_merge].copy()
 
     # Rename game_id to GAME_ID for merging
@@ -348,11 +539,6 @@ def merge_remaining_odds_by_game_id(
         on="GAME_ID",
         how="left",
         suffixes=("", "_odds"),
-    )
-
-    print(
-        f"Merged {len(cols_to_merge) - 1} remaining odds columns to {len(df_result)} rows "
-        f"(exclude_yahoo={exclude_yahoo}, exclude_total_lines={exclude_total_lines})"
     )
 
     return df_result
