@@ -1,7 +1,11 @@
+import re
+
 import numpy as np
 import pandas as pd
+from nba_ou.config.odds_columns import resolve_main_total_line_col
 
-BET_BOOKS = ["betmgm", "caesars", "fanduel", "draftkings", "fanatics_sportsbook"]
+# Optional legacy default list (only used when explicitly provided by caller)
+BET_BOOKS: list[str] = []
 
 
 def as_float(s: pd.Series) -> pd.Series:
@@ -72,7 +76,7 @@ def engineer_odds_features(
     Odds feature engineering focused on TOTAL lines and TOTAL prices, assuming prices are ALREADY decimal odds.
 
     Primary features:
-      - per-book total line mid and move from opener (prefer per-book opener; fallback to consensus opener if present)
+      - per-book total line mid and move from opener (consensus opener baseline only)
       - aggregates across books: mean/std/range of current total lines (excluding openers), mean/std of moves
       - per-book total price asymmetry: over/under decimal diff, implied prob diff (no-vig), vig
       - aggregates across books: mean/std/range of no-vig prob(over), bias from 0.50
@@ -82,12 +86,10 @@ def engineer_odds_features(
     Expected (if available):
       - Total current lines per book (UPPERCASE, from merge_total_spread_moneyline):
           TOTAL_LINE_{book}   (e.g., TOTAL_LINE_betmgm)
-          TOTAL_OVER_UNDER_LINE   (consensus opener line)
       - Total current prices per book (lowercase, from merge_remaining):
           total_{book}_price_over, total_{book}_price_under   (DECIMAL)
-      - Total opener per book (optional, preferred, from merge_remaining):
-          total_{book}_opener_line_over, total_{book}_opener_line_under
-          total_{book}_opener_price_over, total_{book}_opener_price_under   (DECIMAL)
+      - Consensus total opener line (from merge_total_spread_moneyline):
+          TOTAL_LINE_consensus_opener
       - Consensus total opener prices (from merge_remaining):
           total_consensus_opener_price_over, total_consensus_opener_price_under   (DECIMAL)
       - Spread per book (from merge_remaining):
@@ -97,20 +99,50 @@ def engineer_odds_features(
           ml_{book}_price_home, ml_{book}_price_away
     """
     out = df.copy()
-    books = books or BET_BOOKS  # uses your existing constant
+    if books is None:
+        inferred_books = set()
+
+        for col in out.columns:
+            m_total = re.match(r"^TOTAL_LINE_(.+)$", col)
+            if m_total:
+                inferred_books.add(m_total.group(1))
+                continue
+
+            m_total_price = re.match(r"^total_(.+)_price_(over|under)$", col)
+            if m_total_price:
+                inferred_books.add(m_total_price.group(1))
+                continue
+
+            m_spread = re.match(r"^spread_(.+)_line_(home|away)$", col)
+            if m_spread:
+                inferred_books.add(m_spread.group(1))
+                continue
+
+            m_ml = re.match(r"^ml_(.+)_price_(home|away)$", col)
+            if m_ml:
+                inferred_books.add(m_ml.group(1))
+
+        books = sorted(inferred_books)
+    else:
+        books = list(dict.fromkeys(books))
 
     # -----------------------------
-    # 0) Consensus total opener (fallback)
+    # 0) Consensus total opener
     # -----------------------------
-    # Note: total_consensus_opener_line_over was renamed to TOTAL_OVER_UNDER_LINE
-    # by merge_total_spread_moneyline_by_game_id, so we use that.
+    # Consensus opener total line.
+    cons_open_line_col = "TOTAL_LINE_consensus_opener"
     cons_open_price_over = "total_consensus_opener_price_over"
     cons_open_price_under = "total_consensus_opener_price_under"
 
-    if "TOTAL_OVER_UNDER_LINE" in out.columns:
-        out[f"{prefix}consensus_total_opener_line_mid"] = as_float(
-            out["TOTAL_OVER_UNDER_LINE"]
-        )
+    if cons_open_line_col in out.columns:
+        out[f"{prefix}consensus_total_opener_line_mid"] = as_float(out[cons_open_line_col])
+    else:
+        # Fallback only if consensus opener line was not merged with its canonical name.
+        main_total_line = resolve_main_total_line_col(out)
+        if main_total_line is not None:
+            out[f"{prefix}consensus_total_opener_line_mid"] = as_float(
+                out[main_total_line]
+            )
 
     if cons_open_price_over in out.columns and cons_open_price_under in out.columns:
         p_over = decimal_to_prob(out[cons_open_price_over])
@@ -142,19 +174,6 @@ def engineer_odds_features(
 
         has_lines = total_line_col in out.columns
         has_prices = price_over in out.columns and price_under in out.columns
-
-        # Opener (preferred per book)
-        open_line_over = f"total_{book}_opener_line_over"
-        open_line_under = f"total_{book}_opener_line_under"
-        open_price_over = f"total_{book}_opener_price_over"
-        open_price_under = f"total_{book}_opener_price_under"
-
-        has_open_lines = (
-            open_line_over in out.columns and open_line_under in out.columns
-        )
-        has_open_prices = (
-            open_price_over in out.columns and open_price_under in out.columns
-        )
 
         # Current total line mid (TOTAL_LINE_{book} is already the mid value)
         if has_lines:
@@ -195,46 +214,21 @@ def engineer_odds_features(
             total_prob_diff_novig.append(col_p_diff)
             total_vigs.append(col_vig)
 
-        # Movement from opener (one per house if available, else fallback to consensus opener)
+        # Movement from opener (consensus opener baseline).
         if has_lines:
-            opener_mid_col = None
-
-            if has_open_lines:
-                opener_mid_col = f"{prefix}book_total_opener_line_mid_{book}"
-                tmp = (
-                    out[[open_line_over, open_line_under]]
-                    .apply(pd.to_numeric, errors="coerce")
-                    .astype(float)
-                )
-                out[opener_mid_col] = safe_mean(tmp)
-            elif f"{prefix}consensus_total_opener_line_mid" in out.columns:
-                opener_mid_col = f"{prefix}consensus_total_opener_line_mid"
-
-            if opener_mid_col is not None:
+            if f"{prefix}consensus_total_opener_line_mid" in out.columns:
                 move_col = f"{prefix}book_total_line_move_from_opener_{book}"
                 out[move_col] = (
-                    out[f"{prefix}book_total_line_mid_{book}"] - out[opener_mid_col]
+                    out[f"{prefix}book_total_line_mid_{book}"]
+                    - out[f"{prefix}consensus_total_opener_line_mid"]
                 )
                 total_line_moves.append(move_col)
 
         if has_prices:
-            opener_prob_over_col = None
-
-            if has_open_prices:
-                p_over_o = decimal_to_prob(out[open_price_over])
-                p_under_o = decimal_to_prob(out[open_price_under])
-                p_over_o_nv, p_under_o_nv = no_vig_two_way_prob(p_over_o, p_under_o)
-                opener_prob_over_col = (
-                    f"{prefix}book_total_opener_prob_over_novig_{book}"
-                )
-                out[opener_prob_over_col] = p_over_o_nv
-            elif f"{prefix}consensus_total_opener_prob_over_novig" in out.columns:
-                opener_prob_over_col = f"{prefix}consensus_total_opener_prob_over_novig"
-
-            if opener_prob_over_col is not None:
+            if f"{prefix}consensus_total_opener_prob_over_novig" in out.columns:
                 out[f"{prefix}book_total_prob_move_over_novig_{book}"] = (
                     out[f"{prefix}book_total_prob_over_novig_{book}"]
-                    - out[opener_prob_over_col]
+                    - out[f"{prefix}consensus_total_opener_prob_over_novig"]
                 )
 
     # Aggregates across books: current total line levels (excluding opener by construction)
@@ -247,7 +241,7 @@ def engineer_odds_features(
         out[f"{prefix}total_line_books_range"] = safe_range(tmp_lines)
         out[f"{prefix}total_line_books_iqr"] = safe_iqr(tmp_lines)
 
-    # Aggregates across books: movement from opener (house opener if available, else consensus fallback)
+    # Aggregates across books: movement from opener (consensus baseline)
     if total_line_moves:
         tmp_moves = (
             out[total_line_moves].apply(pd.to_numeric, errors="coerce").astype(float)

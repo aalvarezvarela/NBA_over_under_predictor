@@ -3,6 +3,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from nba_ou.config.odds_columns import resolve_main_total_line_col
 from tqdm import tqdm
 
 
@@ -142,13 +143,14 @@ def add_top3_absence_effect_features_for_columns(
     # Check if DIFF_FROM_LINE exists, if not calculate it
     created_diff_from_line = False
     if diff_from_line_col not in df.columns:
-        if total_points_col in df.columns and "TOTAL_OVER_UNDER_LINE" in df.columns:
-            df[diff_from_line_col] = df[total_points_col] - df["TOTAL_OVER_UNDER_LINE"]
+        main_total_line = resolve_main_total_line_col(df)
+        if total_points_col in df.columns and main_total_line is not None:
+            df[diff_from_line_col] = df[total_points_col] - df[main_total_line]
             created_diff_from_line = True
         else:
             raise ValueError(
                 f"Column {diff_from_line_col} is missing and cannot be calculated. "
-                f"Need both {total_points_col} and TOTAL_OVER_UNDER_LINE columns."
+                f"Need both {total_points_col} and TOTAL_LINE_<book> columns."
             )
 
     required = [

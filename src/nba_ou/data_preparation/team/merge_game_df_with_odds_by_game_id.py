@@ -9,8 +9,14 @@ from typing import Literal
 
 import numpy as np
 import pandas as pd
+from nba_ou.config.odds_columns import (
+    get_main_book,
+    moneyline_col,
+    spread_col,
+    total_line_col,
+)
 
-DEFAULT_PRIMARY_BOOK = "consensus_opener"
+DEFAULT_PRIMARY_BOOK = get_main_book()
 
 
 def merge_odds_percentages_and_prices_by_game_id(
@@ -194,7 +200,7 @@ def merge_total_spread_moneyline_by_game_id(
 
     total_lines_mode:
       - "none": do not merge any total line
-      - "selected": merge TOTAL_OVER_UNDER_LINE from the selected `total_line_book` only
+      - "selected": merge TOTAL_LINE_<total_line_book> only
       - "all": merge total lines for all known books into TOTAL_LINE_<book> columns
 
     exclude_yahoo: If True, exclude Yahoo-specific betting columns (pct_bets, pct_money)
@@ -318,21 +324,24 @@ def merge_total_spread_moneyline_by_game_id(
             df_odds_subset = df_odds_subset.drop(columns=yahoo_cols_to_drop)
 
     # Rename
+    selected_spread_col = spread_col(book)
+    selected_moneyline_col = moneyline_col(book)
     rename_map = {
         "game_id": "GAME_ID",
-        spread_home_col: "SPREAD_HOME",
-        spread_away_col: "SPREAD_AWAY",
-        ml_home_col: "MONEYLINE_HOME",
-        ml_away_col: "MONEYLINE_AWAY",
+        spread_home_col: f"{selected_spread_col}_HOME",
+        spread_away_col: f"{selected_spread_col}_AWAY",
+        ml_home_col: f"{selected_moneyline_col}_HOME",
+        ml_away_col: f"{selected_moneyline_col}_AWAY",
     }
 
-    rename_map[total_selected_col] = "TOTAL_OVER_UNDER_LINE"
+    if total_lines_mode in {"selected", "all"}:
+        rename_map[total_selected_col] = total_line_col(total_line_book)
 
     if total_lines_mode == "all":
         for src, col in known_total_sources:
             if col == total_selected_col:
-                continue  # already mapped to TOTAL_OVER_UNDER_LINE
-            rename_map[col] = f"TOTAL_LINE_{src}"
+                continue  # already mapped
+            rename_map[col] = total_line_col(src)
 
     df_odds_subset = df_odds_subset.rename(columns=rename_map)
 
@@ -344,23 +353,34 @@ def merge_total_spread_moneyline_by_game_id(
         suffixes=("", "_odds"),
     )
 
-    # Vectorized assignment for SPREAD and MONEYLINE
+    # Vectorized assignment for selected spread and moneyline columns
     if "HOME" in df_merged.columns:
         home_mask = df_merged["HOME"].astype(bool)
-        df_merged["SPREAD"] = np.where(
-            home_mask, df_merged["SPREAD_HOME"], df_merged["SPREAD_AWAY"]
+        df_merged[selected_spread_col] = np.where(
+            home_mask,
+            df_merged[f"{selected_spread_col}_HOME"],
+            df_merged[f"{selected_spread_col}_AWAY"],
         )
-        df_merged["MONEYLINE"] = np.where(
-            home_mask, df_merged["MONEYLINE_HOME"], df_merged["MONEYLINE_AWAY"]
+        df_merged[selected_moneyline_col] = np.where(
+            home_mask,
+            df_merged[f"{selected_moneyline_col}_HOME"],
+            df_merged[f"{selected_moneyline_col}_AWAY"],
         )
     else:
         print("Warning: 'HOME' column not found in team dataframe")
-        df_merged["SPREAD"] = df_merged["SPREAD_HOME"]
-        df_merged["MONEYLINE"] = df_merged["MONEYLINE_HOME"]
+        df_merged[selected_spread_col] = df_merged[f"{selected_spread_col}_HOME"]
+        df_merged[selected_moneyline_col] = df_merged[
+            f"{selected_moneyline_col}_HOME"
+        ]
 
     # Drop temp columns
     df_merged = df_merged.drop(
-        columns=["SPREAD_HOME", "SPREAD_AWAY", "MONEYLINE_HOME", "MONEYLINE_AWAY"],
+        columns=[
+            f"{selected_spread_col}_HOME",
+            f"{selected_spread_col}_AWAY",
+            f"{selected_moneyline_col}_HOME",
+            f"{selected_moneyline_col}_AWAY",
+        ],
         errors="ignore",
     )
 
@@ -422,8 +442,8 @@ def merge_remaining_odds_by_game_id(
     # Build list of columns to exclude
     # For the primary book (exclude_books), only exclude columns that were RENAMED
     # in merge_total_spread_moneyline_by_game_id:
-    #   - spread_{book}_line_home/away → renamed to SPREAD
-    #   - ml_{book}_price_home/away → renamed to MONEYLINE
+    #   - spread_{book}_line_home/away → renamed to SPREAD_<book>
+    #   - ml_{book}_price_home/away → renamed to MONEYLINE_<book>
     # Total lines are handled separately by exclude_total_lines.
     # Other columns (prices, opener prices, etc.) are allowed through because:
     #   1. They have different names from the _TEAM_HOME/_TEAM_AWAY versions
@@ -453,11 +473,7 @@ def merge_remaining_odds_by_game_id(
         ]
         for book in known_total_sources:
             # Check if the uppercase version already exists in df_merged
-            uppercase_col = (
-                f"TOTAL_LINE_{book}"
-                if book != "consensus_opener"
-                else "TOTAL_OVER_UNDER_LINE"
-            )
+            uppercase_col = f"TOTAL_LINE_{book}"
             if uppercase_col in df_merged.columns:
                 # Only exclude if it was already merged
                 columns_to_exclude.update(

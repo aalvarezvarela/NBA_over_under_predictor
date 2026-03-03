@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
+from nba_ou.config.odds_columns import get_main_book, total_line_col
 from nba_ou.config.settings import SETTINGS
 from nba_ou.create_training_data.get_all_info_for_scheduled_games import (
     get_all_info_for_scheduled_games,
@@ -81,8 +82,8 @@ from nba_ou.utils.seasons import get_seasons_between_dates
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
-DEFAULT_SPREAD_ML_BOOK = "consensus_opener"
-DEFAULT_TOTAL_LINE_BOOK = "consensus_opener"
+DEFAULT_SPREAD_ML_BOOK = get_main_book()
+DEFAULT_TOTAL_LINE_BOOK = get_main_book()
 
 
 def process_team_statistics_for_training(
@@ -107,7 +108,7 @@ def process_team_statistics_for_training(
         df_odds (pd.DataFrame): Betting odds DataFrame
         scheduled_games (pd.DataFrame, optional): Scheduled games DataFrame
         spread_ml_book (str): Book used for spread and moneyline columns
-        total_line_book (str): Book/source used for TOTAL_OVER_UNDER_LINE
+        total_line_book (str): Book/source used for TOTAL_LINE_<book>
         exclude_yahoo (bool): If True, exclude Yahoo betting columns from rolling stats. Default is False.
     Returns:
         pd.DataFrame: Processed team DataFrame
@@ -142,7 +143,9 @@ def process_team_statistics_for_training(
     # Compute all rolling statistics
     df = compute_all_rolling_statistics(df, exclude_yahoo=exclude_yahoo)
 
-    df.loc[df["TOTAL_OVER_UNDER_LINE"] == 0, "TOTAL_OVER_UNDER_LINE"] = np.nan
+    selected_total_line_col = total_line_col(total_line_book)
+    if selected_total_line_col in df.columns:
+        df.loc[df[selected_total_line_col] == 0, selected_total_line_col] = np.nan
 
     df = df.drop_duplicates(keep="first")
 

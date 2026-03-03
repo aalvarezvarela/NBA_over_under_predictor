@@ -11,6 +11,7 @@ This module provides functions to:
 
 import numpy as np
 import pandas as pd
+from nba_ou.config.odds_columns import resolve_main_total_line_col
 from nba_ou.data_preparation.missing_data.handle_missing_data import (
     apply_missing_policy,
 )
@@ -22,7 +23,7 @@ def basic_cleaning(df: pd.DataFrame, verbose: int = 1) -> pd.DataFrame:
 
     This function:
     - Filters out games with unusually low total points (< 130)
-    - Removes rows with missing TOTAL_OVER_UNDER_LINE
+    - Removes rows with missing main total line (TOTAL_LINE_<main_book>)
     - Filters out games with unrealistic betting lines (< 100)
 
     Args:
@@ -46,21 +47,25 @@ def basic_cleaning(df: pd.DataFrame, verbose: int = 1) -> pd.DataFrame:
     if verbose >= 2:
         print(f"Removed {initial_rows - len(df)} rows with TOTAL_POINTS <= 130")
 
-    # Count and report NaNs in TOTAL_OVER_UNDER_LINE
-    nans = df["TOTAL_OVER_UNDER_LINE"].isna().sum()
+    main_total_line = resolve_main_total_line_col(df)
+    if main_total_line is None:
+        raise ValueError("No TOTAL_LINE_<book> column found for basic cleaning.")
+
+    # Count and report NaNs in the configured main total line column
+    nans = df[main_total_line].isna().sum()
     if verbose >= 2:
-        print(f"Number of NaNs in TOTAL_OVER_UNDER_LINE: {nans}")
+        print(f"Number of NaNs in {main_total_line}: {nans}")
 
     # Drop rows with missing odds data
-    df = df.dropna(subset=["TOTAL_OVER_UNDER_LINE"])
+    df = df.dropna(subset=[main_total_line])
     if verbose >= 2:
-        print(f"Removed {nans} rows with NaN in TOTAL_OVER_UNDER_LINE")
+        print(f"Removed {nans} rows with NaN in {main_total_line}")
 
     # Filter out unrealistic betting lines
     rows_before = len(df)
-    df = df[df["TOTAL_OVER_UNDER_LINE"] > 100].copy()
+    df = df[df[main_total_line] > 100].copy()
     if verbose >= 2:
-        print(f"Removed {rows_before - len(df)} rows with TOTAL_OVER_UNDER_LINE <= 100")
+        print(f"Removed {rows_before - len(df)} rows with {main_total_line} <= 100")
 
     if verbose >= 1:
         print(f"Basic cleaning complete: {len(df)} rows remaining\n")
@@ -425,9 +430,10 @@ def clean_dataframe_for_training(
     # Apply missing data policy
     if verbose >= 1:
         print("\nApplying missing data policy...")
+    main_total_line = resolve_main_total_line_col(df_cleaned)
     df_cleaned = apply_missing_policy(
         df_cleaned,
-        current_total_line_col="TOTAL_OVER_UNDER_LINE",
+        current_total_line_col=main_total_line,
         create_missing_flags=create_missing_flags,
         keep_all_cols=keep_all_cols,
     )

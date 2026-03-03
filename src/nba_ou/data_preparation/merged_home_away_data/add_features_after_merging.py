@@ -5,7 +5,12 @@ from nba_ou.config.constants import (
     TEAM_NAME_DIVISION_MAP,
     TEAM_NAME_STANDARDIZATION,
 )
+from nba_ou.config.odds_columns import moneyline_col, spread_col, total_line_col
 from pandas.tseries.holiday import USFederalHolidayCalendar
+
+MAIN_TOTAL_LINE_COL = total_line_col()
+MAIN_SPREAD_COL = spread_col()
+MAIN_MONEYLINE_COL = moneyline_col()
 
 
 def add_betting_stats_differences(df: pd.DataFrame) -> pd.DataFrame:
@@ -26,18 +31,20 @@ def add_betting_stats_differences(df: pd.DataFrame) -> pd.DataFrame:
         DataFrame with additional difference columns (suffix _DIFF)
 
     Example:
-        TOTAL_OVER_UNDER_LINE_LAST_ALL_5_MATCHES_BEFORE_TEAM_HOME -
-        TOTAL_OVER_UNDER_LINE_LAST_ALL_5_MATCHES_BEFORE_TEAM_AWAY =
-        TOTAL_OVER_UNDER_LINE_LAST_ALL_5_MATCHES_BEFORE_DIFF
+        TOTAL_LINE_<book>_LAST_ALL_5_MATCHES_BEFORE_TEAM_HOME -
+        TOTAL_LINE_<book>_LAST_ALL_5_MATCHES_BEFORE_TEAM_AWAY =
+        TOTAL_LINE_<book>_LAST_ALL_5_MATCHES_BEFORE_DIFF
     """
     # Patterns that identify betting-related stats
     betting_patterns = [
-        "TOTAL_OVER_UNDER_LINE",
+        MAIN_TOTAL_LINE_COL,
         "TOTAL_LINE_",
         "DIFF_FROM_",
         "IS_OVER_",
-        "MONEYLINE",
-        "SPREAD",
+        MAIN_MONEYLINE_COL,
+        MAIN_SPREAD_COL,
+        "MONEYLINE_",
+        "SPREAD_",
         "_pct_bets_",
         "_pct_money_",
         "consensus_pct_",
@@ -109,11 +116,12 @@ def apply_final_transformations(df_training):
 
     df_training.drop(columns=["IS_OVERTIME"], inplace=True)
 
-    # Move TOTAL_OVER_UNDER_LINE to first column
-    first_col = "TOTAL_OVER_UNDER_LINE"
-    df_training = df_training[
-        [first_col] + [col for col in df_training.columns if col != first_col]
-    ]
+    # Move the configured main total line column to first position (when present)
+    first_col = MAIN_TOTAL_LINE_COL
+    if first_col in df_training.columns:
+        df_training = df_training[
+            [first_col] + [col for col in df_training.columns if col != first_col]
+        ]
 
     return df_training
 
@@ -305,29 +313,29 @@ def add_high_value_features_for_team_points(df: pd.DataFrame) -> pd.DataFrame:
     # ---------------------------------------------------------------------
     # 1) Market-derived: implied team totals (strong, non-leaky)
     # ---------------------------------------------------------------------
-    # Uses game-level TOTAL line and SPREAD (assumes SPREAD is from HOME perspective: home - away).
-    # If your SPREAD is opposite, flip the sign.
+    # Uses game-level main TOTAL_LINE_<book> and SPREAD (assumes spread is from
+    # HOME perspective: home - away). If your spread sign is opposite, flip it.
     # Uses spread_consensus_opener_line_home (from merge_remaining) as the home spread.
-    # SPREAD_TEAM_HOME is also available but spread_consensus_opener_line_home
+    # SPREAD_<main_book>_TEAM_HOME is also available but spread_consensus_opener_line_home
     # is the raw game-level value with the expected sign convention.
     spread_col = None
     if "spread_consensus_opener_line_home" in out.columns:
         spread_col = "spread_consensus_opener_line_home"
-    elif "SPREAD_TEAM_HOME" in out.columns:
-        spread_col = "SPREAD_TEAM_HOME"
+    elif f"{MAIN_SPREAD_COL}_TEAM_HOME" in out.columns:
+        spread_col = f"{MAIN_SPREAD_COL}_TEAM_HOME"
 
-    if spread_col and _has(["TOTAL_OVER_UNDER_LINE"]):
+    if spread_col and _has([MAIN_TOTAL_LINE_COL]):
         spread_val = pd.to_numeric(out[spread_col], errors="coerce")
         _add(
             "IMPLIED_PTS_HOME",
-            (out["TOTAL_OVER_UNDER_LINE"] / 2.0) - (spread_val / 2.0),
+            (out[MAIN_TOTAL_LINE_COL] / 2.0) - (spread_val / 2.0),
         )
         _add(
             "IMPLIED_PTS_AWAY",
-            (out["TOTAL_OVER_UNDER_LINE"] / 2.0) + (spread_val / 2.0),
+            (out[MAIN_TOTAL_LINE_COL] / 2.0) + (spread_val / 2.0),
         )
         # NOTE: Do NOT add implied sum/diff checks: they are algebraic restatements of
-        # TOTAL_OVER_UNDER_LINE and SPREAD, hence redundant.
+        # main TOTAL_LINE_<book> and spread, hence redundant.
 
     # ---------------------------------------------------------------------
     # 2) Offense-vs-defense interaction (often better than raw ratings)

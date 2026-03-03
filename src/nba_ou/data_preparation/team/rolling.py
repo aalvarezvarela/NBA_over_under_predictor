@@ -2,11 +2,16 @@ import numpy as np
 from scipy.stats import linregress
 from tqdm import tqdm
 
+from nba_ou.config.odds_columns import moneyline_col, spread_col, total_line_col
 from nba_ou.data_preparation.statistics.statistics import (
     compute_rolling_stats,
     compute_rolling_weighted_stats,
     compute_season_std,
 )
+
+MAIN_TOTAL_LINE_COL = total_line_col()
+MAIN_SPREAD_COL = spread_col()
+MAIN_MONEYLINE_COL = moneyline_col()
 
 # Module-level constants for rolling statistics computation
 COLS_TO_AVERAGE = [
@@ -32,25 +37,25 @@ COLS_TO_AVERAGE = [
 ]
 
 COLS_TO_AVERAGE_ODDS = [
-    "TOTAL_OVER_UNDER_LINE",
+    MAIN_TOTAL_LINE_COL,
     "DIFF_FROM_LINE",
     "TOTAL_POINTS",
-    "MONEYLINE",
-    "SPREAD",
+    MAIN_MONEYLINE_COL,
+    MAIN_SPREAD_COL,
     "IS_OVER_LINE",
 ]
 
 COLS_FOR_WEIGHTED_STATS = [
     "PTS",
     "TOTAL_POINTS",
-    "TOTAL_OVER_UNDER_LINE",
+    MAIN_TOTAL_LINE_COL,
     "DIFF_FROM_LINE",
 ]
 
 COLS_FOR_SEASON_STD = [
     "PTS",
     "TOTAL_POINTS",
-    "TOTAL_OVER_UNDER_LINE",
+    MAIN_TOTAL_LINE_COL,
     "DIFF_FROM_LINE",
     "IS_OVER_LINE",
 ]
@@ -162,7 +167,7 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
         exclude_yahoo (bool): If True, exclude Yahoo-specific betting columns (pct_bets, pct_money)
                              from rolling statistics. Default is False (include Yahoo columns).
 
-    Includes all total line columns (TOTAL_OVER_UNDER_LINE + TOTAL_LINE_*) and their
+    Includes all total line columns (TOTAL_LINE_*) and their
     corresponding DIFF_FROM_* columns in rolling stats, weighted stats, and season std.
     Also includes odds percentages, prices, and other betting data.
     """
@@ -208,13 +213,7 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
 
     # 7) Optional: ensure we only include diffs that correspond to totals lines
     # (keeps things tight if you have other DIFF_FROM_* features in the future)
-    total_line_cols = set(
-        [
-            c
-            for c in df.columns
-            if c == "TOTAL_OVER_UNDER_LINE" or c.startswith("TOTAL_LINE_")
-        ]
-    )
+    total_line_cols = {c for c in df.columns if c.startswith("TOTAL_LINE_")}
     allowed_suffixes = set()
     for tl in total_line_cols:
         allowed_suffixes.add(
@@ -291,12 +290,14 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
         df = compute_trend_slope(df, parameter=col, window=5, shift_current_game=True)
 
     # 13) Total line columns (pre-game known): trends shift based on column
-    total_line_trend_cols = ["TOTAL_OVER_UNDER_LINE"] + [
-        c for c in df.columns if c.startswith("TOTAL_LINE_")
-    ]
+    total_line_trend_cols = [c for c in df.columns if c.startswith("TOTAL_LINE_")]
+    if MAIN_TOTAL_LINE_COL in total_line_trend_cols:
+        total_line_trend_cols = [MAIN_TOTAL_LINE_COL] + [
+            c for c in total_line_trend_cols if c != MAIN_TOTAL_LINE_COL
+        ]
     for col in tqdm(total_line_trend_cols, desc="Computing total line trends"):
         if col in df.columns:
-            if col == "TOTAL_OVER_UNDER_LINE":
+            if col == MAIN_TOTAL_LINE_COL:
                 df = compute_trend_slope(
                     df, parameter=col, window=6, shift_current_game=False
                 )

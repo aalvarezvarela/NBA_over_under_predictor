@@ -8,6 +8,7 @@ including computing referee-specific features based on historical performance.
 import re
 
 import pandas as pd
+from nba_ou.config.odds_columns import resolve_main_total_line_col
 from nba_ou.postgre_db.injuries_refs.fetch_refs_db.get_refs_db import (
     get_refs_data_from_db,
 )
@@ -52,10 +53,10 @@ def compute_referee_features(df_refs_pivot):
             - GAME_DATE: Date of the game
             - SEASON_YEAR: Year of the season
             - TOTAL_POINTS: Total points scored in the game
-            - TOTAL_OVER_UNDER_LINE: Over/under line for the game
+            - TOTAL_LINE_<main_book>: Main over/under line for the game
             - PF: Personal fouls called in the game
             - REF_1, REF_2, REF_3: Names of the three referees
-            - DIFFERENCE_FROM_LINE: TOTAL_POINTS - TOTAL_OVER_UNDER_LINE
+            - DIFFERENCE_FROM_LINE: TOTAL_POINTS - TOTAL_LINE_<main_book>
 
     Returns:
         pd.DataFrame: Original DataFrame with additional columns:
@@ -169,7 +170,7 @@ def process_referee_data_for_training(
     Args:
         seasons (list): List of seasons to load (e.g., ["2023-24", "2022-23"])
         df_merged (pd.DataFrame): Training DataFrame with GAME_ID, GAME_DATE, SEASON_YEAR,
-                                TOTAL_POINTS, and TOTAL_OVER_UNDER_LINE columns
+                                TOTAL_POINTS, and TOTAL_LINE_<main_book> columns
         new_ref_data (pd.DataFrame, optional): New referee data from scheduled games
     Returns:
         pd.DataFrame: DataFrame with referee features, or None if no referee data available
@@ -226,13 +227,19 @@ def process_referee_data_for_training(
         # Ensure exactly one crew row per game; prefer scheduled rows when provided.
         df_refs_pivot = df_refs_pivot.drop_duplicates(subset=["GAME_ID"], keep="last")
 
+        main_total_line = resolve_main_total_line_col(df_merged)
+        if main_total_line is None:
+            raise ValueError(
+                "No TOTAL_LINE_<book> column found in merged dataframe for referee features."
+            )
+
         df_merged_temp = df_merged[
             [
                 "GAME_ID",
                 "GAME_DATE",
                 "SEASON_YEAR",
                 "TOTAL_POINTS",
-                "TOTAL_OVER_UNDER_LINE",
+                main_total_line,
                 "TOTAL_PF",
             ]
         ].copy()
@@ -244,7 +251,7 @@ def process_referee_data_for_training(
             how="inner",
         )
         df_refs_pivot["DIFFERENCE_FROM_LINE"] = (
-            df_refs_pivot["TOTAL_POINTS"] - df_refs_pivot["TOTAL_OVER_UNDER_LINE"]
+            df_refs_pivot["TOTAL_POINTS"] - df_refs_pivot[main_total_line]
         )
 
         # Compute referee features
@@ -266,7 +273,7 @@ def add_referee_features_to_training_data(
     Args:
         seasons (list): List of seasons to load (e.g., ["2023-24", "2022-23"])
         df_merged (pd.DataFrame): Training DataFrame with GAME_ID, GAME_DATE, SEASON_YEAR,
-                                TOTAL_POINTS, and TOTAL_OVER_UNDER_LINE columns
+                                TOTAL_POINTS, and TOTAL_LINE_<main_book> columns
     Returns:
         pd.DataFrame: Training DataFrame with added referee features
     """

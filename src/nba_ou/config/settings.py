@@ -80,6 +80,7 @@ CONFIG_SCHEMA = {
     "odds_base_url": ("Odds", "BASE_URL", str, None),
     "odds_save_pickle": ("Odds", "SAVE_ODDS_PICKLE", bool, None),
     "odds_pickle_path": ("Odds", "ODDS_PICKLE_PATH", str, None),
+    "main_sportsbook": ("Odds", "MAIN_SPORTSBOOK", str, "consensus_opener"),
     # Secrets (not in config.ini, must be in secrets file or env vars)
     "odds_api_key": ("Odds", "ODDS_API_KEY", "secret", None),
     "db_password": ("DatabaseSupabase", "DB_PASSWORD", "secret", None),

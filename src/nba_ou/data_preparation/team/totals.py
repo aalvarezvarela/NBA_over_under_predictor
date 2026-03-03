@@ -1,4 +1,5 @@
 import pandas as pd
+from nba_ou.config.odds_columns import resolve_main_total_line_col
 
 
 def compute_total_points_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -10,9 +11,9 @@ def compute_total_points_features(df: pd.DataFrame) -> pd.DataFrame:
         * DIFF_FROM_<linecol>: TOTAL_POINTS - line
         * IS_OVER_<linecol>: indicator(TOTAL_POINTS > line)
 
-    Always keeps the legacy columns:
-      - DIFF_FROM_LINE (vs TOTAL_OVER_UNDER_LINE)
-      - IS_OVER_LINE (vs TOTAL_OVER_UNDER_LINE)
+    Also keeps the legacy aliases:
+      - DIFF_FROM_LINE (vs configured main TOTAL_LINE_<book>)
+      - IS_OVER_LINE (vs configured main TOTAL_LINE_<book>)
     """
     # Total points per game
     df["TOTAL_POINTS"] = df.groupby("GAME_ID")["PTS"].transform("sum")
@@ -38,10 +39,13 @@ def compute_total_points_features(df: pd.DataFrame) -> pd.DataFrame:
 
         df[diff_col] = df["TOTAL_POINTS"] - line_vals    
 
-    # Backward compatible aliases (as you had before)
-    if "TOTAL_OVER_UNDER_LINE" in df.columns:
-        df["DIFF_FROM_LINE"] = df["TOTAL_POINTS"] - df["TOTAL_OVER_UNDER_LINE"]
-        df["IS_OVER_LINE"] = (df["TOTAL_POINTS"] > df["TOTAL_OVER_UNDER_LINE"]).astype("Int64")  # nullable int
+    # Backward-compatible aliases based on configured main book total line
+    main_total_line = resolve_main_total_line_col(df)
+    if main_total_line is not None:
+        df["DIFF_FROM_LINE"] = df["TOTAL_POINTS"] - df[main_total_line]
+        df["IS_OVER_LINE"] = (df["TOTAL_POINTS"] > df[main_total_line]).astype(
+            "Int64"
+        )  # nullable int
 
     # Dates
     df["GAME_DATE"] = pd.to_datetime(
