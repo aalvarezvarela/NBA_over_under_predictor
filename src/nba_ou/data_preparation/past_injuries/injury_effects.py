@@ -3,7 +3,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from nba_ou.config.odds_columns import resolve_main_total_line_col
+from nba_ou.config.odds_columns import get_main_book, total_line_col
 from tqdm import tqdm
 
 
@@ -77,27 +77,39 @@ def _get_recent_history_df(
 def _compute_player_presence_effect(
     df_team_hist: pd.DataFrame,
     injured_games_for_player: set,
-) -> tuple[float, float]:
+) -> tuple[float, float, int, int, int]:
     """
     Returns:
       (mean(TOTAL_POINTS|present) - mean(TOTAL_POINTS|injured),
-       mean(DIFF_FROM_LINE|present) - mean(DIFF_FROM_LINE|injured))
-    If no injured games found, return (0,0).
+       mean(DIFF_FROM_LINE|present) - mean(DIFF_FROM_LINE|injured),
+       n_inj_games, n_present_games, n_total_games)
     """
-    if df_team_hist.empty or not injured_games_for_player:
-        return 0.0, 0.0
+    if df_team_hist.empty:
+        return np.nan, np.nan, 0, 0, 0
+
+    valid_mask = pd.to_numeric(df_team_hist["TOTAL_POINTS"], errors="coerce").notna() & (
+        pd.to_numeric(df_team_hist["DIFF_FROM_LINE"], errors="coerce").notna()
+    )
+    df_team_hist = df_team_hist.loc[valid_mask]
+    if df_team_hist.empty:
+        return np.nan, np.nan, 0, 0, 0
+
+    if not injured_games_for_player:
+        n_total = int(len(df_team_hist))
+        return np.nan, np.nan, 0, n_total, n_total
 
     game_ids = pd.to_numeric(df_team_hist["GAME_ID"], errors="coerce").astype("Int64")
     df_team_hist = df_team_hist.assign(_GAME_ID_INT=game_ids)
 
     inj_mask = df_team_hist["_GAME_ID_INT"].isin(list(injured_games_for_player))
     df_inj = df_team_hist.loc[inj_mask]
-    if df_inj.empty:
-        return 0.0, 0.0
-
     df_present = df_team_hist.loc[~inj_mask]
-    if df_present.empty:
-        return 0.0, 0.0
+    n_inj = int(len(df_inj))
+    n_present = int(len(df_present))
+    n_total = int(len(df_team_hist))
+
+    if n_inj == 0 or n_present == 0:
+        return np.nan, np.nan, n_inj, n_present, n_total
 
     tot_present = _safe_mean(df_present["TOTAL_POINTS"])
     tot_inj = _safe_mean(df_inj["TOTAL_POINTS"])
@@ -110,9 +122,25 @@ def _compute_player_presence_effect(
         or np.isnan(dfl_present)
         or np.isnan(dfl_inj)
     ):
-        return 0.0, 0.0
+        return np.nan, np.nan, n_inj, n_present, n_total
 
-    return float(tot_present - tot_inj), float(dfl_present - dfl_inj)
+    return float(tot_present - tot_inj), float(dfl_present - dfl_inj), n_inj, n_present, n_total
+
+
+def _shrink_effect(
+    raw_effect: float, n_inj_games: int, n_present_games: int, k: float
+) -> float:
+    """
+    Empirical-Bayes style shrinkage toward zero.
+    """
+    if pd.isna(raw_effect):
+        return np.nan
+    n_eff = min(int(n_inj_games), int(n_present_games))
+    if n_eff <= 0:
+        return np.nan
+    if k <= 0:
+        return float(raw_effect)
+    return float(raw_effect * (n_eff / (n_eff + k)))
 
 
 def add_top3_absence_effect_features_for_columns(
@@ -126,32 +154,45 @@ def add_top3_absence_effect_features_for_columns(
     game_id_col: str = "GAME_ID",
     total_points_col: str = "TOTAL_POINTS",
     diff_from_line_col: str = "DIFF_FROM_LINE",
+    total_line_book: str | None = None,
     home_player_cols: tuple[str, ...],
     away_player_cols: tuple[str, ...],
     out_prefix: str,
+    shrinkage_k: float = 10.0,
+    include_per_player_columns: bool = False,
 ) -> pd.DataFrame:
     """
-    Same computation as before, but the player-id columns are parameterized.
-    This allows reuse for:
-      - top scorers (non injured)
-      - top injured players
-      - any other player list you have in the DF
+    Compute player absence impact features from past games only (< current game date).
+
+    Changes vs previous version:
+      - DIFF_FROM_LINE is always computed against TOTAL_LINE_<main book> selected by
+        total_line_book (or configured main book from config).
+      - Effects are shrunk toward zero with:
+        eff_shrunk = eff_raw * n_eff/(n_eff + k), where n_eff=min(n_inj, n_present).
+      - Sample size signals are produced (inj/present/total game counts).
+      - Aggregate summaries include mean and max-abs effects plus count sums.
+      - Per-player columns can be disabled via include_per_player_columns=False.
     """
     df = df_games.copy()
     df = _ensure_datetime(df, game_date_col)
 
-    # Check if DIFF_FROM_LINE exists, if not calculate it
-    created_diff_from_line = False
-    if diff_from_line_col not in df.columns:
-        main_total_line = resolve_main_total_line_col(df)
-        if total_points_col in df.columns and main_total_line is not None:
-            df[diff_from_line_col] = df[total_points_col] - df[main_total_line]
-            created_diff_from_line = True
-        else:
-            raise ValueError(
-                f"Column {diff_from_line_col} is missing and cannot be calculated. "
-                f"Need both {total_points_col} and TOTAL_LINE_<book> columns."
-            )
+    selected_total_line_col = total_line_col(total_line_book or get_main_book())
+    if selected_total_line_col not in df.columns:
+        raise ValueError(
+            f"Missing required total line column {selected_total_line_col}. "
+            "This function computes DIFF_FROM_LINE using the configured main book."
+        )
+    if total_points_col not in df.columns:
+        raise ValueError(
+            f"Missing required column {total_points_col}. "
+            "Cannot compute DIFF_FROM_LINE history for injury effects."
+        )
+
+    # Always align DIFF_FROM_LINE computation to selected main total line.
+    internal_diff_col = "__DIFF_FROM_MAIN_LINE_INTERNAL__"
+    df[internal_diff_col] = pd.to_numeric(df[total_points_col], errors="coerce") - pd.to_numeric(
+        df[selected_total_line_col], errors="coerce"
+    )
 
     required = [
         home_team_id_col,
@@ -160,7 +201,7 @@ def add_top3_absence_effect_features_for_columns(
         season_year_col,
         game_id_col,
         total_points_col,
-        diff_from_line_col,
+        selected_total_line_col,
         *home_player_cols,
         *away_player_cols,
     ]
@@ -177,7 +218,7 @@ def add_top3_absence_effect_features_for_columns(
             game_date_col,
             season_year_col,
             total_points_col,
-            diff_from_line_col,
+            internal_diff_col,
             game_id_col,
         ]
     ].copy()
@@ -189,7 +230,7 @@ def add_top3_absence_effect_features_for_columns(
             game_date_col,
             season_year_col,
             total_points_col,
-            diff_from_line_col,
+            internal_diff_col,
             game_id_col,
         ]
     ].copy()
@@ -201,7 +242,7 @@ def add_top3_absence_effect_features_for_columns(
             game_date_col: "GAME_DATE",
             season_year_col: "SEASON_YEAR",
             total_points_col: "TOTAL_POINTS",
-            diff_from_line_col: "DIFF_FROM_LINE",
+            internal_diff_col: "DIFF_FROM_LINE",
             game_id_col: "GAME_ID",
         }
     )
@@ -213,7 +254,7 @@ def add_top3_absence_effect_features_for_columns(
     @lru_cache(maxsize=250_000)
     def _cached_effect(
         team_id: int, season_year: int, date_ordinal: int, player_id: int
-    ) -> tuple[float, float]:
+    ) -> tuple[float, float, int, int, int]:
         season_years = _infer_last_two_season_years_for_row(season_year)
         before_date = pd.Timestamp.fromordinal(date_ordinal)
         df_team_hist = _get_recent_history_df(
@@ -232,10 +273,16 @@ def add_top3_absence_effect_features_for_columns(
     n_home_players = len(home_player_cols)
     n_away_players = len(away_player_cols)
 
-    home_tp = np.zeros((n, n_home_players), dtype="float64")
-    home_dfl = np.zeros((n, n_home_players), dtype="float64")
-    away_tp = np.zeros((n, n_away_players), dtype="float64")
-    away_dfl = np.zeros((n, n_away_players), dtype="float64")
+    home_tp = np.full((n, n_home_players), np.nan, dtype="float64")
+    home_dfl = np.full((n, n_home_players), np.nan, dtype="float64")
+    away_tp = np.full((n, n_away_players), np.nan, dtype="float64")
+    away_dfl = np.full((n, n_away_players), np.nan, dtype="float64")
+    home_n_inj = np.zeros((n, n_home_players), dtype="float64")
+    home_n_present = np.zeros((n, n_home_players), dtype="float64")
+    home_n_total = np.zeros((n, n_home_players), dtype="float64")
+    away_n_inj = np.zeros((n, n_away_players), dtype="float64")
+    away_n_present = np.zeros((n, n_away_players), dtype="float64")
+    away_n_total = np.zeros((n, n_away_players), dtype="float64")
 
     # itertuples is faster than apply for 25k rows
     for i, row in enumerate(
@@ -274,11 +321,14 @@ def add_top3_absence_effect_features_for_columns(
                 pid_int = int(pid)
             except Exception:
                 continue
-            tp_eff, dfl_eff = _cached_effect(
+            tp_raw, dfl_raw, n_inj, n_present, n_total = _cached_effect(
                 home_team_int, season_year_int, date_ord, pid_int
             )
-            home_tp[i, j] = tp_eff
-            home_dfl[i, j] = dfl_eff
+            home_tp[i, j] = _shrink_effect(tp_raw, n_inj, n_present, shrinkage_k)
+            home_dfl[i, j] = _shrink_effect(dfl_raw, n_inj, n_present, shrinkage_k)
+            home_n_inj[i, j] = n_inj
+            home_n_present[i, j] = n_present
+            home_n_total[i, j] = n_total
 
         for j, col in enumerate(away_player_cols):
             pid = getattr(row, col)
@@ -288,27 +338,76 @@ def add_top3_absence_effect_features_for_columns(
                 pid_int = int(pid)
             except Exception:
                 continue
-            tp_eff, dfl_eff = _cached_effect(
+            tp_raw, dfl_raw, n_inj, n_present, n_total = _cached_effect(
                 away_team_int, season_year_int, date_ord, pid_int
             )
-            away_tp[i, j] = tp_eff
-            away_dfl[i, j] = dfl_eff
+            away_tp[i, j] = _shrink_effect(tp_raw, n_inj, n_present, shrinkage_k)
+            away_dfl[i, j] = _shrink_effect(dfl_raw, n_inj, n_present, shrinkage_k)
+            away_n_inj[i, j] = n_inj
+            away_n_present[i, j] = n_present
+            away_n_total[i, j] = n_total
 
-    for j in range(n_home_players):
-        df[_out_col("HOME", j + 1, "TOTAL_POINTS")] = home_tp[:, j]
-        df[_out_col("HOME", j + 1, "DIFF_FROM_LINE")] = home_dfl[:, j]
+    if include_per_player_columns:
+        for j in range(n_home_players):
+            df[_out_col("HOME", j + 1, "TOTAL_POINTS")] = home_tp[:, j]
+            df[_out_col("HOME", j + 1, diff_from_line_col)] = home_dfl[:, j]
+            df[_out_col("HOME", j + 1, "N_INJ_GAMES")] = home_n_inj[:, j]
+            df[_out_col("HOME", j + 1, "N_PRESENT_GAMES")] = home_n_present[:, j]
+            df[_out_col("HOME", j + 1, "N_TOTAL_GAMES")] = home_n_total[:, j]
 
-    for j in range(n_away_players):
-        df[_out_col("AWAY", j + 1, "TOTAL_POINTS")] = away_tp[:, j]
-        df[_out_col("AWAY", j + 1, "DIFF_FROM_LINE")] = away_dfl[:, j]
+        for j in range(n_away_players):
+            df[_out_col("AWAY", j + 1, "TOTAL_POINTS")] = away_tp[:, j]
+            df[_out_col("AWAY", j + 1, diff_from_line_col)] = away_dfl[:, j]
+            df[_out_col("AWAY", j + 1, "N_INJ_GAMES")] = away_n_inj[:, j]
+            df[_out_col("AWAY", j + 1, "N_PRESENT_GAMES")] = away_n_present[:, j]
+            df[_out_col("AWAY", j + 1, "N_TOTAL_GAMES")] = away_n_total[:, j]
 
-    df[f"{out_prefix}_HOME_MEAN_TOTAL_POINTS"] = home_tp.mean(axis=1)
-    df[f"{out_prefix}_HOME_MEAN_DIFF_FROM_LINE"] = home_dfl.mean(axis=1)
-    df[f"{out_prefix}_AWAY_MEAN_TOTAL_POINTS"] = away_tp.mean(axis=1)
-    df[f"{out_prefix}_AWAY_MEAN_DIFF_FROM_LINE"] = away_dfl.mean(axis=1)
+    def _nanmean_axis1(arr: np.ndarray) -> np.ndarray:
+        mask = ~np.isnan(arr)
+        counts = mask.sum(axis=1)
+        sums = np.nansum(arr, axis=1)
+        out = np.full(arr.shape[0], np.nan, dtype="float64")
+        valid = counts > 0
+        out[valid] = sums[valid] / counts[valid]
+        return out
 
-    # Drop DIFF_FROM_LINE if we created it
-    if created_diff_from_line and diff_from_line_col in df.columns:
-        df = df.drop(columns=[diff_from_line_col])
+    def _nanmaxabs_axis1(arr: np.ndarray) -> np.ndarray:
+        abs_arr = np.abs(arr)
+        out = np.full(arr.shape[0], np.nan, dtype="float64")
+        valid = ~np.isnan(abs_arr).all(axis=1)
+        if valid.any():
+            out[valid] = np.nanmax(abs_arr[valid], axis=1)
+        return out
+
+    df[f"{out_prefix}_HOME_MEAN_TOTAL_POINTS"] = _nanmean_axis1(home_tp)
+    df[f"{out_prefix}_AWAY_MEAN_TOTAL_POINTS"] = _nanmean_axis1(away_tp)
+    df[f"{out_prefix}_HOME_MEAN_{diff_from_line_col}"] = _nanmean_axis1(home_dfl)
+    df[f"{out_prefix}_AWAY_MEAN_{diff_from_line_col}"] = _nanmean_axis1(away_dfl)
+    df[f"{out_prefix}_HOME_MAX_ABS_TOTAL_POINTS"] = _nanmaxabs_axis1(home_tp)
+    df[f"{out_prefix}_AWAY_MAX_ABS_TOTAL_POINTS"] = _nanmaxabs_axis1(away_tp)
+    df[f"{out_prefix}_HOME_MAX_ABS_{diff_from_line_col}"] = _nanmaxabs_axis1(home_dfl)
+    df[f"{out_prefix}_AWAY_MAX_ABS_{diff_from_line_col}"] = _nanmaxabs_axis1(away_dfl)
+    df[f"{out_prefix}_HOME_SUM_N_INJ_GAMES"] = home_n_inj.sum(axis=1)
+    df[f"{out_prefix}_AWAY_SUM_N_INJ_GAMES"] = away_n_inj.sum(axis=1)
+    df[f"{out_prefix}_HOME_SUM_N_PRESENT_GAMES"] = home_n_present.sum(axis=1)
+    df[f"{out_prefix}_AWAY_SUM_N_PRESENT_GAMES"] = away_n_present.sum(axis=1)
+    df[f"{out_prefix}_HOME_SUM_N_TOTAL_GAMES"] = home_n_total.sum(axis=1)
+    df[f"{out_prefix}_AWAY_SUM_N_TOTAL_GAMES"] = away_n_total.sum(axis=1)
+    df[f"{out_prefix}_HOME_N_PLAYERS_WITH_EFFECT"] = (
+        (home_n_inj > 0) & (home_n_present > 0)
+    ).sum(axis=1)
+    df[f"{out_prefix}_AWAY_N_PLAYERS_WITH_EFFECT"] = (
+        (away_n_inj > 0) & (away_n_present > 0)
+    ).sum(axis=1)
+    df[f"{out_prefix}_HOME_HAS_PLAYER_EFFECT"] = (
+        df[f"{out_prefix}_HOME_N_PLAYERS_WITH_EFFECT"] > 0
+    ).astype(int)
+    df[f"{out_prefix}_AWAY_HAS_PLAYER_EFFECT"] = (
+        df[f"{out_prefix}_AWAY_N_PLAYERS_WITH_EFFECT"] > 0
+    ).astype(int)
+
+    # Cleanup internal helper column.
+    if internal_diff_col in df.columns:
+        df = df.drop(columns=[internal_diff_col])
 
     return df

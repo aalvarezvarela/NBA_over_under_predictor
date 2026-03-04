@@ -33,12 +33,13 @@ def basic_cleaning(df: pd.DataFrame, verbose: int = 1) -> pd.DataFrame:
     Returns:
         pd.DataFrame: Cleaned dataframe
     """
-    if "IS_US_HOLIDAY" in df.columns:
-        df["IS_US_HOLIDAY"] = (
-            df["IS_US_HOLIDAY"]
-            .astype("Int64")  # ensures proper numeric handling
-            .astype("boolean")  # pandas nullable boolean
-        )
+    for holiday_col in ("IS_US_HOLIDAY_BEFORE", "IS_US_HOLIDAY"):
+        if holiday_col in df.columns:
+            df[holiday_col] = (
+                df[holiday_col]
+                .astype("Int64")  # ensures proper numeric handling
+                .astype("boolean")  # pandas nullable boolean
+            )
 
     initial_rows = len(df)
     if verbose >= 1:

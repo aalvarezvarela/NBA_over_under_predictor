@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
-from nba_ou.config.odds_columns import get_main_book, total_line_col
+from nba_ou.config.odds_columns import get_main_book
 from nba_ou.config.settings import SETTINGS
 from nba_ou.create_training_data.get_all_info_for_scheduled_games import (
     get_all_info_for_scheduled_games,
@@ -126,11 +126,13 @@ def process_team_statistics_for_training(
         total_line_book=total_line_book,
     )
     df = compute_total_points_features(df)
+
     df = filter_valid_games(df)
 
     df = add_last_season_playoff_games(df)
 
     df = add_team_record_before_game(df)
+    
     df = compute_rest_days_before_match(df)
 
     # Merge odds percentages and prices BEFORE computing rolling stats
@@ -143,9 +145,9 @@ def process_team_statistics_for_training(
     # Compute all rolling statistics
     df = compute_all_rolling_statistics(df, exclude_yahoo=exclude_yahoo)
 
-    selected_total_line_col = total_line_col(total_line_book)
-    if selected_total_line_col in df.columns:
-        df.loc[df[selected_total_line_col] == 0, selected_total_line_col] = np.nan
+    total_line_cols = [col for col in df.columns if col.startswith("TOTAL_LINE_")]
+    if total_line_cols:
+        df.loc[:, total_line_cols] = df.loc[:, total_line_cols].replace(0, np.nan)
 
     df = df.drop_duplicates(keep="first")
 
@@ -382,6 +384,7 @@ def create_df_to_predict(
     df_training = add_top3_absence_effect_features_for_columns(
         df_training,
         injured_dict,
+        total_line_book=DEFAULT_TOTAL_LINE_BOOK,
         home_player_cols=(
             "TOP1_PLAYER_ID_PTS_BEFORE_TEAM_HOME",
             "TOP2_PLAYER_ID_PTS_BEFORE_TEAM_HOME",
@@ -397,11 +400,14 @@ def create_df_to_predict(
             "TOP2_PLAYER_ID_MIN_BEFORE_TEAM_AWAY",
         ),
         out_prefix="TOP3_ABSENCE_EFFECT",
+        shrinkage_k=10.0,
+        include_per_player_columns=False,
     )
 
     df_training = add_top3_absence_effect_features_for_columns(
         df_training,
         injured_dict,
+        total_line_book=DEFAULT_TOTAL_LINE_BOOK,
         home_player_cols=(
             "TOP1_INJURED_PLAYER_ID_PTS_BEFORE_TEAM_HOME",
             "TOP2_INJURED_PLAYER_ID_PTS_BEFORE_TEAM_HOME",
@@ -417,6 +423,8 @@ def create_df_to_predict(
             "TOP2_INJURED_PLAYER_ID_MIN_BEFORE_TEAM_AWAY",
         ),
         out_prefix="TOP3_INJURED_ABSENCE_EFFECT",
+        shrinkage_k=10.0,
+        include_per_player_columns=False,
     )
 
     df_training = compute_travel_features(df_training, log_scale=True)
@@ -459,21 +467,21 @@ if __name__ == "__main__":
     # older_limit_to_include = "2025-11-01"  # Optional: specify start date
     older_limit_to_include = "2023-12-01"  # Optional: specify start date
 
-    # Get all info for scheduled games
-    date_to_predict = pd.Timestamp.now(tz=ZoneInfo("US/Pacific")).strftime("%Y-%m-%d")
-    scheduled_data = get_all_info_for_scheduled_games(
-        date_to_predict=date_to_predict,
-        nba_injury_reports_url=SETTINGS.nba_injury_reports_url,
-        save_reports_path=SETTINGS.report_path,
-    )
+    # # Get all info for scheduled games
+    # date_to_predict = pd.Timestamp.now(tz=ZoneInfo("US/Pacific")).strftime("%Y-%m-%d")
+    # scheduled_data = get_all_info_for_scheduled_games(
+    #     date_to_predict=date_to_predict,
+    #     nba_injury_reports_url=SETTINGS.nba_injury_reports_url,
+    #     save_reports_path=SETTINGS.report_path,
+    # )
 
     df_train = create_df_to_predict(
-        todays_prediction=True,
-        scheduled_data=scheduled_data,
+        todays_prediction=False,
+        scheduled_data=None,
         recent_limit_to_include=date_to_train,
         older_limit_to_include=older_limit_to_include,
     )
 
-    output_name_before_referee = f"{output_path}/predict_data_{pd.to_datetime(date_to_train).strftime('%Y%m%d')}.csv"
+    output_name_before_referee = f"{output_path}/test_predict_data_{pd.to_datetime(date_to_train).strftime('%Y%m%d')}.csv"
     df_train.to_csv(output_name_before_referee, index=False)
     print(f"Training data features saved to {output_name_before_referee}")

@@ -9,6 +9,7 @@ from typing import Literal
 
 import numpy as np
 import pandas as pd
+
 from nba_ou.config.odds_columns import (
     get_main_book,
     moneyline_col,
@@ -369,9 +370,7 @@ def merge_total_spread_moneyline_by_game_id(
     else:
         print("Warning: 'HOME' column not found in team dataframe")
         df_merged[selected_spread_col] = df_merged[f"{selected_spread_col}_HOME"]
-        df_merged[selected_moneyline_col] = df_merged[
-            f"{selected_moneyline_col}_HOME"
-        ]
+        df_merged[selected_moneyline_col] = df_merged[f"{selected_moneyline_col}_HOME"]
 
     # Drop temp columns
     df_merged = df_merged.drop(
@@ -518,11 +517,19 @@ def merge_remaining_odds_by_game_id(
         ]
         columns_to_exclude.update(yahoo_cols)
 
-    # Select columns from odds to merge (all except excluded)
+    # Select columns from odds to merge (all except excluded and already-present columns).
+    # Skipping pre-existing columns prevents pandas from creating duplicated *_odds columns
+    # when this function is called on a dataframe that already contains some game-level odds.
+    existing_cols = set(df_merged.columns)
+    skipped_existing_cols = []
     cols_to_merge = ["game_id"]  # Always include game_id
     for col in df_odds.columns:
-        if col not in columns_to_exclude and col != "game_id":
-            cols_to_merge.append(col)
+        if col == "game_id" or col in columns_to_exclude:
+            continue
+        if col in existing_cols:
+            skipped_existing_cols.append(col)
+            continue
+        cols_to_merge.append(col)
 
     # Check if there are any columns to merge besides game_id
     if len(cols_to_merge) <= 1:
@@ -542,6 +549,11 @@ def merge_remaining_odds_by_game_id(
         print(
             f"Merging remaining odds: {len(spread_lines)} spread lines, "
             f"{len(total_lines)} total lines, {len(other_cols)} other columns"
+        )
+    if skipped_existing_cols:
+        print(
+            f"Skipped {len(skipped_existing_cols)} already-existing odds column(s) "
+            f"to avoid duplicate merge columns."
         )
 
     df_odds_subset = df_odds[cols_to_merge].copy()

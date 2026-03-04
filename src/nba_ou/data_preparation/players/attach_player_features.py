@@ -99,6 +99,9 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
     if isinstance(stat_cols, str):
         stat_cols = [stat_cols]
 
+    def _with_before_suffix(col_name: str) -> str:
+        return col_name if col_name.endswith("_BEFORE") else f"{col_name}_BEFORE"
+
     # Collect all column names first to avoid fragmentation
     all_new_cols = []
     for stat_col in stat_cols:
@@ -139,7 +142,7 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
         ]
         if stat_col in {"PTS", "MIN"}:
             new_cols.append(f"TOTAL_INJURED_PLAYER_{stat_col}_BEFORE")
-        all_new_cols.extend(new_cols)
+        all_new_cols.extend([_with_before_suffix(c) for c in new_cols])
 
     # Create all columns at once to avoid fragmentation
     new_cols_df = pd.DataFrame(None, index=df_team.index, columns=all_new_cols)
@@ -218,27 +221,27 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
                 top3_inj.append((None, None, 0))
 
             for i in range(n_players_noninj):
-                row_update[f"TOP{i+1}_PLAYER_ID_{stat_col}"] = topn_non_inj[i][0]
-                row_update[f"TOP{i+1}_PLAYER_NAME_{stat_col}"] = topn_non_inj[i][1]
-                row_update[f"TOP{i+1}_PLAYER_{stat_col}"] = topn_non_inj[i][2]
+                row_update[_with_before_suffix(f"TOP{i+1}_PLAYER_ID_{stat_col}")] = topn_non_inj[i][0]
+                row_update[_with_before_suffix(f"TOP{i+1}_PLAYER_NAME_{stat_col}")] = topn_non_inj[i][1]
+                row_update[_with_before_suffix(f"TOP{i+1}_PLAYER_{stat_col}")] = topn_non_inj[i][2]
 
             for i in range(n_players_inj):
-                row_update[f"TOP{i+1}_INJURED_PLAYER_ID_{stat_col}"] = top3_inj[i][0]
-                row_update[f"TOP{i+1}_INJURED_PLAYER_NAME_{stat_col}"] = top3_inj[i][1]
-                row_update[f"TOP{i+1}_INJURED_PLAYER_{stat_col}"] = top3_inj[i][2]
+                row_update[_with_before_suffix(f"TOP{i+1}_INJURED_PLAYER_ID_{stat_col}")] = top3_inj[i][0]
+                row_update[_with_before_suffix(f"TOP{i+1}_INJURED_PLAYER_NAME_{stat_col}")] = top3_inj[i][1]
+                row_update[_with_before_suffix(f"TOP{i+1}_INJURED_PLAYER_{stat_col}")] = top3_inj[i][2]
                 injured_pid = top3_inj[i][0]
-                row_update[f"TOP{i+1}_INJURED_STREAK_{stat_col}"] = (
+                row_update[_with_before_suffix(f"TOP{i+1}_INJURED_STREAK_{stat_col}")] = (
                     injury_streak_lookup(game_id, team_id, injured_pid)
                     if injured_pid is not None
                     else 0
                 )
 
             inj_values = [val for (_, _, val) in top3_inj if val != 0]
-            row_update[f"AVG_INJURED_{stat_col}"] = (
+            row_update[_with_before_suffix(f"AVG_INJURED_{stat_col}")] = (
                 sum(inj_values) / len(inj_values) if inj_values else 0
             )
             if stat_col in {"PTS", "MIN"}:
-                row_update[f"TOTAL_INJURED_PLAYER_{stat_col}_BEFORE"] = sum(
+                row_update[_with_before_suffix(f"TOTAL_INJURED_PLAYER_{stat_col}_BEFORE")] = sum(
                     val for (_, _, val) in total_inj_all if val != 0
                 )
 
@@ -259,9 +262,9 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
         df_team["TOTAL_TOP_INJURED_PLAYER_PTS_BEFORE"] = (
             df_team[
                 [
-                    "TOP1_INJURED_PLAYER_PTS",
-                    "TOP2_INJURED_PLAYER_PTS",
-                    "TOP3_INJURED_PLAYER_PTS",
+                    "TOP1_INJURED_PLAYER_PTS_BEFORE",
+                    "TOP2_INJURED_PLAYER_PTS_BEFORE",
+                    "TOP3_INJURED_PLAYER_PTS_BEFORE",
                 ]
             ]
             .sum(axis=1, skipna=True)
@@ -272,9 +275,9 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
         df_team["TOTAL_TOP_INJURED_PLAYER_MIN_BEFORE"] = (
             df_team[
                 [
-                    "TOP1_INJURED_PLAYER_MIN",
-                    "TOP2_INJURED_PLAYER_MIN",
-                    "TOP3_INJURED_PLAYER_MIN",
+                    "TOP1_INJURED_PLAYER_MIN_BEFORE",
+                    "TOP2_INJURED_PLAYER_MIN_BEFORE",
+                    "TOP3_INJURED_PLAYER_MIN_BEFORE",
                 ]
             ]
             .sum(axis=1, skipna=True)
