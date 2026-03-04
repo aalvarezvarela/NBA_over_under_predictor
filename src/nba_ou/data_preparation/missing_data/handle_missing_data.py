@@ -127,8 +127,8 @@ def _build_season_avg_fallback(col: str) -> str | None:
     Map rolling window feature to *_SEASON_BEFORE_AVG_TEAM_{HOME|AWAY} when feasible.
 
     Example:
-      TOTAL_OVER_UNDER_LINE_LAST_HOME_AWAY_10_MATCHES_BEFORE_TEAM_HOME
-        -> TOTAL_OVER_UNDER_LINE_SEASON_BEFORE_AVG_TEAM_HOME
+      TOTAL_LINE_consensus_opener_LAST_HOME_AWAY_10_MATCHES_BEFORE_TEAM_HOME
+        -> TOTAL_LINE_consensus_opener_SEASON_BEFORE_AVG_TEAM_HOME
     """
     m = re.search(r"_BEFORE_TEAM_(HOME|AWAY)$", col)
     if not m:
