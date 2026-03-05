@@ -87,6 +87,8 @@ def add_team_record_before_game(
     out["TEAM_RECORD_BEFORE_GAME"] = np.where(
         denom > 0, out["WINS_BEFORE_THIS_GAME"] / denom, 0.0
     )
+    # drop losses to avoid repetition of data
+    out.drop(columns=["LOSSES_BEFORE_THIS_GAME"], inplace=True)
 
     return out
 

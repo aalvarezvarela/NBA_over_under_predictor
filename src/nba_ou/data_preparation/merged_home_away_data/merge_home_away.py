@@ -86,19 +86,32 @@ def merge_home_away_data(df, todays_prediction=False):
     """
     # Rename columns that start with 'TOP' by adding '_BEFORE' at the end
     df.rename(
-        columns=lambda x: f"{x}_BEFORE" if x.startswith("TOP") else x, inplace=True
+        columns=lambda x: (
+            f"{x}_BEFORE"
+            if x.startswith("TOP") and not x.endswith("_BEFORE")
+            else x
+        ),
+        inplace=True,
     )
 
     # Add '_BEFORE' suffix to specified AVG_INJURED_* columns
     avg_injured_cols = [
         "AVG_INJURED_PTS",
+        "AVG_INJURED_MIN",
         "AVG_INJURED_PACE_PER40",
         "AVG_INJURED_DEF_RATING",
         "AVG_INJURED_OFF_RATING",
         "AVG_INJURED_TS_PCT",
     ]
 
-    df.rename(columns={col: f"{col}_BEFORE" for col in avg_injured_cols}, inplace=True)
+    df.rename(
+        columns={
+            col: f"{col}_BEFORE"
+            for col in avg_injured_cols
+            if col in df.columns and not col.endswith("_BEFORE")
+        },
+        inplace=True,
+    )
 
     den = df["OFF_RATING_SEASON_BEFORE_AVG"].replace(0, np.nan)
     df["STAR_OFFENSIVE_RATIO_IMPROVEMENT_BEFORE"] = (
@@ -160,7 +173,7 @@ def merge_home_away_data(df, todays_prediction=False):
     df_merged["TOTAL_PF"] = df_merged.PF_TEAM_HOME + df_merged.PF_TEAM_AWAY
 
     # IS_PLAYOFF_GAME based on SEASON_TYPE
-    df_merged["IS_PLAYOFF_GAME"] = (
+    df_merged["IS_PLAYOFF_GAME_BEFORE"] = (
         df_merged["SEASON_TYPE"].str.contains("Playoff", case=False, na=False)
     ).astype(int)
 

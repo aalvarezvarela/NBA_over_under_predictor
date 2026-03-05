@@ -15,13 +15,20 @@ def compute_rolling_stats(
     window: int = 5,
     add_extra_season_avg: bool = False,
     group_by_season: bool = False,
+    add_relative_column: bool = True,
+    include_home_away_relative: bool = True,
+    relative_to_window: int | None = None,
 ) -> pd.DataFrame:
     """
     Computes rolling averages for a given `param`, excluding the current row's game.
 
     Creates:
       - f"{param}_LAST_ALL_{window}_MATCHES_BEFORE"
-      - f"{param}_LAST_HOME_AWAY_{window}_MATCHES_BEFORE"
+      - Relative column (if add_relative_column=True):
+          - home/away diff vs strict (legacy name reused):
+            f"{param}_LAST_HOME_AWAY_{window}_MATCHES_BEFORE"
+          - OR strict-window diff:
+            f"{param}_LAST_{relative_to_window}_MINUS_LAST_{window}_MATCHES_BEFORE"
       - f"{param}_SEASON_BEFORE_AVG" (if add_extra_season_avg=True)
 
     Requirements:
@@ -35,13 +42,18 @@ def compute_rolling_stats(
       - add_extra_season_avg: If True, add season-to-date average column
       - group_by_season: If True, computes rolling stats within each SEASON_YEAR to prevent
         cross-season contamination. If False, allows rolling across seasons to fill windows.
+      - add_relative_column: If True, compute second (relative) feature column.
+      - include_home_away_relative: If True, second column is home/away minus strict.
+        If False, uses strict-window diff when relative_to_window is provided.
+      - relative_to_window: Reference strict window for relative diff
+        (e.g., 5 for LAST_5_MINUS_LAST_10).
 
     Notes:
       - Uses shift(1) everywhere to exclude the current game.
       - When group_by_season=True: computes rolling within (TEAM_ID, SEASON_YEAR) for "ANY"
-        and (TEAM_ID, SEASON_YEAR, HOME) for home/away split
+        and (TEAM_ID, SEASON_YEAR, HOME) for home/away split when needed.
       - When group_by_season=False: computes rolling within (TEAM_ID) for "ANY"
-        and (TEAM_ID, HOME) for home/away split, allowing previous seasons to fill windows
+        and (TEAM_ID, HOME) for home/away split when needed, allowing previous seasons.
       - Keeps final sort by GAME_DATE descending to match your pipeline style
     """
     if param not in df.columns:
@@ -69,7 +81,6 @@ def compute_rolling_stats(
     out.sort_values(sort_cols, ascending=True, inplace=True)
 
     last_n_avg_col = f"{param}_LAST_ALL_{window}_MATCHES_BEFORE"
-    last_n_homeaway_col = f"{param}_LAST_HOME_AWAY_{window}_MATCHES_BEFORE"
     season_avg_col = f"{param}_SEASON_BEFORE_AVG"
 
     # Ensure numeric (keeps NaNs if coercion fails)
@@ -88,10 +99,32 @@ def compute_rolling_stats(
         lambda s: s.shift(1).rolling(window, min_periods=1).mean()
     )
 
-    # 2) Last N games split by HOME/AWAY, excluding current game
-    out[last_n_homeaway_col] = series.groupby(group_keys_homeaway).transform(
-        lambda s: s.shift(1).rolling(window, min_periods=1).mean()
-    )
+    # Optional relative column
+    if add_relative_column:
+        if include_home_away_relative:
+            # Keep legacy column name but store relative value:
+            # (last same-home/away N) - (last strict N)
+            last_n_homeaway_col = f"{param}_LAST_HOME_AWAY_{window}_MATCHES_BEFORE"
+            homeaway_roll = series.groupby(group_keys_homeaway).transform(
+                lambda s: s.shift(1).rolling(window, min_periods=1).mean()
+            )
+            out[last_n_homeaway_col] = homeaway_roll - out[last_n_avg_col]
+        elif relative_to_window is not None:
+            relative_col = (
+                f"{param}_LAST_{relative_to_window}_MINUS_LAST_{window}_MATCHES_BEFORE"
+            )
+            if relative_to_window <= 0:
+                raise ValueError("relative_to_window must be > 0 when provided.")
+
+            ref_col = f"{param}_LAST_ALL_{relative_to_window}_MATCHES_BEFORE"
+            if ref_col in out.columns:
+                ref_roll = pd.to_numeric(out[ref_col], errors="coerce")
+            else:
+                ref_roll = series.groupby(group_keys_any).transform(
+                    lambda s: s.shift(1).rolling(relative_to_window, min_periods=1).mean()
+                )
+
+            out[relative_col] = ref_roll - out[last_n_avg_col]
 
     # 3) Season-to-date average (within season and home/away), excluding current game
     if add_extra_season_avg:
@@ -121,9 +154,9 @@ def compute_rolling_stats(
         # Fill order:
         # 1) season-to-date (preferred)
         # 2) previous season mean
-        # 3) rolling home/away (your current fallback)
+        # 3) strict rolling average
         out[season_avg_col] = out[season_avg_col].fillna(out["_prev_season_mean"])
-        out[season_avg_col] = out[season_avg_col].fillna(out[last_n_homeaway_col])
+        out[season_avg_col] = out[season_avg_col].fillna(out[last_n_avg_col])
 
         out.drop(columns=["_prev_season_mean"], inplace=True)
 
@@ -200,13 +233,25 @@ def compute_season_std(df, param="PTS"):
     return df
 
 
-def compute_rolling_weighted_stats(df, param="PTS", window=10, group_by_season=False):
+def compute_rolling_weighted_stats(
+    df,
+    param="PTS",
+    window=10,
+    group_by_season=False,
+    add_relative_column: bool = True,
+    include_home_away_relative: bool = True,
+    relative_to_window: int | None = None,
+):
     """
     Computes weighted moving average for a given param, excluding the current row's game.
 
     Creates:
       - f"{param}_LAST_{window}_WMA_BEFORE"
-      - f"{param}_LAST_HOME_AWAY_{window}_WMA_BEFORE"
+      - Relative column (if add_relative_column=True):
+          - home/away WMA diff vs strict (legacy name reused):
+            f"{param}_LAST_HOME_AWAY_{window}_WMA_BEFORE"
+          - OR strict-window WMA diff:
+            f"{param}_LAST_{relative_to_window}_MINUS_LAST_{window}_WMA_BEFORE"
 
     Parameters
     ----------
@@ -225,8 +270,6 @@ def compute_rolling_weighted_stats(df, param="PTS", window=10, group_by_season=F
     """
 
     last_n_wma_col = f"{param}_LAST_{window}_WMA_BEFORE"
-    last_n_split_col = f"{param}_LAST_HOME_AWAY_{window}_WMA_BEFORE"
-
     out = df.copy()
     out["GAME_DATE"] = pd.to_datetime(out["GAME_DATE"], errors="coerce")
 
@@ -269,12 +312,35 @@ def compute_rolling_weighted_stats(df, param="PTS", window=10, group_by_season=F
         .apply(weighted_moving_average, raw=False)
     )
 
-    # Home / Away split
-    out[last_n_split_col] = series.groupby(group_keys_homeaway).transform(
-        lambda s: s.shift(1)
-        .rolling(window, min_periods=1)
-        .apply(weighted_moving_average, raw=False)
-    )
+    # Optional relative column
+    if add_relative_column:
+        if include_home_away_relative:
+            # Keep legacy name but store relative value:
+            # (last same-home/away WMA) - (last strict WMA)
+            last_n_split_col = f"{param}_LAST_HOME_AWAY_{window}_WMA_BEFORE"
+            split_wma = series.groupby(group_keys_homeaway).transform(
+                lambda s: s.shift(1)
+                .rolling(window, min_periods=1)
+                .apply(weighted_moving_average, raw=False)
+            )
+            out[last_n_split_col] = split_wma - out[last_n_wma_col]
+        elif relative_to_window is not None:
+            relative_col = (
+                f"{param}_LAST_{relative_to_window}_MINUS_LAST_{window}_WMA_BEFORE"
+            )
+            if relative_to_window <= 0:
+                raise ValueError("relative_to_window must be > 0 when provided.")
+
+            ref_col = f"{param}_LAST_{relative_to_window}_WMA_BEFORE"
+            if ref_col in out.columns:
+                ref_wma = pd.to_numeric(out[ref_col], errors="coerce")
+            else:
+                ref_wma = series.groupby(group_keys_any).transform(
+                    lambda s: s.shift(1)
+                    .rolling(relative_to_window, min_periods=1)
+                    .apply(weighted_moving_average, raw=False)
+                )
+            out[relative_col] = ref_wma - out[last_n_wma_col]
 
     out.sort_values("GAME_DATE", ascending=False, inplace=True)
 

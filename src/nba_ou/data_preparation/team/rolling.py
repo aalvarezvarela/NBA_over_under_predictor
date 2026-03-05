@@ -16,6 +16,7 @@ MAIN_MONEYLINE_COL = moneyline_col()
 # Module-level constants for rolling statistics computation
 COLS_TO_AVERAGE = [
     "PTS",
+    "TOTAL_POINTS",
     "OFF_RATING",
     "DEF_RATING",
     "NET_RATING",
@@ -38,36 +39,39 @@ COLS_TO_AVERAGE = [
 
 COLS_TO_AVERAGE_ODDS = [
     MAIN_TOTAL_LINE_COL,
-    "DIFF_FROM_LINE",
     "TOTAL_POINTS",
     MAIN_MONEYLINE_COL,
     MAIN_SPREAD_COL,
-    "IS_OVER_LINE",
 ]
 
 COLS_FOR_WEIGHTED_STATS = [
     "PTS",
     "TOTAL_POINTS",
     MAIN_TOTAL_LINE_COL,
-    "DIFF_FROM_LINE",
 ]
 
 COLS_FOR_SEASON_STD = [
     "PTS",
     "TOTAL_POINTS",
     MAIN_TOTAL_LINE_COL,
-    "DIFF_FROM_LINE",
-    "IS_OVER_LINE",
 ]
 
 COLS_FOR_SHORT_WINDOWS = [
-    "DIFF_FROM_LINE",
     "PTS",
     "DIFF_FROM_LINE_bet365",
+    MAIN_TOTAL_LINE_COL,
 ]
 
 
-def compute_trend_slope(df, parameter="PTS", window=10, shift_current_game=True):
+def compute_trend_slope(
+    df,
+    parameter="PTS",
+    window=10,
+    shift_current_game=True,
+    add_relative_column: bool = True,
+    include_home_away_relative: bool = True,
+    relative_to_window: int | None = None,
+):
     """
     Computes the slope of a linear regression line over the last `window` games
     to determine whether a team's performance is increasing, decreasing, or stable.
@@ -82,8 +86,12 @@ def compute_trend_slope(df, parameter="PTS", window=10, shift_current_game=True)
 
     Returns:
         pd.DataFrame: A modified DataFrame with new columns:
-            - f"{parameter}_TREND_SLOPE_LAST_{window}_GAMES_BEFORE" (all games)
-            - f"{parameter}_TREND_SLOPE_LAST_{window}_HOME_AWAY_GAMES_BEFORE" (home trend if playing home, away trend if playing away)
+            - f"{parameter}_TREND_SLOPE_LAST_{window}_GAMES_BEFORE" (strict all-games trend)
+            - Relative column (if add_relative_column=True):
+                - home/away minus strict (legacy name reused):
+                  f"{parameter}_TREND_SLOPE_LAST_{window}_HOME_AWAY_GAMES_BEFORE"
+                - OR strict-window diff:
+                  f"{parameter}_TREND_SLOPE_LAST_{relative_to_window}_MINUS_LAST_{window}_GAMES_BEFORE"
     """
 
     def calculate_slope(series):
@@ -113,46 +121,74 @@ def compute_trend_slope(df, parameter="PTS", window=10, shift_current_game=True)
         )
     )
 
-    # 2. Location-specific trend (home trend when playing home, away trend when playing away)
-    trend_col_location = f"{parameter}_TREND_SLOPE_LAST_{window}_HOME_AWAY_GAMES_BEFORE"
-
-    # Compute home games trend for home teams
-    home_mask = df["HOME"] == 1
-    df_temp_home = df[home_mask].copy()
-    df_temp_home = df_temp_home.sort_values(
-        ["TEAM_ID", "SEASON_YEAR", "GAME_DATE"], ascending=True
-    )
-
-    df.loc[home_mask, trend_col_location] = (
-        df_temp_home.groupby(["TEAM_ID", "SEASON_YEAR"])[parameter]
-        .transform(
-            lambda s: (
-                (s.shift(1) if shift_current_game else s)
-                .rolling(window, min_periods=2)
-                .apply(calculate_slope, raw=True)
+    if add_relative_column:
+        if include_home_away_relative:
+            # 2A. Relative trend using home/away context:
+            # (home/away trend) - (strict all-games trend)
+            trend_col_location = (
+                f"{parameter}_TREND_SLOPE_LAST_{window}_HOME_AWAY_GAMES_BEFORE"
             )
-        )
-        .values
-    )
-
-    # Compute away games trend for away teams
-    away_mask = df["HOME"] == 0
-    df_temp_away = df[away_mask].copy()
-    df_temp_away = df_temp_away.sort_values(
-        ["TEAM_ID", "SEASON_YEAR", "GAME_DATE"], ascending=True
-    )
-
-    df.loc[away_mask, trend_col_location] = (
-        df_temp_away.groupby(["TEAM_ID", "SEASON_YEAR"])[parameter]
-        .transform(
-            lambda s: (
-                (s.shift(1) if shift_current_game else s)
-                .rolling(window, min_periods=2)
-                .apply(calculate_slope, raw=True)
+            trend_col_location_raw = (
+                f"__{parameter}_TREND_SLOPE_LAST_{window}_HOME_AWAY_RAW"
             )
-        )
-        .values
-    )
+
+            home_mask = df["HOME"] == 1
+            df_temp_home = df[home_mask].copy().sort_values(
+                ["TEAM_ID", "SEASON_YEAR", "GAME_DATE"], ascending=True
+            )
+            df.loc[home_mask, trend_col_location_raw] = (
+                df_temp_home.groupby(["TEAM_ID", "SEASON_YEAR"])[parameter]
+                .transform(
+                    lambda s: (
+                        (s.shift(1) if shift_current_game else s)
+                        .rolling(window, min_periods=2)
+                        .apply(calculate_slope, raw=True)
+                    )
+                )
+                .values
+            )
+
+            away_mask = df["HOME"] == 0
+            df_temp_away = df[away_mask].copy().sort_values(
+                ["TEAM_ID", "SEASON_YEAR", "GAME_DATE"], ascending=True
+            )
+            df.loc[away_mask, trend_col_location_raw] = (
+                df_temp_away.groupby(["TEAM_ID", "SEASON_YEAR"])[parameter]
+                .transform(
+                    lambda s: (
+                        (s.shift(1) if shift_current_game else s)
+                        .rolling(window, min_periods=2)
+                        .apply(calculate_slope, raw=True)
+                    )
+                )
+                .values
+            )
+
+            df[trend_col_location] = df[trend_col_location_raw] - df[trend_col]
+            df.drop(columns=[trend_col_location_raw], inplace=True)
+        elif relative_to_window is not None:
+            # 2B. Relative strict trend across windows (e.g., last_5 - last_10)
+            relative_col = (
+                f"{parameter}_TREND_SLOPE_LAST_{relative_to_window}_MINUS_LAST_{window}_GAMES_BEFORE"
+            )
+            if relative_to_window <= 0:
+                raise ValueError("relative_to_window must be > 0 when provided.")
+
+            ref_col = (
+                f"{parameter}_TREND_SLOPE_LAST_{relative_to_window}_GAMES_BEFORE"
+            )
+            if ref_col in df.columns:
+                reference_trend = df[ref_col]
+            else:
+                reference_trend = df.groupby(["TEAM_ID", "SEASON_YEAR"])[parameter].transform(
+                    lambda s: (
+                        (s.shift(1) if shift_current_game else s)
+                        .rolling(relative_to_window, min_periods=2)
+                        .apply(calculate_slope, raw=True)
+                    )
+                )
+
+            df[relative_col] = reference_trend - df[trend_col]
 
     return df
 
@@ -171,9 +207,11 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
     corresponding DIFF_FROM_* columns in rolling stats, weighted stats, and season std.
     Also includes odds percentages, prices, and other betting data.
     """
-    # 1) Dynamically discover new diff columns (exclude legacy DIFF_FROM_LINE)
+    original_columns = set(df.columns)
+
+    # 1) Dynamically discover new diff columns
     new_diff_cols = [
-        c for c in df.columns if c.startswith("DIFF_FROM_") and c != "DIFF_FROM_LINE"
+        c for c in df.columns if c.startswith("DIFF_FROM_")
     ]
 
     # 2) Dynamically discover all TOTAL_LINE_* columns
@@ -256,24 +294,45 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
             df, col, window=5, add_extra_season_avg=True, group_by_season=False
         )
         
-        if col in COLS_TO_AVERAGE + new_total_line_cols + new_diff_cols + consensus_pct_cols:
+        if col in COLS_FOR_SHORT_WINDOWS + new_total_line_cols + new_diff_cols + consensus_pct_cols:
             df = compute_rolling_stats(
-                df, col, window=10, add_extra_season_avg=False, group_by_season=False
+                df,
+                col,
+                window=10,
+                add_extra_season_avg=False,
+                group_by_season=False,
+                include_home_away_relative=False,
+                relative_to_window=5,
             )
 
         if col in cols_for_weighted_stats:
-            df = compute_rolling_weighted_stats(
-                df, col, window=10, group_by_season=False
-            )
             df = compute_rolling_weighted_stats(
                 df, col, window=5, group_by_season=False
             )
 
         # Extra short windows for all DIFF columns (legacy + new ones)
         if col in COLS_FOR_SHORT_WINDOWS + new_diff_cols:
-            df = compute_rolling_stats(df, col, window=1, add_extra_season_avg=False)
-            df = compute_rolling_stats(df, col, window=2, add_extra_season_avg=False)
-            df = compute_rolling_stats(df, col, window=3, add_extra_season_avg=False)
+            df = compute_rolling_stats(
+                df,
+                col,
+                window=1,
+                add_extra_season_avg=False,
+                add_relative_column=False,
+            )
+            df = compute_rolling_stats(
+                df,
+                col,
+                window=2,
+                add_extra_season_avg=False,
+                add_relative_column=False,
+            )
+            df = compute_rolling_stats(
+                df,
+                col,
+                window=3,
+                add_extra_season_avg=False,
+                add_relative_column=False,
+            )
 
     # 10) Seasonal std loop
     for param in tqdm(cols_for_season_std, desc="Computing seasonal std"):
@@ -281,8 +340,15 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
 
     # 11) Compute trend slopes for teams
     print("Computing team performance trends...")
-    df = compute_trend_slope(df, parameter="PTS", window=10, shift_current_game=True)
     df = compute_trend_slope(df, parameter="PTS", window=5, shift_current_game=True)
+    df = compute_trend_slope(
+        df,
+        parameter="PTS",
+        window=10,
+        shift_current_game=True,
+        include_home_away_relative=False,
+        relative_to_window=5,
+    )
 
     # 12) Diff-from-line columns (post-game): exclude current game
     diff_cols = [c for c in df.columns if c.startswith("DIFF_FROM_")]
@@ -297,14 +363,9 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
         ]
     for col in tqdm(total_line_trend_cols, desc="Computing total line trends"):
         if col in df.columns:
-            if col == MAIN_TOTAL_LINE_COL:
-                df = compute_trend_slope(
-                    df, parameter=col, window=6, shift_current_game=False
-                )
-            else:
-                df = compute_trend_slope(
-                    df, parameter=col, window=5, shift_current_game=True
-                )
+            df = compute_trend_slope(
+                df, parameter=col, window=5, shift_current_game=True
+            )
 
     # 14) Consensus percentage trends (pre-game known): shift current game
     for col in tqdm(consensus_pct_cols, desc="Computing consensus % trends"):
@@ -321,11 +382,20 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
                     df, parameter=col, window=5, shift_current_game=True
                 )
 
-    # 16) Price columns trends (pre-game known): shift current game
-    for col in tqdm(price_cols, desc="Computing price trends"):
-        if col in df.columns:
-            df = compute_trend_slope(
-                df, parameter=col, window=5, shift_current_game=True
-            )
+    # 16) Enforce naming convention: all newly computed rolling/stat columns must contain _BEFORE
+    # Only apply to columns created inside this function (keep source columns untouched).
+    new_columns = set(df.columns) - original_columns
+    rename_map = {}
+    for col in new_columns:
+        is_computed_stat = (
+            ("_LAST_" in col and ("_MATCHES" in col or "_WMA_" in col))
+            or ("_TREND_SLOPE_" in col)
+            or ("_SEASON_" in col and (col.endswith("_AVG") or col.endswith("_STD")))
+        )
+        if is_computed_stat and "_BEFORE" not in col:
+            rename_map[col] = f"{col}_BEFORE"
+
+    if rename_map:
+        df = df.rename(columns=rename_map)
 
     return df

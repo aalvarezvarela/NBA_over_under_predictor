@@ -7,6 +7,7 @@ including computing referee-specific features based on historical performance.
 
 import re
 
+import numpy as np
 import pandas as pd
 from nba_ou.config.odds_columns import resolve_main_total_line_col
 from nba_ou.postgre_db.injuries_refs.fetch_refs_db.get_refs_db import (
@@ -17,7 +18,7 @@ from tqdm import tqdm
 # Metrics to compute for referee impact
 REFEREE_METRICS = [
     "TOTAL_POINTS",  # Total points scored in the game
-    "DIFFERENCE_FROM_LINE",  # Difference from over/under line
+    "DIFF_FROM_LINE",  # Difference from over/under line
     "TOTAL_PF",  # Personal fouls called in the game
 ]
 
@@ -56,7 +57,7 @@ def compute_referee_features(df_refs_pivot):
             - TOTAL_LINE_<main_book>: Main over/under line for the game
             - PF: Personal fouls called in the game
             - REF_1, REF_2, REF_3: Names of the three referees
-            - DIFFERENCE_FROM_LINE: TOTAL_POINTS - TOTAL_LINE_<main_book>
+            - DIFF_FROM_LINE: TOTAL_POINTS - TOTAL_LINE_<main_book>
 
     Returns:
         pd.DataFrame: Original DataFrame with additional columns:
@@ -88,10 +89,10 @@ def compute_referee_features(df_refs_pivot):
 
     # Initialize aggregate referee and trio features
     for metric in REFEREE_METRICS:
-        df[f"REF_AVG_{metric}_DIFF_BEFORE"] = 0.0
-        df[f"REF_STD_{metric}_DIFF_BEFORE"] = 0.0
-        df[f"REF_TRIO_{metric}_DIFF_BEFORE"] = 0.0
-        df[f"REF_TRIO_{metric}_STD_BEFORE"] = 0.0
+        df[f"REF_AVG_{metric}_DIFF_BEFORE"] = np.nan
+        df[f"REF_STD_{metric}_DIFF_BEFORE"] = np.nan
+        df[f"REF_TRIO_{metric}_DIFF_BEFORE"] = np.nan
+        df[f"REF_TRIO_{metric}_STD_BEFORE"] = np.nan
 
     # Process each game
     for idx in tqdm(range(len(df)), desc="Computing referee features"):
@@ -152,9 +153,7 @@ def compute_referee_features(df_refs_pivot):
                     )
                 if len(games_with_trio) > 0:
                     trio_std = games_with_trio[metric].std(ddof=0)
-                    df.at[idx, f"REF_TRIO_{metric}_STD_BEFORE"] = (
-                        0.0 if pd.isna(trio_std) else trio_std
-                    )
+                    df.at[idx, f"REF_TRIO_{metric}_STD_BEFORE"] = trio_std
 
     df = df.drop(columns=["REF_TRIO_KEY"])
     return df
@@ -250,7 +249,7 @@ def process_referee_data_for_training(
             on="GAME_ID",
             how="inner",
         )
-        df_refs_pivot["DIFFERENCE_FROM_LINE"] = (
+        df_refs_pivot["DIFF_FROM_LINE"] = (
             df_refs_pivot["TOTAL_POINTS"] - df_refs_pivot[main_total_line]
         )
 

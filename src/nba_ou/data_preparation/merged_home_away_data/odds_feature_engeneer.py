@@ -6,6 +6,8 @@ from nba_ou.config.odds_columns import resolve_main_total_line_col
 
 # Optional legacy default list (only used when explicitly provided by caller)
 BET_BOOKS: list[str] = []
+# Sources used as reference baselines should not be treated as regular books.
+NON_PER_BOOK_SOURCES = {"consensus_opener"}
 
 
 def as_float(s: pd.Series) -> pd.Series:
@@ -60,11 +62,13 @@ def safe_iqr(x: pd.DataFrame) -> pd.Series:
     return q75 - q25
 
 
-def safe_max_abs(x: pd.DataFrame) -> pd.Series:
-    """Maximum absolute value across columns."""
+def safe_mad(x: pd.DataFrame) -> pd.Series:
+    """Median absolute deviation across columns (row-wise)."""
     if isinstance(x, pd.Series):
-        return x.abs()
-    return x.abs().max(axis=1, skipna=True)
+        return pd.Series(np.nan, index=x.index)
+    med = x.median(axis=1, skipna=True)
+    abs_dev = x.sub(med, axis=0).abs()
+    return abs_dev.median(axis=1, skipna=True)
 
 
 def engineer_odds_features(
@@ -73,24 +77,29 @@ def engineer_odds_features(
     books: list[str] | None = None,
 ) -> pd.DataFrame:
     """
-    Odds feature engineering focused on TOTAL lines and TOTAL prices, assuming prices are ALREADY decimal odds.
+    Odds feature engineering focused on close-time TOTAL/SPREAD/ML data.
+    Prices are expected to already be decimal odds.
 
-    Primary features:
-      - per-book total line mid and move from opener (consensus opener baseline only)
-      - aggregates across books: mean/std/range of current total lines (excluding openers), mean/std of moves
-      - per-book total price asymmetry: over/under decimal diff, implied prob diff (no-vig), vig
-      - aggregates across books: mean/std/range of no-vig prob(over), bias from 0.50
+    Main outputs:
+      - Robust close total consensus: line median/mean + dispersion (std/iqr/mad/range)
+      - Per-book total skew features: log(price_over/price_under), prob_diff_novig, vig
+      - Coverage signals: number/ratio of books with total line and total prices present
+      - Minimal spread+moneyline summaries (favorite strength and uncertainty proxies)
+      - Reference baseline helper:
+          close_total_consensus
 
-    Keeps a small set of spread and moneyline features that are plausibly predictive of total points.
+    Note:
+      - Consensus opener inputs are still used when available, but exposed as "ref" fields.
+      - Move-from-opener features are intentionally excluded to avoid train/inference mismatch.
 
     Expected (if available):
       - Total current lines per book (UPPERCASE, from merge_total_spread_moneyline):
           TOTAL_LINE_{book}   (e.g., TOTAL_LINE_betmgm)
       - Total current prices per book (lowercase, from merge_remaining):
           total_{book}_price_over, total_{book}_price_under   (DECIMAL)
-      - Consensus total opener line (from merge_total_spread_moneyline):
+      - Consensus total opener line (used as reference baseline):
           TOTAL_LINE_consensus_opener
-      - Consensus total opener prices (from merge_remaining):
+      - Consensus total opener prices (used as reference baseline):
           total_consensus_opener_price_over, total_consensus_opener_price_under   (DECIMAL)
       - Spread per book (from merge_remaining):
           spread_{book}_line_home, spread_{book}_line_away
@@ -126,48 +135,45 @@ def engineer_odds_features(
     else:
         books = list(dict.fromkeys(books))
 
-    # -----------------------------
-    # 0) Consensus total opener
-    # -----------------------------
-    # Consensus opener total line.
-    cons_open_line_col = "TOTAL_LINE_consensus_opener"
-    cons_open_price_over = "total_consensus_opener_price_over"
-    cons_open_price_under = "total_consensus_opener_price_under"
+    # Avoid redundant/self-referential features by excluding baseline sources
+    # from per-book loops (they are handled explicitly in section 0/2).
+    books = [b for b in books if b not in NON_PER_BOOK_SOURCES]
 
-    if cons_open_line_col in out.columns:
-        out[f"{prefix}consensus_total_opener_line_mid"] = as_float(out[cons_open_line_col])
+    # -----------------------------
+    # 0) Consensus total reference line/probability
+    # -----------------------------
+    # Source is still consensus opener data, but this script treats it as a reference baseline.
+    cons_ref_line_col = "TOTAL_LINE_consensus_opener"
+    cons_ref_price_over = "total_consensus_opener_price_over"
+    cons_ref_price_under = "total_consensus_opener_price_under"
+
+    if cons_ref_line_col in out.columns:
+        out[f"{prefix}consensus_total_ref_line_mid"] = as_float(out[cons_ref_line_col])
     else:
-        # Fallback only if consensus opener line was not merged with its canonical name.
+        # Fallback only if reference line was not merged with canonical name.
         main_total_line = resolve_main_total_line_col(out)
         if main_total_line is not None:
-            out[f"{prefix}consensus_total_opener_line_mid"] = as_float(
-                out[main_total_line]
-            )
+            out[f"{prefix}consensus_total_ref_line_mid"] = as_float(out[main_total_line])
 
-    if cons_open_price_over in out.columns and cons_open_price_under in out.columns:
-        p_over = decimal_to_prob(out[cons_open_price_over])
-        p_under = decimal_to_prob(out[cons_open_price_under])
+    if cons_ref_price_over in out.columns and cons_ref_price_under in out.columns:
+        p_over = decimal_to_prob(out[cons_ref_price_over])
+        p_under = decimal_to_prob(out[cons_ref_price_under])
         p_over_nv, p_under_nv = no_vig_two_way_prob(p_over, p_under)
-        out[f"{prefix}consensus_total_opener_prob_over_novig"] = p_over_nv
-        out[f"{prefix}consensus_total_opener_prob_under_novig"] = p_under_nv
-        out[f"{prefix}consensus_total_opener_vig"] = (p_over + p_under) - 1.0
-        out[f"{prefix}consensus_total_opener_prob_diff_novig"] = (
-            p_over_nv - p_under_nv
-        )  # in [-1, 1]
+        out[f"{prefix}consensus_total_ref_prob_over_novig"] = p_over_nv
+        out[f"{prefix}consensus_total_ref_vig"] = (p_over + p_under) - 1.0
+        out[f"{prefix}consensus_total_ref_prob_diff_novig"] = p_over_nv - p_under_nv
 
     # -----------------------------
-    # 1) TOTAL lines and TOTAL prices (per book) + movements from opener
+    # 1) TOTAL lines and TOTAL prices (per book, close-time robust summary)
     # -----------------------------
     total_line_mids = []
-    total_line_moves = []
-    total_prob_over_novig = []
     total_prob_diff_novig = []
     total_vigs = []
     total_price_log_ratios = []
+    total_line_presence_series = []
+    total_price_presence_series = []
 
     for book in books:
-        # Current total line: uses TOTAL_LINE_{book} (renamed from total_{book}_line_over
-        # by merge_total_spread_moneyline_by_game_id)
         total_line_col = f"TOTAL_LINE_{book}"
         price_over = f"total_{book}_price_over"
         price_under = f"total_{book}_price_under"
@@ -175,96 +181,64 @@ def engineer_odds_features(
         has_lines = total_line_col in out.columns
         has_prices = price_over in out.columns and price_under in out.columns
 
-        # Current total line mid (TOTAL_LINE_{book} is already the mid value)
         if has_lines:
             col_mid = f"{prefix}book_total_line_mid_{book}"
             out[col_mid] = as_float(out[total_line_col])
             total_line_mids.append(col_mid)
+            total_line_presence_series.append(out[col_mid].notna().astype(float))
 
-        # Current total price asymmetry (decimal and prob space)
         if has_prices:
             dec_over = as_float(out[price_over])
             dec_under = as_float(out[price_under])
-
-            out[f"{prefix}book_total_price_diff_over_minus_under_{book}"] = (
-                dec_over - dec_under
+            total_price_presence_series.append(
+                (dec_over.notna() & dec_under.notna()).astype(float)
             )
-            # Use log ratio for stability
+
+            # Keep log ratio for price skew (drop decimal diff to reduce redundancy).
             col_log_ratio = f"{prefix}book_total_price_log_ratio_over_div_under_{book}"
             with np.errstate(divide="ignore", invalid="ignore"):
                 out[col_log_ratio] = np.log(dec_over / dec_under)
             out[col_log_ratio] = out[col_log_ratio].replace([np.inf, -np.inf], np.nan)
             total_price_log_ratios.append(col_log_ratio)
 
+            # Keep only one no-vig probability representation per book.
             p_over = decimal_to_prob(out[price_over])
             p_under = decimal_to_prob(out[price_under])
             p_over_nv, p_under_nv = no_vig_two_way_prob(p_over, p_under)
-
-            col_p_over = f"{prefix}book_total_prob_over_novig_{book}"
-            col_p_under = f"{prefix}book_total_prob_under_novig_{book}"
-            col_p_diff = f"{prefix}book_total_prob_diff_novig_{book}"  # 2*p_over_nv - 1
+            col_p_diff = f"{prefix}book_total_prob_diff_novig_{book}"
             col_vig = f"{prefix}book_total_vig_{book}"
-
-            out[col_p_over] = p_over_nv
-            out[col_p_under] = p_under_nv
             out[col_p_diff] = p_over_nv - p_under_nv
             out[col_vig] = (p_over + p_under) - 1.0
-
-            total_prob_over_novig.append(col_p_over)
             total_prob_diff_novig.append(col_p_diff)
             total_vigs.append(col_vig)
 
-        # Movement from opener (consensus opener baseline).
-        if has_lines:
-            if f"{prefix}consensus_total_opener_line_mid" in out.columns:
-                move_col = f"{prefix}book_total_line_move_from_opener_{book}"
-                out[move_col] = (
-                    out[f"{prefix}book_total_line_mid_{book}"]
-                    - out[f"{prefix}consensus_total_opener_line_mid"]
-                )
-                total_line_moves.append(move_col)
+    # Coverage features (missingness is signal)
+    if total_line_presence_series:
+        tmp_presence = pd.concat(total_line_presence_series, axis=1)
+        out[f"{prefix}n_books_total_line_present"] = tmp_presence.sum(axis=1)
+        out[f"{prefix}n_books_total_line_present_ratio"] = (
+            out[f"{prefix}n_books_total_line_present"] / len(total_line_presence_series)
+        )
+    if total_price_presence_series:
+        tmp_presence = pd.concat(total_price_presence_series, axis=1)
+        out[f"{prefix}n_books_total_price_present"] = tmp_presence.sum(axis=1)
+        out[f"{prefix}n_books_total_price_present_ratio"] = (
+            out[f"{prefix}n_books_total_price_present"] / len(total_price_presence_series)
+        )
 
-        if has_prices:
-            if f"{prefix}consensus_total_opener_prob_over_novig" in out.columns:
-                out[f"{prefix}book_total_prob_move_over_novig_{book}"] = (
-                    out[f"{prefix}book_total_prob_over_novig_{book}"]
-                    - out[f"{prefix}consensus_total_opener_prob_over_novig"]
-                )
-
-    # Aggregates across books: current total line levels (excluding opener by construction)
+    # Aggregates across books: current total line levels
     if total_line_mids:
         tmp_lines = (
             out[total_line_mids].apply(pd.to_numeric, errors="coerce").astype(float)
         )
         out[f"{prefix}total_line_books_mean"] = safe_mean(tmp_lines)
+        out[f"{prefix}total_line_books_median"] = tmp_lines.median(axis=1, skipna=True)
         out[f"{prefix}total_line_books_std"] = safe_std(tmp_lines)
         out[f"{prefix}total_line_books_range"] = safe_range(tmp_lines)
         out[f"{prefix}total_line_books_iqr"] = safe_iqr(tmp_lines)
+        out[f"{prefix}total_line_books_mad"] = safe_mad(tmp_lines)
 
-    # Aggregates across books: movement from opener (consensus baseline)
-    if total_line_moves:
-        tmp_moves = (
-            out[total_line_moves].apply(pd.to_numeric, errors="coerce").astype(float)
-        )
-        out[f"{prefix}total_line_move_books_mean"] = safe_mean(tmp_moves)
-        out[f"{prefix}total_line_move_books_std"] = safe_std(tmp_moves)
-        out[f"{prefix}total_line_move_books_abs_mean"] = safe_mean(tmp_moves.abs())
-        out[f"{prefix}total_line_move_books_max_abs"] = safe_max_abs(tmp_moves)
-
-    # Aggregates across books: probability and price skew
-    if total_prob_over_novig:
-        tmp_p = (
-            out[total_prob_over_novig]
-            .apply(pd.to_numeric, errors="coerce")
-            .astype(float)
-        )
-        out[f"{prefix}total_prob_over_books_mean"] = safe_mean(tmp_p)
-        out[f"{prefix}total_prob_over_books_std"] = safe_std(tmp_p)
-        out[f"{prefix}total_prob_over_books_range"] = safe_range(tmp_p)
-        out[f"{prefix}total_prob_over_books_bias_from_50"] = (
-            out[f"{prefix}total_prob_over_books_mean"] - 0.5
-        )
-
+    # Aggregates across books: probability skew (prob_diff only)
     if total_prob_diff_novig:
         tmp_d = (
             out[total_prob_diff_novig]
@@ -273,11 +247,18 @@ def engineer_odds_features(
         )
         out[f"{prefix}total_prob_diff_books_mean"] = safe_mean(tmp_d)
         out[f"{prefix}total_prob_diff_books_std"] = safe_std(tmp_d)
+        out[f"{prefix}total_prob_diff_books_range"] = safe_range(tmp_d)
+        out[f"{prefix}total_prob_diff_books_iqr"] = safe_iqr(tmp_d)
+        out[f"{prefix}total_prob_diff_books_mad"] = safe_mad(tmp_d)
 
+    # Aggregates across books: vig level and dispersion
     if total_vigs:
         tmp_v = out[total_vigs].apply(pd.to_numeric, errors="coerce").astype(float)
         out[f"{prefix}total_vig_books_mean"] = safe_mean(tmp_v)
+        out[f"{prefix}total_vig_books_median"] = tmp_v.median(axis=1, skipna=True)
         out[f"{prefix}total_vig_books_std"] = safe_std(tmp_v)
+        out[f"{prefix}total_vig_books_iqr"] = safe_iqr(tmp_v)
+        out[f"{prefix}total_vig_books_mad"] = safe_mad(tmp_v)
 
     # Aggregates across books: log-ratio (market skew)
     if total_price_log_ratios:
@@ -289,6 +270,8 @@ def engineer_odds_features(
         out[f"{prefix}total_price_log_ratio_books_mean"] = safe_mean(tmp_lr)
         out[f"{prefix}total_price_log_ratio_books_std"] = safe_std(tmp_lr)
         out[f"{prefix}total_price_log_ratio_books_range"] = safe_range(tmp_lr)
+        out[f"{prefix}total_price_log_ratio_books_iqr"] = safe_iqr(tmp_lr)
+        out[f"{prefix}total_price_log_ratio_books_mad"] = safe_mad(tmp_lr)
 
     # -----------------------------
     # 2) SPREAD features using FAVORITE logic (fixed calculation)
@@ -296,9 +279,7 @@ def engineer_odds_features(
     spread_home_lines = []
     spread_fav_abs = []
     spread_home_is_fav = []
-    spread_fav_abs_moves = []
-
-    # Consensus spread opener (optional) - use favorite logic
+    # Consensus spread reference (optional) - use favorite logic
     if (
         "spread_consensus_opener_line_home" in out.columns
         and "spread_consensus_opener_line_away" in out.columns
@@ -307,9 +288,9 @@ def engineer_odds_features(
         a_open = as_float(out["spread_consensus_opener_line_away"])
         # Favorite is the more negative line (keep as Series for safety)
         fav_open = pd.Series(np.minimum(h_open, a_open), index=out.index)
-        out[f"{prefix}spread_consensus_opener_fav_line"] = fav_open
-        out[f"{prefix}spread_consensus_opener_fav_abs"] = np.abs(fav_open)
-        out[f"{prefix}spread_consensus_opener_home_is_fav"] = (h_open < a_open).astype(
+        out[f"{prefix}spread_consensus_ref_fav_line"] = fav_open
+        out[f"{prefix}spread_consensus_ref_fav_abs"] = np.abs(fav_open)
+        out[f"{prefix}spread_consensus_ref_home_is_fav"] = (h_open < a_open).astype(
             float
         )
 
@@ -336,14 +317,6 @@ def engineer_odds_features(
             out[col_home_fav] = (h_line < a_line).astype(float)
             spread_home_is_fav.append(col_home_fav)
 
-            # Movement from opener (using fav_abs)
-            if f"{prefix}spread_consensus_opener_fav_abs" in out.columns:
-                mv = f"{prefix}spread_fav_abs_move_{book}"
-                out[mv] = (
-                    out[col_fav_abs] - out[f"{prefix}spread_consensus_opener_fav_abs"]
-                )
-                spread_fav_abs_moves.append(mv)
-
     # Aggregates across books
     if spread_home_lines:
         tmp = out[spread_home_lines].apply(pd.to_numeric, errors="coerce").astype(float)
@@ -362,21 +335,10 @@ def engineer_odds_features(
         )
         out[f"{prefix}spread_home_is_fav_books_mean"] = safe_mean(tmp)
 
-    if spread_fav_abs_moves:
-        tmp = (
-            out[spread_fav_abs_moves]
-            .apply(pd.to_numeric, errors="coerce")
-            .astype(float)
-        )
-        out[f"{prefix}spread_fav_abs_move_books_mean"] = safe_mean(tmp)
-        out[f"{prefix}spread_fav_abs_move_books_abs_mean"] = safe_mean(tmp.abs())
-        out[f"{prefix}spread_fav_abs_move_books_max_abs"] = safe_max_abs(tmp)
-
     # -----------------------------
     # 3) Keep a minimal set of MONEYLINE features (implied win prob, no vig)
     # -----------------------------
     ml_home_probs = []
-    ml_away_probs = []
     ml_vigs = []
 
     for book in books:
@@ -389,31 +351,23 @@ def engineer_odds_features(
             ph_nv, pa_nv = no_vig_two_way_prob(ph, pa)
 
             col_home = f"{prefix}ml_home_prob_novig_{book}"
-            col_away = f"{prefix}ml_away_prob_novig_{book}"
             col_vig = f"{prefix}ml_vig_{book}"
 
             out[col_home] = ph_nv
-            out[col_away] = pa_nv
             out[col_vig] = (ph + pa) - 1.0
 
             ml_home_probs.append(col_home)
-            ml_away_probs.append(col_away)
             ml_vigs.append(col_vig)
 
-    if ml_home_probs and ml_away_probs:
-        out[f"{prefix}ml_home_prob_books_mean"] = safe_mean(
+    if ml_home_probs:
+        ml_home_mean = safe_mean(
             out[ml_home_probs].apply(pd.to_numeric, errors="coerce").astype(float)
         )
-        out[f"{prefix}ml_away_prob_books_mean"] = safe_mean(
-            out[ml_away_probs].apply(pd.to_numeric, errors="coerce").astype(float)
-        )
-        out[f"{prefix}ml_favorite_prob"] = out[
-            [f"{prefix}ml_home_prob_books_mean", f"{prefix}ml_away_prob_books_mean"]
-        ].max(axis=1, skipna=True)
-        out[f"{prefix}ml_win_prob_gap"] = (
-            out[f"{prefix}ml_home_prob_books_mean"]
-            - out[f"{prefix}ml_away_prob_books_mean"]
-        ).abs()
+        ml_away_mean = 1.0 - ml_home_mean
+        out[f"{prefix}ml_favorite_prob"] = pd.concat(
+            [ml_home_mean, ml_away_mean], axis=1
+        ).max(axis=1, skipna=True)
+        out[f"{prefix}ml_win_prob_gap"] = (ml_home_mean - ml_away_mean).abs()
 
     if ml_vigs:
         out[f"{prefix}ml_vig_books_mean"] = safe_mean(
@@ -421,17 +375,17 @@ def engineer_odds_features(
         )
 
     # -----------------------------
-    # 4) Interactions and derived features for predicting line error
+    # 4) Interactions and derived features for predicting residual error
     # -----------------------------
 
     # Basic interactions
     if (
         f"{prefix}total_line_books_mean" in out.columns
-        and f"{prefix}total_prob_over_books_bias_from_50" in out.columns
+        and f"{prefix}total_prob_diff_books_mean" in out.columns
     ):
-        out[f"{prefix}total_line_x_prob_bias"] = (
+        out[f"{prefix}total_line_x_prob_diff"] = (
             out[f"{prefix}total_line_books_mean"]
-            * out[f"{prefix}total_prob_over_books_bias_from_50"]
+            * out[f"{prefix}total_prob_diff_books_mean"]
         )
 
     # Use corrected spread_fav_abs instead of spread_mid
@@ -444,15 +398,6 @@ def engineer_odds_features(
             * out[f"{prefix}spread_fav_abs_books_mean"]
         )
 
-    if (
-        f"{prefix}total_line_move_books_abs_mean" in out.columns
-        and f"{prefix}ml_win_prob_gap" in out.columns
-    ):
-        out[f"{prefix}move_abs_x_ml_gap"] = (
-            out[f"{prefix}total_line_move_books_abs_mean"]
-            * out[f"{prefix}ml_win_prob_gap"]
-        )
-
     # Disagreement + vig interaction (uncertainty proxy)
     if (
         f"{prefix}total_line_books_std" in out.columns
@@ -460,16 +405,6 @@ def engineer_odds_features(
     ):
         out[f"{prefix}line_std_x_vig"] = (
             out[f"{prefix}total_line_books_std"] * out[f"{prefix}total_vig_books_mean"]
-        )
-
-    # Residual skew after line movement
-    if (
-        f"{prefix}total_line_move_books_abs_mean" in out.columns
-        and f"{prefix}total_prob_diff_books_mean" in out.columns
-    ):
-        out[f"{prefix}move_abs_x_prob_diff_abs"] = (
-            out[f"{prefix}total_line_move_books_abs_mean"]
-            * out[f"{prefix}total_prob_diff_books_mean"].abs()
         )
 
     # -----------------------------
@@ -511,5 +446,14 @@ def engineer_odds_features(
         out[f"{prefix}implied_points_gap"] = (
             out[f"{prefix}implied_points_max"] - out[f"{prefix}implied_points_min"]
         )
+
+    # -----------------------------
+    # 6) Reference baseline helper (no target-derived calculations here)
+    # -----------------------------
+    # Prefer robust close-consensus proxy (median across books), fallback to mean.
+    if f"{prefix}total_line_books_median" in out.columns:
+        out["close_total_consensus"] = as_float(out[f"{prefix}total_line_books_median"])
+    elif f"{prefix}total_line_books_mean" in out.columns:
+        out["close_total_consensus"] = as_float(out[f"{prefix}total_line_books_mean"])
 
     return out

@@ -9,6 +9,7 @@ from typing import Literal
 
 import numpy as np
 import pandas as pd
+
 from nba_ou.config.odds_columns import (
     get_main_book,
     moneyline_col,
@@ -17,6 +18,52 @@ from nba_ou.config.odds_columns import (
 )
 
 DEFAULT_PRIMARY_BOOK = get_main_book()
+
+
+def _extract_available_books(
+    df_odds: pd.DataFrame,
+    *,
+    market_prefix: str,
+    required_suffixes: tuple[str, ...],
+) -> list[str]:
+    """
+    Extract books that have all required columns for a market.
+    """
+    books = set()
+    for col in df_odds.columns:
+        if not col.startswith(f"{market_prefix}_"):
+            continue
+        for suffix in required_suffixes:
+            token = f"_{suffix}"
+            if col.endswith(token):
+                book = col[len(market_prefix) + 1 : -len(token)]
+                if book:
+                    books.add(book)
+                break
+
+    available = []
+    for book in sorted(books):
+        has_all = all(
+            f"{market_prefix}_{book}_{suffix}" in df_odds.columns
+            for suffix in required_suffixes
+        )
+        if has_all:
+            available.append(book)
+    return available
+
+
+def _assert_book_available(
+    *,
+    selected_book: str,
+    available_books: list[str],
+    market_name: str,
+) -> None:
+    if selected_book in available_books:
+        return
+    raise ValueError(
+        f"Configured {market_name} book '{selected_book}' is not available in odds data. "
+        f"Available {market_name} books: {available_books}"
+    )
 
 
 def merge_odds_percentages_and_prices_by_game_id(
@@ -221,6 +268,39 @@ def merge_total_spread_moneyline_by_game_id(
         print("Warning: 'GAME_ID' column not found in team dataframe")
         return df_team
 
+    # Security check: validate configured books exist in incoming odds data.
+    available_spread_books = _extract_available_books(
+        df_odds,
+        market_prefix="spread",
+        required_suffixes=("line_home", "line_away"),
+    )
+    available_ml_books = _extract_available_books(
+        df_odds,
+        market_prefix="ml",
+        required_suffixes=("price_home", "price_away"),
+    )
+    available_total_books = _extract_available_books(
+        df_odds,
+        market_prefix="total",
+        required_suffixes=("line_over",),
+    )
+
+    _assert_book_available(
+        selected_book=book,
+        available_books=available_spread_books,
+        market_name="spread",
+    )
+    _assert_book_available(
+        selected_book=book,
+        available_books=available_ml_books,
+        market_name="moneyline",
+    )
+    _assert_book_available(
+        selected_book=total_line_book,
+        available_books=available_total_books,
+        market_name="total-line",
+    )
+
     # Debug: print df_team rows whose GAME_ID is not in df_odds
     if debug:
         required_team_cols = {"GAME_DATE", "TEAM_NAME"}
@@ -369,9 +449,7 @@ def merge_total_spread_moneyline_by_game_id(
     else:
         print("Warning: 'HOME' column not found in team dataframe")
         df_merged[selected_spread_col] = df_merged[f"{selected_spread_col}_HOME"]
-        df_merged[selected_moneyline_col] = df_merged[
-            f"{selected_moneyline_col}_HOME"
-        ]
+        df_merged[selected_moneyline_col] = df_merged[f"{selected_moneyline_col}_HOME"]
 
     # Drop temp columns
     df_merged = df_merged.drop(
@@ -518,11 +596,19 @@ def merge_remaining_odds_by_game_id(
         ]
         columns_to_exclude.update(yahoo_cols)
 
-    # Select columns from odds to merge (all except excluded)
+    # Select columns from odds to merge (all except excluded and already-present columns).
+    # Skipping pre-existing columns prevents pandas from creating duplicated *_odds columns
+    # when this function is called on a dataframe that already contains some game-level odds.
+    existing_cols = set(df_merged.columns)
+    skipped_existing_cols = []
     cols_to_merge = ["game_id"]  # Always include game_id
     for col in df_odds.columns:
-        if col not in columns_to_exclude and col != "game_id":
-            cols_to_merge.append(col)
+        if col == "game_id" or col in columns_to_exclude:
+            continue
+        if col in existing_cols:
+            skipped_existing_cols.append(col)
+            continue
+        cols_to_merge.append(col)
 
     # Check if there are any columns to merge besides game_id
     if len(cols_to_merge) <= 1:
@@ -542,6 +628,11 @@ def merge_remaining_odds_by_game_id(
         print(
             f"Merging remaining odds: {len(spread_lines)} spread lines, "
             f"{len(total_lines)} total lines, {len(other_cols)} other columns"
+        )
+    if skipped_existing_cols:
+        print(
+            f"Skipped {len(skipped_existing_cols)} already-existing odds column(s) "
+            f"to avoid duplicate merge columns."
         )
 
     df_odds_subset = df_odds[cols_to_merge].copy()

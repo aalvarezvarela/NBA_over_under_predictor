@@ -33,12 +33,13 @@ def basic_cleaning(df: pd.DataFrame, verbose: int = 1) -> pd.DataFrame:
     Returns:
         pd.DataFrame: Cleaned dataframe
     """
-    if "IS_US_HOLIDAY" in df.columns:
-        df["IS_US_HOLIDAY"] = (
-            df["IS_US_HOLIDAY"]
-            .astype("Int64")  # ensures proper numeric handling
-            .astype("boolean")  # pandas nullable boolean
-        )
+    for holiday_col in ("IS_US_HOLIDAY_BEFORE", "IS_US_HOLIDAY"):
+        if holiday_col in df.columns:
+            df[holiday_col] = (
+                df[holiday_col]
+                .astype("Int64")  # ensures proper numeric handling
+                .astype("boolean")  # pandas nullable boolean
+            )
 
     initial_rows = len(df)
     if verbose >= 1:
@@ -351,7 +352,7 @@ def clean_dataframe_for_training(
     df: pd.DataFrame,
     nan_threshold: float = 5.0,
     corr_threshold: float = 0.995,
-    drop_all_na_rows: bool = False,
+    max_na_per_row: int = -1,
     drop_2017_na_rows: bool = True,
     create_missing_flags: bool = False,
     keep_columns: list[str] | None = None,
@@ -373,7 +374,8 @@ def clean_dataframe_for_training(
         df (pd.DataFrame): Raw training dataframe
         nan_threshold (float): Percentage threshold for NaN values above which
             a column will be removed. Default: 50.0
-        drop_all_na_rows (bool): If True, drop rows that are all NaN. Default: False
+        max_na_per_row (int): Maximum number of NaN values allowed per row. Rows exceeding this
+            threshold will be dropped. Use -1 to disable, 0 to drop rows with any NaN. Default: -1
         drop_2017_na_rows (bool): If True, drop rows with any NaN values where
             SEASON_YEAR is 2017. Default: False
         keep_all_cols (bool): If True, only drops ID, NAME, and string columns; keeps all others.
@@ -437,15 +439,23 @@ def clean_dataframe_for_training(
         create_missing_flags=create_missing_flags,
         keep_all_cols=keep_all_cols,
     )
-    if drop_all_na_rows:
+    if max_na_per_row >= 0:
         if verbose >= 1:
-            print("\nDropping rows that contain NaN...")
+            if max_na_per_row == 0:
+                print("\nDropping rows with any NaN values...")
+            else:
+                print(f"\nDropping rows with more than {max_na_per_row} NaN values...")
 
         initial_rows = len(df_cleaned)
-        df_cleaned = df_cleaned.dropna()
+        # Count NaN values per row
+        na_per_row = df_cleaned.isna().sum(axis=1)
+        # Keep rows with NaN count <= threshold
+        df_cleaned = df_cleaned[na_per_row <= max_na_per_row]
 
         if verbose >= 2:
-            print(f"Removed {initial_rows - len(df_cleaned)} all-NaN rows")
+            print(
+                f"Removed {initial_rows - len(df_cleaned)} rows exceeding NaN threshold"
+            )
 
     # Check for remaining NaN values in strict mode
     if strict_mode >= 0:
@@ -462,7 +472,7 @@ def clean_dataframe_for_training(
         ]
 
         num_cols_with_nan = len(columns_with_nan)
-        
+
         if num_cols_with_nan > strict_mode:
             error_msg = f"Strict mode: Found {num_cols_with_nan} columns with NaN values, but only {strict_mode} allowed:\n"
             for col, count in columns_with_nan.items():
@@ -476,7 +486,9 @@ def clean_dataframe_for_training(
                 if strict_mode_exclude_cols
                 else ""
             )
-            print(f"\nStrict mode check passed: {num_cols_with_nan}/{strict_mode} columns with NaN values{excluded_info}")
+            print(
+                f"\nStrict mode check passed: {num_cols_with_nan}/{strict_mode} columns with NaN values{excluded_info}"
+            )
 
     if verbose >= 1:
         print("=" * 80)
