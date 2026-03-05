@@ -7,6 +7,9 @@ import pandas as pd
 from nba_ou.config.settings import SETTINGS
 
 DEFAULT_MAIN_BOOK = "consensus_opener"
+BOOK_ALIASES = {
+    "bet_365": "bet365",
+}
 
 
 def get_main_book() -> str:
@@ -14,7 +17,9 @@ def get_main_book() -> str:
     if configured is None:
         return DEFAULT_MAIN_BOOK
     configured = str(configured).strip()
-    return configured or DEFAULT_MAIN_BOOK
+    if not configured:
+        return DEFAULT_MAIN_BOOK
+    return BOOK_ALIASES.get(configured, configured)
 
 
 def total_line_col(book: str | None = None) -> str:

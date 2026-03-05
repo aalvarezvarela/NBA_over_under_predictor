@@ -313,6 +313,7 @@ def add_top3_absence_effect_features_for_columns(
         except Exception:
             continue
 
+        seen_home_pids: set[int] = set()
         for j, col in enumerate(home_player_cols):
             pid = getattr(row, col)
             if pd.isna(pid) or pid in (0, "0"):
@@ -321,6 +322,9 @@ def add_top3_absence_effect_features_for_columns(
                 pid_int = int(pid)
             except Exception:
                 continue
+            if pid_int in seen_home_pids:
+                continue
+            seen_home_pids.add(pid_int)
             tp_raw, dfl_raw, n_inj, n_present, n_total = _cached_effect(
                 home_team_int, season_year_int, date_ord, pid_int
             )
@@ -330,6 +334,7 @@ def add_top3_absence_effect_features_for_columns(
             home_n_present[i, j] = n_present
             home_n_total[i, j] = n_total
 
+        seen_away_pids: set[int] = set()
         for j, col in enumerate(away_player_cols):
             pid = getattr(row, col)
             if pd.isna(pid) or pid in (0, "0"):
@@ -338,6 +343,9 @@ def add_top3_absence_effect_features_for_columns(
                 pid_int = int(pid)
             except Exception:
                 continue
+            if pid_int in seen_away_pids:
+                continue
+            seen_away_pids.add(pid_int)
             tp_raw, dfl_raw, n_inj, n_present, n_total = _cached_effect(
                 away_team_int, season_year_int, date_ord, pid_int
             )

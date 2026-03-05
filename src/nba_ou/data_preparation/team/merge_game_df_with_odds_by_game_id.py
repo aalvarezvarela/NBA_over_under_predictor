@@ -20,6 +20,52 @@ from nba_ou.config.odds_columns import (
 DEFAULT_PRIMARY_BOOK = get_main_book()
 
 
+def _extract_available_books(
+    df_odds: pd.DataFrame,
+    *,
+    market_prefix: str,
+    required_suffixes: tuple[str, ...],
+) -> list[str]:
+    """
+    Extract books that have all required columns for a market.
+    """
+    books = set()
+    for col in df_odds.columns:
+        if not col.startswith(f"{market_prefix}_"):
+            continue
+        for suffix in required_suffixes:
+            token = f"_{suffix}"
+            if col.endswith(token):
+                book = col[len(market_prefix) + 1 : -len(token)]
+                if book:
+                    books.add(book)
+                break
+
+    available = []
+    for book in sorted(books):
+        has_all = all(
+            f"{market_prefix}_{book}_{suffix}" in df_odds.columns
+            for suffix in required_suffixes
+        )
+        if has_all:
+            available.append(book)
+    return available
+
+
+def _assert_book_available(
+    *,
+    selected_book: str,
+    available_books: list[str],
+    market_name: str,
+) -> None:
+    if selected_book in available_books:
+        return
+    raise ValueError(
+        f"Configured {market_name} book '{selected_book}' is not available in odds data. "
+        f"Available {market_name} books: {available_books}"
+    )
+
+
 def merge_odds_percentages_and_prices_by_game_id(
     df_odds: pd.DataFrame,
     df_team: pd.DataFrame,
@@ -221,6 +267,39 @@ def merge_total_spread_moneyline_by_game_id(
     if "GAME_ID" not in df_team.columns:
         print("Warning: 'GAME_ID' column not found in team dataframe")
         return df_team
+
+    # Security check: validate configured books exist in incoming odds data.
+    available_spread_books = _extract_available_books(
+        df_odds,
+        market_prefix="spread",
+        required_suffixes=("line_home", "line_away"),
+    )
+    available_ml_books = _extract_available_books(
+        df_odds,
+        market_prefix="ml",
+        required_suffixes=("price_home", "price_away"),
+    )
+    available_total_books = _extract_available_books(
+        df_odds,
+        market_prefix="total",
+        required_suffixes=("line_over",),
+    )
+
+    _assert_book_available(
+        selected_book=book,
+        available_books=available_spread_books,
+        market_name="spread",
+    )
+    _assert_book_available(
+        selected_book=book,
+        available_books=available_ml_books,
+        market_name="moneyline",
+    )
+    _assert_book_available(
+        selected_book=total_line_book,
+        available_books=available_total_books,
+        market_name="total-line",
+    )
 
     # Debug: print df_team rows whose GAME_ID is not in df_odds
     if debug:
