@@ -1,5 +1,7 @@
-import psycopg
+import argparse
 from typing import TYPE_CHECKING
+
+import psycopg
 from nba_ou.postgre_db.config.db_config import (
     connect_nba_db,
 )
@@ -82,9 +84,11 @@ def create_predictions_table(drop: bool = False):
                         game_time TEXT,
                         team_name_team_home TEXT,
                         team_name_team_away TEXT,
+                        prediction_value_type TEXT NOT NULL,
                         total_over_under_line NUMERIC,
-                        pred_line_error NUMERIC NOT NULL,
-                        pred_total_points NUMERIC NOT NULL,
+                        total_bet365_line_at_prediction NUMERIC,
+                        pred_line_error NUMERIC,
+                        pred_total_points NUMERIC,
                         pred_pick TEXT,
                         model_name TEXT NOT NULL,
                         model_type TEXT,
@@ -96,7 +100,16 @@ def create_predictions_table(drop: bool = False):
                         na_columns_names TEXT,
                         total_scored_points NUMERIC,
                         home_pts NUMERIC,
-                        away_pts NUMERIC
+                        away_pts NUMERIC,
+                        CONSTRAINT chk_prediction_value_type
+                            CHECK (
+                                prediction_value_type IN ('TOTAL_POINTS', 'DIFF_FROM_LINE')
+                            ),
+                        CONSTRAINT chk_prediction_target_present
+                            CHECK (
+                                pred_line_error IS NOT NULL
+                                OR pred_total_points IS NOT NULL
+                            )
                     )
                     """
                 ).format(sql.Identifier(schema), sql.Identifier(table))
@@ -105,12 +118,106 @@ def create_predictions_table(drop: bool = False):
             # Forward-compatible migration for existing tables
             cur.execute(
                 sql.SQL(
+                    "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS prediction_value_type TEXT"
+                ).format(sql.Identifier(schema), sql.Identifier(table))
+            )
+            cur.execute(
+                sql.SQL(
+                    "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS total_over_under_line NUMERIC"
+                ).format(sql.Identifier(schema), sql.Identifier(table))
+            )
+            cur.execute(
+                sql.SQL(
+                    "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS total_bet365_line_at_prediction NUMERIC"
+                ).format(sql.Identifier(schema), sql.Identifier(table))
+            )
+            cur.execute(
+                sql.SQL(
+                    "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS pred_line_error NUMERIC"
+                ).format(sql.Identifier(schema), sql.Identifier(table))
+            )
+            cur.execute(
+                sql.SQL(
+                    "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS pred_total_points NUMERIC"
+                ).format(sql.Identifier(schema), sql.Identifier(table))
+            )
+            cur.execute(
+                sql.SQL(
+                    "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS pred_pick TEXT"
+                ).format(sql.Identifier(schema), sql.Identifier(table))
+            )
+
+            cur.execute(
+                sql.SQL(
+                    "ALTER TABLE {}.{} ALTER COLUMN pred_line_error DROP NOT NULL"
+                ).format(sql.Identifier(schema), sql.Identifier(table))
+            )
+            cur.execute(
+                sql.SQL(
+                    "ALTER TABLE {}.{} ALTER COLUMN pred_total_points DROP NOT NULL"
+                ).format(sql.Identifier(schema), sql.Identifier(table))
+            )
+
+            cur.execute(
+                sql.SQL(
                     "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS na_columns_count INTEGER"
                 ).format(sql.Identifier(schema), sql.Identifier(table))
             )
             cur.execute(
                 sql.SQL(
                     "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS na_columns_names TEXT"
+                ).format(sql.Identifier(schema), sql.Identifier(table))
+            )
+
+            cur.execute(
+                sql.SQL(
+                    """
+                    UPDATE {}.{}
+                    SET prediction_value_type = 'DIFF_FROM_LINE'
+                    WHERE prediction_value_type IS NULL
+                    """
+                ).format(sql.Identifier(schema), sql.Identifier(table))
+            )
+            cur.execute(
+                sql.SQL(
+                    "ALTER TABLE {}.{} ALTER COLUMN prediction_value_type SET NOT NULL"
+                ).format(sql.Identifier(schema), sql.Identifier(table))
+            )
+
+            cur.execute(
+                sql.SQL(
+                    "ALTER TABLE {}.{} DROP CONSTRAINT IF EXISTS chk_prediction_value_type"
+                ).format(sql.Identifier(schema), sql.Identifier(table))
+            )
+            cur.execute(
+                sql.SQL(
+                    """
+                    ALTER TABLE {}.{}
+                    ADD CONSTRAINT chk_prediction_value_type
+                    CHECK (
+                        prediction_value_type IN ('TOTAL_POINTS', 'DIFF_FROM_LINE')
+                    )
+                    """
+                ).format(sql.Identifier(schema), sql.Identifier(table))
+            )
+
+            # Ensure table allows either prediction target:
+            # line error OR total points (at least one must be present).
+            cur.execute(
+                sql.SQL(
+                    "ALTER TABLE {}.{} DROP CONSTRAINT IF EXISTS chk_prediction_target_present"
+                ).format(sql.Identifier(schema), sql.Identifier(table))
+            )
+            cur.execute(
+                sql.SQL(
+                    """
+                    ALTER TABLE {}.{}
+                    ADD CONSTRAINT chk_prediction_target_present
+                    CHECK (
+                        pred_line_error IS NOT NULL
+                        OR pred_total_points IS NOT NULL
+                    )
+                    """
                 ).format(sql.Identifier(schema), sql.Identifier(table))
             )
 
@@ -161,7 +268,9 @@ def upload_predictions_to_postgre(df: "pd.DataFrame"):
                 "GAME_TIME": "game_time",
                 "TEAM_NAME_TEAM_HOME": "team_name_team_home",
                 "TEAM_NAME_TEAM_AWAY": "team_name_team_away",
+                "PREDICTION_VALUE_TYPE": "prediction_value_type",
                 "TOTAL_OVER_UNDER_LINE": "total_over_under_line",
+                "TOTAL_BET365_LINE_AT_PREDICTION": "total_bet365_line_at_prediction",
                 "PRED_LINE_ERROR": "pred_line_error",
                 "PRED_TOTAL_POINTS": "pred_total_points",
                 "PRED_PICK": "pred_pick",
@@ -187,6 +296,12 @@ def upload_predictions_to_postgre(df: "pd.DataFrame"):
 
         # Ensure optional enrichment columns exist after normalization.
         for col in (
+            "prediction_value_type",
+            "total_over_under_line",
+            "total_bet365_line_at_prediction",
+            "pred_line_error",
+            "pred_total_points",
+            "pred_pick",
             "na_columns_count",
             "na_columns_names",
             "total_scored_points",
@@ -196,6 +311,10 @@ def upload_predictions_to_postgre(df: "pd.DataFrame"):
             if col not in df.columns:
                 df[col] = None
 
+        df["prediction_value_type"] = df["prediction_value_type"].fillna(
+            "DIFF_FROM_LINE"
+        )
+
         # Keep only DB columns (excluding id which is SERIAL)
         columns = [
             "game_id",
@@ -204,7 +323,9 @@ def upload_predictions_to_postgre(df: "pd.DataFrame"):
             "game_time",
             "team_name_team_home",
             "team_name_team_away",
+            "prediction_value_type",
             "total_over_under_line",
+            "total_bet365_line_at_prediction",
             "pred_line_error",
             "pred_total_points",
             "pred_pick",
@@ -262,6 +383,24 @@ def upload_predictions_to_postgre(df: "pd.DataFrame"):
         conn.close()
 
 
+def recreate_predictions_table() -> None:
+    """Drop and recreate predictions table with the latest schema."""
+    create_predictions_table(drop=True)
+
+
 if __name__ == "__main__":
-    create_predictions_table(False)
+    parser = argparse.ArgumentParser(
+        description="Create or recreate nba_predictions table"
+    )
+    parser.add_argument(
+        "--recreate",
+        action="store_true",
+        help="Drop and recreate table from scratch",
+    )
+    args = parser.parse_args()
+
+    if args.recreate:
+        recreate_predictions_table()
+    else:
+        create_predictions_table(False)
     print("nba_predictions table is ready.")
