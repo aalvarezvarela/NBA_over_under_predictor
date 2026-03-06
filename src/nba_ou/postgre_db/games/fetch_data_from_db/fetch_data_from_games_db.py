@@ -126,9 +126,7 @@ def get_historical_game_ids_for_home_away_matchups(
     try:
         conn = connect_nba_db()
 
-        values_sql = sql.SQL(", ").join(
-            [sql.SQL("(%s, %s)") for _ in normalized_pairs]
-        )
+        values_sql = sql.SQL(", ").join([sql.SQL("(%s, %s)") for _ in normalized_pairs])
         where_exclude = sql.SQL("")
         where_date_cap = sql.SQL("")
         query_params = []
@@ -159,6 +157,7 @@ def get_historical_game_ids_for_home_away_matchups(
                 AND g_away.home = FALSE
                 AND COALESCE(g_home.season_type, '') NOT IN ('All Star', 'Preseason')
                 AND COALESCE(g_away.season_type, '') NOT IN ('All Star', 'Preseason')
+                AND g_home.season_year >= 2020
                 {}
                 {}
             GROUP BY g_home.game_id
@@ -223,6 +222,6 @@ def load_cleaned_games_for_odds(
     # Fix home/away parsing errors
     df = fix_home_away_parsing_errors(df)
 
-    df = df.drop_duplicates(keep ="first").reset_index(drop=True)
+    df = df.drop_duplicates(keep="first").reset_index(drop=True)
 
     return df

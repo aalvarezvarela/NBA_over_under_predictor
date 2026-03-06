@@ -146,7 +146,9 @@ def load_and_predict_tabpfn_client_for_nba_games(
     prediction_day = prediction_day.date()
 
     # Separate today's games BEFORE cleaning - preserve all columns intact
-    incoming_game_dates = pd.to_datetime(incoming_df["GAME_DATE"], errors="coerce").dt.date
+    incoming_game_dates = pd.to_datetime(
+        incoming_df["GAME_DATE"], errors="coerce"
+    ).dt.date
     today_mask = incoming_game_dates == prediction_day
     df_to_predict_today = incoming_df[today_mask].copy()
     incoming_df_historical = incoming_df[~today_mask].copy()
@@ -182,12 +184,15 @@ def load_and_predict_tabpfn_client_for_nba_games(
     historical_df["GAME_ID"] = historical_df["GAME_ID"].astype(str)
 
     # Merge historical data with incoming historical games (excluding today)
-    merged_df = pd.concat([historical_df, incoming_df_historical], ignore_index=True, sort=False)
+    merged_df = pd.concat(
+        [historical_df, incoming_df_historical], ignore_index=True, sort=False
+    )
     merged_df = merged_df.drop_duplicates(subset=["GAME_ID"], keep="first")
 
     # Clean only the historical training data
     cleaned_df = clean_dataframe_for_training(
         merged_df,
+        corr_threshold=0.98,
         nan_threshold=50,
         max_na_per_row=10,
         keep_columns=[
@@ -210,12 +215,14 @@ def load_and_predict_tabpfn_client_for_nba_games(
     for col in cleaned_columns:
         if col not in df_to_predict_today.columns:
             df_to_predict_today[col] = np.nan
-    
+
     # Reorder columns to match cleaned_df
     df_to_predict_today = df_to_predict_today[cleaned_columns]
 
     # Concatenate cleaned historical with aligned today's games
-    full_df = pd.concat([cleaned_df, df_to_predict_today], ignore_index=True, sort=False)
+    full_df = pd.concat(
+        [cleaned_df, df_to_predict_today], ignore_index=True, sort=False
+    )
 
     # Now split into train and predict based on date
     game_dates = pd.to_datetime(full_df["GAME_DATE"], errors="coerce").dt.date
@@ -251,7 +258,15 @@ def load_and_predict_tabpfn_client_for_nba_games(
         "PRED_TOTAL_POINTS",
     }
 
-    feature_cols = [c for c in df_train.columns if c not in drop_feature_cols]
+    feature_cols = [
+        c
+        for c in df_train.columns
+        if c not in drop_feature_cols
+        and (
+            pd.api.types.is_numeric_dtype(df_train[c])
+            or pd.api.types.is_bool_dtype(df_train[c])
+        )
+    ]
     if not feature_cols:
         raise ValueError("No feature columns available for TabPFN")
 
@@ -262,16 +277,18 @@ def load_and_predict_tabpfn_client_for_nba_games(
     y_train = y_train.loc[valid_train]
 
     # Validate feature consistency between train and prediction sets
-    missing_features = [col for col in feature_cols if col not in df_predictable.columns]
+    missing_features = [
+        col for col in feature_cols if col not in df_predictable.columns
+    ]
     if missing_features:
         raise ValueError(
             f"Prediction dataframe is missing {len(missing_features)} feature(s) "
             f"present in training data: {missing_features[:10]}"
         )
-    
+
     # Ensure X_pred has identical columns in same order as X_train
     X_pred = df_predictable[feature_cols].copy()
-    
+
     # Final validation: confirm column alignment
     if not X_train.columns.equals(X_pred.columns):
         raise ValueError(
@@ -291,9 +308,8 @@ def load_and_predict_tabpfn_client_for_nba_games(
     TabPFNRegressor = _init_tabpfn_client()
     regressor = TabPFNRegressor()
 
-    # print("Remove This line after testing TabPFN client fit/predict")
     print("Training TabPFN client regressor on historical data")
-    regressor.fit(X_train, y_train)  # Temporary limit for testing
+    regressor.fit(X_train, y_train)
     print("Predicting with TabPFN client regressor for incoming games")
     pred_total_points = regressor.predict(X_pred)
 

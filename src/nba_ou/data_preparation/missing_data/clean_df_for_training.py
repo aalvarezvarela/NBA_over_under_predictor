@@ -277,30 +277,33 @@ def advanced_column_cleaning(
             print("   Skipping highly correlated column removal (keep_all_cols=True)")
     else:
         numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-        corr_matrix = df[numeric_cols].corr().abs()
+        if len(numeric_cols) > 1:
+            corr_matrix = df[numeric_cols].corr().abs()
 
-        # Get upper triangle of correlation matrix
-        upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+            # Get upper triangle of correlation matrix
+            upper = corr_matrix.where(
+                np.triu(np.ones(corr_matrix.shape, dtype=bool), k=1)
+            )
+            high_corr_mask = upper.gt(corr_threshold)
 
-        # Find columns with correlation > 0.99
-        similar_pairs = []
-        for col in upper.columns:
-            high_corr_cols = upper[col][upper[col] > corr_threshold].index.tolist()
-            for corr_col in high_corr_cols:
-                similar_pairs.append((col, corr_col, upper.loc[corr_col, col]))
+            # Preserve current behavior: remove earlier columns correlated with later ones.
+            cols_to_remove = upper.index[high_corr_mask.any(axis=1)].tolist()
 
-        if similar_pairs:
-            if verbose >= 2:
-                print(f"   Found {len(similar_pairs)} highly similar column pairs:")
-            cols_to_remove = set()
-            for col1, col2, corr in similar_pairs:
+            if cols_to_remove:
                 if verbose >= 2:
-                    print(f"      - {col1} ~ {col2} (correlation: {corr:.4f})")
-                # Keep the first one, remove the second
-                cols_to_remove.add(col2)
-            if verbose >= 2:
-                print(f"   Removing {len(cols_to_remove)} similar columns")
-            df = df.drop(columns=list(cols_to_remove))
+                    high_corr_locs = np.where(high_corr_mask.values)
+                    print(
+                        f"   Found {len(high_corr_locs[0])} highly similar column pairs:"
+                    )
+                    for i, j in zip(*high_corr_locs):
+                        print(
+                            f"      - {upper.columns[j]} ~ {upper.index[i]} "
+                            f"(correlation: {upper.iat[i, j]:.4f})"
+                        )
+                    print(f"   Removing {len(cols_to_remove)} similar columns")
+                df = df.drop(columns=cols_to_remove)
+            elif verbose >= 2:
+                print("   No highly similar columns found")
         elif verbose >= 2:
             print("   No highly similar columns found")
 

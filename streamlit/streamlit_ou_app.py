@@ -55,7 +55,11 @@ MODEL_PREFIXES = {
     "TabPFNRegressor": "tabpfn",
 }
 
-TOTAL_POINTS_MODELS = ["full_dataset_total_points", "recent_games_total_points", "TabPFNRegressor"]
+TOTAL_POINTS_MODELS = [
+    "full_dataset_total_points",
+    "recent_games_total_points",
+    "TabPFNRegressor",
+]
 DIFF_FROM_LINE_MODELS = ["full_dataset", "recent_games"]
 
 
@@ -479,9 +483,7 @@ def build_game_level_predictions(
 
     # Consensus without TabPFN (average of non-TabPFN model diffs)
     no_tabpfn_diff_cols = [
-        f"line_diff_{MODEL_PREFIXES[m]}"
-        for m in MODEL_ORDER
-        if m != "TabPFNRegressor"
+        f"line_diff_{MODEL_PREFIXES[m]}" for m in MODEL_ORDER if m != "TabPFNRegressor"
     ]
     base["consensus_no_tabpfn_line_diff"] = base[no_tabpfn_diff_cols].mean(
         axis=1, skipna=True
@@ -511,7 +513,9 @@ def build_game_level_predictions(
     return base.reset_index(drop=True)
 
 
-def build_upcoming_display(df: pd.DataFrame) -> pd.DataFrame:
+def build_upcoming_display(
+    df: pd.DataFrame, show_pred_times: bool = False
+) -> pd.DataFrame:
     display = pd.DataFrame()
     display["Matchup"] = df["team_name_team_home"] + " vs " + df["team_name_team_away"]
     display["Game Time (Madrid)"] = format_madrid_datetime(
@@ -531,6 +535,12 @@ def build_upcoming_display(df: pd.DataFrame) -> pd.DataFrame:
             df[f"line_diff_{prefix}"], errors="coerce"
         ).round(2)
         display[f"{label} Pick"] = df[f"pick_{prefix}"]
+
+        # Optionally show prediction time for each model
+        if show_pred_times and f"pred_dt_{prefix}" in df.columns:
+            display[f"{label} Time"] = format_madrid_datetime(
+                df[f"pred_dt_{prefix}"], "%m-%d %H:%M"
+            )
 
     display["Consensus Total"] = pd.to_numeric(
         df["consensus_pred_total"], errors="coerce"
@@ -696,27 +706,21 @@ def _render_game_card(row: pd.Series, include_actual: bool) -> None:
 
     consensus_diff = pd.to_numeric(row.get("consensus_line_diff"), errors="coerce")
     consensus_pick = row.get("consensus_pick")
-    consensus_total = pd.to_numeric(
-        row.get("consensus_pred_total"), errors="coerce"
-    )
+    consensus_total = pd.to_numeric(row.get("consensus_pred_total"), errors="coerce")
 
     # Bet recommendation styling
     if pd.notna(consensus_pick) and consensus_pick in ("OVER", "UNDER"):
         is_over = consensus_pick == "OVER"
         bet_label = "BET OVER ▲" if is_over else "BET UNDER ▼"
         accent = "#e74c3c" if is_over else "#2980b9"
-        banner_bg = (
-            "rgba(231,76,60,0.12)" if is_over else "rgba(41,128,185,0.12)"
-        )
+        banner_bg = "rgba(231,76,60,0.12)" if is_over else "rgba(41,128,185,0.12)"
     else:
         bet_label = "PUSH —"
         accent = "#7f8c8d"
         banner_bg = "rgba(127,140,141,0.08)"
 
     margin_text = f"{consensus_diff:+.1f}" if pd.notna(consensus_diff) else "—"
-    cons_total_text = (
-        f"{consensus_total:.1f}" if pd.notna(consensus_total) else "—"
-    )
+    cons_total_text = f"{consensus_total:.1f}" if pd.notna(consensus_total) else "—"
 
     # Model agreement
     picks_list: list[str] = []
@@ -746,9 +750,7 @@ def _render_game_card(row: pd.Series, include_actual: bool) -> None:
     # Actual result banner (past games only)
     actual_banner = ""
     if include_actual:
-        actual_total = pd.to_numeric(
-            row.get("total_scored_points"), errors="coerce"
-        )
+        actual_total = pd.to_numeric(row.get("total_scored_points"), errors="coerce")
         actual_side = row.get("actual_side")
         cons_correct = row.get("consensus_correct")
 
@@ -790,11 +792,7 @@ def _render_game_card(row: pd.Series, include_actual: bool) -> None:
             lbl = MODEL_LABELS[m]
             flag = row.get(f"correct_{p}")
             r_icon = (
-                "✅"
-                if pd.notna(flag) and flag
-                else "❌"
-                if pd.notna(flag)
-                else "—"
+                "✅" if pd.notna(flag) and flag else "❌" if pd.notna(flag) else "—"
             )
             result_cells += (
                 f'<div style="flex:1;text-align:center;font-size:0.9rem;'
@@ -1204,12 +1202,45 @@ def show_upcoming_predictions() -> None:
 
     st.markdown("---")
 
+    # Add time selector for filtering predictions
+    st.markdown("### ⏰ Select Prediction Time")
+
+    use_custom_time = st.checkbox(
+        "Filter predictions by time (use most recent prediction per model until selected time)",
+        value=False,
+    )
+
+    prediction_cutoff = None
+    if use_custom_time:
+        col_date, col_time = st.columns(2)
+
+        with col_date:
+            selected_datetime = st.date_input(
+                "Date", value=datetime.now().date(), key="pred_cutoff_date"
+            )
+
+        with col_time:
+            selected_time = st.time_input(
+                "Time (Madrid)", value=datetime.now().time(), key="pred_cutoff_time"
+            )
+
+        # Combine date and time, localize to Madrid timezone
+        cutoff_madrid = datetime.combine(selected_datetime, selected_time)
+        cutoff_madrid = pd.Timestamp(cutoff_madrid, tz="Europe/Madrid")
+        prediction_cutoff = cutoff_madrid.tz_convert("UTC")
+
+        st.caption(
+            f"📌 Using predictions up to: {cutoff_madrid.strftime('%Y-%m-%d %H:%M')} Madrid"
+        )
+
     with st.spinner("Loading upcoming predictions..."):
         raw = get_games_with_total_scored_points(only_null=True)
-        games = build_game_level_predictions(raw)
+
+        # Build predictions with optional cutoff
+        games = build_game_level_predictions(raw, prediction_cutoff=prediction_cutoff)
 
     if games.empty:
-        st.info("No upcoming predictions found.")
+        st.info("No upcoming predictions found for the selected time.")
         return
 
     latest_prediction_time = pd.to_datetime(
@@ -1234,12 +1265,16 @@ def show_upcoming_predictions() -> None:
             st.metric("Latest Prediction", "N/A")
 
     if pd.notna(latest_prediction_time):
+        cutoff_note = ""
+        if prediction_cutoff is not None:
+            cutoff_note = f" (filtered up to {prediction_cutoff.tz_convert('Europe/Madrid').strftime('%Y-%m-%d %H:%M:%S')} Madrid)"
         st.caption(
             "Latest prediction: "
             + latest_prediction_time.tz_convert("Europe/Madrid").strftime(
                 "%Y-%m-%d %H:%M:%S"
             )
             + " (Madrid)"
+            + cutoff_note
         )
 
     st.markdown("---")
@@ -1252,7 +1287,7 @@ def show_upcoming_predictions() -> None:
         render_prediction_cards(games, include_actual=False)
     else:
         st.dataframe(
-            build_upcoming_display(games),
+            build_upcoming_display(games, show_pred_times=use_custom_time),
             width="stretch",
             hide_index=True,
             height=600,
@@ -1268,10 +1303,17 @@ def show_upcoming_predictions() -> None:
         - **🏀 Matchup**: Home team vs Away team with logos
         - **⏰ Game Time**: When the game starts (Madrid timezone)
         - **📏 O/U Line**: The bookmaker's over/under betting line
-        - **� Total Points Models**: Full (Total), Recent (Total), TabPFN — predict total points directly
+        - **📊 Total Points Models**: Full (Total), Recent (Total), TabPFN — predict total points directly
         - **📏 Diff from Line Models**: Full (Diff), Recent (Diff) — predict the difference from the line
         - **🎯 Consensus**: Average of all model margins to decide OVER/UNDER
         - **Margin**: How far the consensus prediction is from the line (positive = OVER)
+
+        ### ⏰ Time Filtering
+
+        - **Latest Predictions** (default): Shows the most recent prediction for each model
+        - **Filter by Time**: Select a specific date/time to see predictions as they were at that moment
+          - Each model will show its most recent prediction up to the selected time
+          - Useful for analyzing how predictions evolved over time
 
         **Note**: Predictions are updated periodically. Most recent prediction time shown above.
         """
@@ -1454,9 +1496,7 @@ def show_historical_performance() -> None:
 
     st.markdown("")
     st.markdown("### 🎯 Accuracy by |Diff vs O/U Line|")
-    st.caption(
-        "All models: thresholds at >=0, >=0.5, >=1, >=1.5, >=2."
-    )
+    st.caption("All models: thresholds at >=0, >=0.5, >=1, >=1.5, >=2.")
     threshold_df = compute_threshold_accuracy_table(games)
     st.dataframe(
         threshold_df,
