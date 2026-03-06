@@ -452,7 +452,7 @@ def clean_dataframe_for_training(
         # Keep rows with NaN count <= threshold
         df_cleaned = df_cleaned[na_per_row <= max_na_per_row]
 
-        if verbose >= 2:
+        if verbose >= 1:
             print(
                 f"Removed {initial_rows - len(df_cleaned)} rows exceeding NaN threshold"
             )

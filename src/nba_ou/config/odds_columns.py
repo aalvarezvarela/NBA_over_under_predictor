@@ -50,6 +50,15 @@ def extract_total_line_books(df: pd.DataFrame) -> list[str]:
     return sorted(books)
 
 
+def total_line_over_col_raw(book: str | None = None) -> str:
+    """
+    Get the raw odds data column name for total line over.
+    Format: total_{book}_line_over (used in odds data before merge).
+    """
+    b = book or get_main_book()
+    return f"TOTAL_LINE_{b}"
+
+
 def resolve_main_total_line_col(
     df: pd.DataFrame, book: str | None = None
 ) -> str | None:

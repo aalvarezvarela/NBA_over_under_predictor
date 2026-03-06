@@ -108,6 +108,9 @@ def engineer_odds_features(
           ml_{book}_price_home, ml_{book}_price_away
     """
     out = df.copy()
+    # Dictionary to collect all new columns to avoid fragmentation
+    new_cols = {}
+
     if books is None:
         inferred_books = set()
 
@@ -148,20 +151,26 @@ def engineer_odds_features(
     cons_ref_price_under = "total_consensus_opener_price_under"
 
     if cons_ref_line_col in out.columns:
-        out[f"{prefix}consensus_total_ref_line_mid"] = as_float(out[cons_ref_line_col])
+        new_cols[f"{prefix}consensus_total_ref_line_mid"] = as_float(
+            out[cons_ref_line_col]
+        )
     else:
         # Fallback only if reference line was not merged with canonical name.
         main_total_line = resolve_main_total_line_col(out)
         if main_total_line is not None:
-            out[f"{prefix}consensus_total_ref_line_mid"] = as_float(out[main_total_line])
+            new_cols[f"{prefix}consensus_total_ref_line_mid"] = as_float(
+                out[main_total_line]
+            )
 
     if cons_ref_price_over in out.columns and cons_ref_price_under in out.columns:
         p_over = decimal_to_prob(out[cons_ref_price_over])
         p_under = decimal_to_prob(out[cons_ref_price_under])
         p_over_nv, p_under_nv = no_vig_two_way_prob(p_over, p_under)
-        out[f"{prefix}consensus_total_ref_prob_over_novig"] = p_over_nv
-        out[f"{prefix}consensus_total_ref_vig"] = (p_over + p_under) - 1.0
-        out[f"{prefix}consensus_total_ref_prob_diff_novig"] = p_over_nv - p_under_nv
+        new_cols[f"{prefix}consensus_total_ref_prob_over_novig"] = p_over_nv
+        new_cols[f"{prefix}consensus_total_ref_vig"] = (p_over + p_under) - 1.0
+        new_cols[f"{prefix}consensus_total_ref_prob_diff_novig"] = (
+            p_over_nv - p_under_nv
+        )
 
     # -----------------------------
     # 1) TOTAL lines and TOTAL prices (per book, close-time robust summary)
@@ -183,9 +192,9 @@ def engineer_odds_features(
 
         if has_lines:
             col_mid = f"{prefix}book_total_line_mid_{book}"
-            out[col_mid] = as_float(out[total_line_col])
+            new_cols[col_mid] = as_float(out[total_line_col])
             total_line_mids.append(col_mid)
-            total_line_presence_series.append(out[col_mid].notna().astype(float))
+            total_line_presence_series.append(new_cols[col_mid].notna().astype(float))
 
         if has_prices:
             dec_over = as_float(out[price_over])
@@ -197,8 +206,10 @@ def engineer_odds_features(
             # Keep log ratio for price skew (drop decimal diff to reduce redundancy).
             col_log_ratio = f"{prefix}book_total_price_log_ratio_over_div_under_{book}"
             with np.errstate(divide="ignore", invalid="ignore"):
-                out[col_log_ratio] = np.log(dec_over / dec_under)
-            out[col_log_ratio] = out[col_log_ratio].replace([np.inf, -np.inf], np.nan)
+                log_ratio = np.log(dec_over / dec_under)
+            new_cols[col_log_ratio] = pd.Series(log_ratio, index=out.index).replace(
+                [np.inf, -np.inf], np.nan
+            )
             total_price_log_ratios.append(col_log_ratio)
 
             # Keep only one no-vig probability representation per book.
@@ -207,71 +218,79 @@ def engineer_odds_features(
             p_over_nv, p_under_nv = no_vig_two_way_prob(p_over, p_under)
             col_p_diff = f"{prefix}book_total_prob_diff_novig_{book}"
             col_vig = f"{prefix}book_total_vig_{book}"
-            out[col_p_diff] = p_over_nv - p_under_nv
-            out[col_vig] = (p_over + p_under) - 1.0
+            new_cols[col_p_diff] = p_over_nv - p_under_nv
+            new_cols[col_vig] = (p_over + p_under) - 1.0
             total_prob_diff_novig.append(col_p_diff)
             total_vigs.append(col_vig)
 
     # Coverage features (missingness is signal)
     if total_line_presence_series:
         tmp_presence = pd.concat(total_line_presence_series, axis=1)
-        out[f"{prefix}n_books_total_line_present"] = tmp_presence.sum(axis=1)
-        out[f"{prefix}n_books_total_line_present_ratio"] = (
-            out[f"{prefix}n_books_total_line_present"] / len(total_line_presence_series)
-        )
+        new_cols[f"{prefix}n_books_total_line_present"] = tmp_presence.sum(axis=1)
+        new_cols[f"{prefix}n_books_total_line_present_ratio"] = new_cols[
+            f"{prefix}n_books_total_line_present"
+        ] / len(total_line_presence_series)
     if total_price_presence_series:
         tmp_presence = pd.concat(total_price_presence_series, axis=1)
-        out[f"{prefix}n_books_total_price_present"] = tmp_presence.sum(axis=1)
-        out[f"{prefix}n_books_total_price_present_ratio"] = (
-            out[f"{prefix}n_books_total_price_present"] / len(total_price_presence_series)
-        )
+        new_cols[f"{prefix}n_books_total_price_present"] = tmp_presence.sum(axis=1)
+        new_cols[f"{prefix}n_books_total_price_present_ratio"] = new_cols[
+            f"{prefix}n_books_total_price_present"
+        ] / len(total_price_presence_series)
 
     # Aggregates across books: current total line levels
     if total_line_mids:
         tmp_lines = (
-            out[total_line_mids].apply(pd.to_numeric, errors="coerce").astype(float)
+            pd.DataFrame({col: new_cols[col] for col in total_line_mids})
+            .apply(pd.to_numeric, errors="coerce")
+            .astype(float)
         )
-        out[f"{prefix}total_line_books_mean"] = safe_mean(tmp_lines)
-        out[f"{prefix}total_line_books_median"] = tmp_lines.median(axis=1, skipna=True)
-        out[f"{prefix}total_line_books_std"] = safe_std(tmp_lines)
-        out[f"{prefix}total_line_books_range"] = safe_range(tmp_lines)
-        out[f"{prefix}total_line_books_iqr"] = safe_iqr(tmp_lines)
-        out[f"{prefix}total_line_books_mad"] = safe_mad(tmp_lines)
+        new_cols[f"{prefix}total_line_books_mean"] = safe_mean(tmp_lines)
+        new_cols[f"{prefix}total_line_books_median"] = tmp_lines.median(
+            axis=1, skipna=True
+        )
+        new_cols[f"{prefix}total_line_books_std"] = safe_std(tmp_lines)
+        new_cols[f"{prefix}total_line_books_range"] = safe_range(tmp_lines)
+        new_cols[f"{prefix}total_line_books_iqr"] = safe_iqr(tmp_lines)
+        new_cols[f"{prefix}total_line_books_mad"] = safe_mad(tmp_lines)
 
     # Aggregates across books: probability skew (prob_diff only)
     if total_prob_diff_novig:
         tmp_d = (
-            out[total_prob_diff_novig]
+            pd.DataFrame({col: new_cols[col] for col in total_prob_diff_novig})
             .apply(pd.to_numeric, errors="coerce")
             .astype(float)
         )
-        out[f"{prefix}total_prob_diff_books_mean"] = safe_mean(tmp_d)
-        out[f"{prefix}total_prob_diff_books_std"] = safe_std(tmp_d)
-        out[f"{prefix}total_prob_diff_books_range"] = safe_range(tmp_d)
-        out[f"{prefix}total_prob_diff_books_iqr"] = safe_iqr(tmp_d)
-        out[f"{prefix}total_prob_diff_books_mad"] = safe_mad(tmp_d)
+        new_cols[f"{prefix}total_prob_diff_books_mean"] = safe_mean(tmp_d)
+        new_cols[f"{prefix}total_prob_diff_books_std"] = safe_std(tmp_d)
+        new_cols[f"{prefix}total_prob_diff_books_range"] = safe_range(tmp_d)
+        new_cols[f"{prefix}total_prob_diff_books_iqr"] = safe_iqr(tmp_d)
+        new_cols[f"{prefix}total_prob_diff_books_mad"] = safe_mad(tmp_d)
 
     # Aggregates across books: vig level and dispersion
     if total_vigs:
-        tmp_v = out[total_vigs].apply(pd.to_numeric, errors="coerce").astype(float)
-        out[f"{prefix}total_vig_books_mean"] = safe_mean(tmp_v)
-        out[f"{prefix}total_vig_books_median"] = tmp_v.median(axis=1, skipna=True)
-        out[f"{prefix}total_vig_books_std"] = safe_std(tmp_v)
-        out[f"{prefix}total_vig_books_iqr"] = safe_iqr(tmp_v)
-        out[f"{prefix}total_vig_books_mad"] = safe_mad(tmp_v)
+        tmp_v = (
+            pd.DataFrame({col: new_cols[col] for col in total_vigs})
+            .apply(pd.to_numeric, errors="coerce")
+            .astype(float)
+        )
+        new_cols[f"{prefix}total_vig_books_mean"] = safe_mean(tmp_v)
+        new_cols[f"{prefix}total_vig_books_median"] = tmp_v.median(axis=1, skipna=True)
+        new_cols[f"{prefix}total_vig_books_std"] = safe_std(tmp_v)
+        new_cols[f"{prefix}total_vig_books_iqr"] = safe_iqr(tmp_v)
+        new_cols[f"{prefix}total_vig_books_mad"] = safe_mad(tmp_v)
 
     # Aggregates across books: log-ratio (market skew)
     if total_price_log_ratios:
         tmp_lr = (
-            out[total_price_log_ratios]
+            pd.DataFrame({col: new_cols[col] for col in total_price_log_ratios})
             .apply(pd.to_numeric, errors="coerce")
             .astype(float)
         )
-        out[f"{prefix}total_price_log_ratio_books_mean"] = safe_mean(tmp_lr)
-        out[f"{prefix}total_price_log_ratio_books_std"] = safe_std(tmp_lr)
-        out[f"{prefix}total_price_log_ratio_books_range"] = safe_range(tmp_lr)
-        out[f"{prefix}total_price_log_ratio_books_iqr"] = safe_iqr(tmp_lr)
-        out[f"{prefix}total_price_log_ratio_books_mad"] = safe_mad(tmp_lr)
+        new_cols[f"{prefix}total_price_log_ratio_books_mean"] = safe_mean(tmp_lr)
+        new_cols[f"{prefix}total_price_log_ratio_books_std"] = safe_std(tmp_lr)
+        new_cols[f"{prefix}total_price_log_ratio_books_range"] = safe_range(tmp_lr)
+        new_cols[f"{prefix}total_price_log_ratio_books_iqr"] = safe_iqr(tmp_lr)
+        new_cols[f"{prefix}total_price_log_ratio_books_mad"] = safe_mad(tmp_lr)
 
     # -----------------------------
     # 2) SPREAD features using FAVORITE logic (fixed calculation)
@@ -288,11 +307,11 @@ def engineer_odds_features(
         a_open = as_float(out["spread_consensus_opener_line_away"])
         # Favorite is the more negative line (keep as Series for safety)
         fav_open = pd.Series(np.minimum(h_open, a_open), index=out.index)
-        out[f"{prefix}spread_consensus_ref_fav_line"] = fav_open
-        out[f"{prefix}spread_consensus_ref_fav_abs"] = np.abs(fav_open)
-        out[f"{prefix}spread_consensus_ref_home_is_fav"] = (h_open < a_open).astype(
-            float
-        )
+        new_cols[f"{prefix}spread_consensus_ref_fav_line"] = fav_open
+        new_cols[f"{prefix}spread_consensus_ref_fav_abs"] = np.abs(fav_open)
+        new_cols[f"{prefix}spread_consensus_ref_home_is_fav"] = (
+            h_open < a_open
+        ).astype(float)
 
     for book in books:
         l_home = f"spread_{book}_line_home"
@@ -303,37 +322,47 @@ def engineer_odds_features(
 
             # Keep home line (encodes direction and magnitude)
             col_home = f"{prefix}spread_home_line_{book}"
-            out[col_home] = h_line
+            new_cols[col_home] = h_line
             spread_home_lines.append(col_home)
 
             # Favorite line (more negative, keep as Series)
             fav_line = pd.Series(np.minimum(h_line, a_line), index=out.index)
             col_fav_abs = f"{prefix}spread_fav_abs_{book}"
-            out[col_fav_abs] = np.abs(fav_line)
+            new_cols[col_fav_abs] = np.abs(fav_line)
             spread_fav_abs.append(col_fav_abs)
 
             # Home is favorite indicator
             col_home_fav = f"{prefix}spread_home_is_fav_{book}"
-            out[col_home_fav] = (h_line < a_line).astype(float)
+            new_cols[col_home_fav] = (h_line < a_line).astype(float)
             spread_home_is_fav.append(col_home_fav)
 
     # Aggregates across books
     if spread_home_lines:
-        tmp = out[spread_home_lines].apply(pd.to_numeric, errors="coerce").astype(float)
-        out[f"{prefix}spread_home_books_mean"] = safe_mean(tmp)
-        out[f"{prefix}spread_home_books_std"] = safe_std(tmp)
+        tmp = (
+            pd.DataFrame({col: new_cols[col] for col in spread_home_lines})
+            .apply(pd.to_numeric, errors="coerce")
+            .astype(float)
+        )
+        new_cols[f"{prefix}spread_home_books_mean"] = safe_mean(tmp)
+        new_cols[f"{prefix}spread_home_books_std"] = safe_std(tmp)
 
     if spread_fav_abs:
-        tmp = out[spread_fav_abs].apply(pd.to_numeric, errors="coerce").astype(float)
-        out[f"{prefix}spread_fav_abs_books_mean"] = safe_mean(tmp)
-        out[f"{prefix}spread_fav_abs_books_std"] = safe_std(tmp)
-        out[f"{prefix}spread_fav_abs_books_range"] = safe_range(tmp)
+        tmp = (
+            pd.DataFrame({col: new_cols[col] for col in spread_fav_abs})
+            .apply(pd.to_numeric, errors="coerce")
+            .astype(float)
+        )
+        new_cols[f"{prefix}spread_fav_abs_books_mean"] = safe_mean(tmp)
+        new_cols[f"{prefix}spread_fav_abs_books_std"] = safe_std(tmp)
+        new_cols[f"{prefix}spread_fav_abs_books_range"] = safe_range(tmp)
 
     if spread_home_is_fav:
         tmp = (
-            out[spread_home_is_fav].apply(pd.to_numeric, errors="coerce").astype(float)
+            pd.DataFrame({col: new_cols[col] for col in spread_home_is_fav})
+            .apply(pd.to_numeric, errors="coerce")
+            .astype(float)
         )
-        out[f"{prefix}spread_home_is_fav_books_mean"] = safe_mean(tmp)
+        new_cols[f"{prefix}spread_home_is_fav_books_mean"] = safe_mean(tmp)
 
     # -----------------------------
     # 3) Keep a minimal set of MONEYLINE features (implied win prob, no vig)
@@ -353,25 +382,29 @@ def engineer_odds_features(
             col_home = f"{prefix}ml_home_prob_novig_{book}"
             col_vig = f"{prefix}ml_vig_{book}"
 
-            out[col_home] = ph_nv
-            out[col_vig] = (ph + pa) - 1.0
+            new_cols[col_home] = ph_nv
+            new_cols[col_vig] = (ph + pa) - 1.0
 
             ml_home_probs.append(col_home)
             ml_vigs.append(col_vig)
 
     if ml_home_probs:
         ml_home_mean = safe_mean(
-            out[ml_home_probs].apply(pd.to_numeric, errors="coerce").astype(float)
+            pd.DataFrame({col: new_cols[col] for col in ml_home_probs})
+            .apply(pd.to_numeric, errors="coerce")
+            .astype(float)
         )
         ml_away_mean = 1.0 - ml_home_mean
-        out[f"{prefix}ml_favorite_prob"] = pd.concat(
+        new_cols[f"{prefix}ml_favorite_prob"] = pd.concat(
             [ml_home_mean, ml_away_mean], axis=1
         ).max(axis=1, skipna=True)
-        out[f"{prefix}ml_win_prob_gap"] = (ml_home_mean - ml_away_mean).abs()
+        new_cols[f"{prefix}ml_win_prob_gap"] = (ml_home_mean - ml_away_mean).abs()
 
     if ml_vigs:
-        out[f"{prefix}ml_vig_books_mean"] = safe_mean(
-            out[ml_vigs].apply(pd.to_numeric, errors="coerce").astype(float)
+        new_cols[f"{prefix}ml_vig_books_mean"] = safe_mean(
+            pd.DataFrame({col: new_cols[col] for col in ml_vigs})
+            .apply(pd.to_numeric, errors="coerce")
+            .astype(float)
         )
 
     # -----------------------------
@@ -380,31 +413,32 @@ def engineer_odds_features(
 
     # Basic interactions
     if (
-        f"{prefix}total_line_books_mean" in out.columns
-        and f"{prefix}total_prob_diff_books_mean" in out.columns
+        f"{prefix}total_line_books_mean" in new_cols
+        and f"{prefix}total_prob_diff_books_mean" in new_cols
     ):
-        out[f"{prefix}total_line_x_prob_diff"] = (
-            out[f"{prefix}total_line_books_mean"]
-            * out[f"{prefix}total_prob_diff_books_mean"]
+        new_cols[f"{prefix}total_line_x_prob_diff"] = (
+            new_cols[f"{prefix}total_line_books_mean"]
+            * new_cols[f"{prefix}total_prob_diff_books_mean"]
         )
 
     # Use corrected spread_fav_abs instead of spread_mid
     if (
-        f"{prefix}total_line_books_mean" in out.columns
-        and f"{prefix}spread_fav_abs_books_mean" in out.columns
+        f"{prefix}total_line_books_mean" in new_cols
+        and f"{prefix}spread_fav_abs_books_mean" in new_cols
     ):
-        out[f"{prefix}total_line_x_spread_fav_abs"] = (
-            out[f"{prefix}total_line_books_mean"]
-            * out[f"{prefix}spread_fav_abs_books_mean"]
+        new_cols[f"{prefix}total_line_x_spread_fav_abs"] = (
+            new_cols[f"{prefix}total_line_books_mean"]
+            * new_cols[f"{prefix}spread_fav_abs_books_mean"]
         )
 
     # Disagreement + vig interaction (uncertainty proxy)
     if (
-        f"{prefix}total_line_books_std" in out.columns
-        and f"{prefix}total_vig_books_mean" in out.columns
+        f"{prefix}total_line_books_std" in new_cols
+        and f"{prefix}total_vig_books_mean" in new_cols
     ):
-        out[f"{prefix}line_std_x_vig"] = (
-            out[f"{prefix}total_line_books_std"] * out[f"{prefix}total_vig_books_mean"]
+        new_cols[f"{prefix}line_std_x_vig"] = (
+            new_cols[f"{prefix}total_line_books_std"]
+            * new_cols[f"{prefix}total_vig_books_mean"]
         )
 
     # -----------------------------
@@ -414,46 +448,62 @@ def engineer_odds_features(
     # implied_home_points = T/2 - S/2
     # implied_away_points = T - implied_home
     if (
-        f"{prefix}total_line_books_mean" in out.columns
-        and f"{prefix}spread_home_books_mean" in out.columns
+        f"{prefix}total_line_books_mean" in new_cols
+        and f"{prefix}spread_home_books_mean" in new_cols
     ):
-        total_line = out[f"{prefix}total_line_books_mean"]
-        spread_home = out[f"{prefix}spread_home_books_mean"]
+        total_line = new_cols[f"{prefix}total_line_books_mean"]
+        spread_home = new_cols[f"{prefix}spread_home_books_mean"]
 
         # Home spread is negative when home is favored
         # implied_home = T/2 - S/2 (when S is negative, home gets more points)
-        out[f"{prefix}implied_home_points"] = total_line / 2.0 - spread_home / 2.0
-        out[f"{prefix}implied_away_points"] = (
-            total_line - out[f"{prefix}implied_home_points"]
+        new_cols[f"{prefix}implied_home_points"] = total_line / 2.0 - spread_home / 2.0
+        new_cols[f"{prefix}implied_away_points"] = (
+            total_line - new_cols[f"{prefix}implied_home_points"]
         )
 
         # Ratio of implied totals (useful for lopsided matchups)
         with np.errstate(divide="ignore", invalid="ignore"):
-            out[f"{prefix}implied_points_ratio"] = (
-                out[f"{prefix}implied_home_points"]
-                / out[f"{prefix}implied_away_points"]
+            implied_ratio = (
+                new_cols[f"{prefix}implied_home_points"]
+                / new_cols[f"{prefix}implied_away_points"]
             )
-        out[f"{prefix}implied_points_ratio"] = out[
-            f"{prefix}implied_points_ratio"
-        ].replace([np.inf, -np.inf], np.nan)
+        new_cols[f"{prefix}implied_points_ratio"] = pd.Series(
+            implied_ratio, index=out.index
+        ).replace([np.inf, -np.inf], np.nan)
         # Max/min implied points
-        out[f"{prefix}implied_points_max"] = out[
-            [f"{prefix}implied_home_points", f"{prefix}implied_away_points"]
-        ].max(axis=1)
-        out[f"{prefix}implied_points_min"] = out[
-            [f"{prefix}implied_home_points", f"{prefix}implied_away_points"]
-        ].min(axis=1)
-        out[f"{prefix}implied_points_gap"] = (
-            out[f"{prefix}implied_points_max"] - out[f"{prefix}implied_points_min"]
+        new_cols[f"{prefix}implied_points_max"] = pd.DataFrame(
+            {
+                "home": new_cols[f"{prefix}implied_home_points"],
+                "away": new_cols[f"{prefix}implied_away_points"],
+            }
+        ).max(axis=1)
+        new_cols[f"{prefix}implied_points_min"] = pd.DataFrame(
+            {
+                "home": new_cols[f"{prefix}implied_home_points"],
+                "away": new_cols[f"{prefix}implied_away_points"],
+            }
+        ).min(axis=1)
+        new_cols[f"{prefix}implied_points_gap"] = (
+            new_cols[f"{prefix}implied_points_max"]
+            - new_cols[f"{prefix}implied_points_min"]
         )
 
     # -----------------------------
     # 6) Reference baseline helper (no target-derived calculations here)
     # -----------------------------
     # Prefer robust close-consensus proxy (median across books), fallback to mean.
-    if f"{prefix}total_line_books_median" in out.columns:
-        out["close_total_consensus"] = as_float(out[f"{prefix}total_line_books_median"])
-    elif f"{prefix}total_line_books_mean" in out.columns:
-        out["close_total_consensus"] = as_float(out[f"{prefix}total_line_books_mean"])
+    if f"{prefix}total_line_books_median" in new_cols:
+        new_cols["close_total_consensus"] = as_float(
+            new_cols[f"{prefix}total_line_books_median"]
+        )
+    elif f"{prefix}total_line_books_mean" in new_cols:
+        new_cols["close_total_consensus"] = as_float(
+            new_cols[f"{prefix}total_line_books_mean"]
+        )
+
+    # Concatenate all new columns at once to avoid fragmentation
+    if new_cols:
+        new_cols_df = pd.DataFrame(new_cols, index=out.index)
+        out = pd.concat([out, new_cols_df], axis=1)
 
     return out

@@ -95,7 +95,16 @@ def add_betting_stats_differences(df: pd.DataFrame) -> pd.DataFrame:
     # Idempotent behavior: overwrite existing diff columns in place, add only missing ones.
     features_to_apply = {**updated_features, **new_features}
     if features_to_apply:
-        df = df.assign(**features_to_apply)
+        # Use pd.concat to avoid fragmentation warnings
+        # Drop existing columns that will be updated
+        cols_to_drop = [col for col in updated_features.keys() if col in df.columns]
+        if cols_to_drop:
+            df = df.drop(columns=cols_to_drop)
+
+        # Create DataFrame from new features and concat all at once
+        features_df = pd.DataFrame(features_to_apply, index=df.index)
+        df = pd.concat([df, features_df], axis=1)
+
         print(
             f"Created {len(new_features)} and refreshed {len(updated_features)} "
             "betting statistics difference feature(s)"

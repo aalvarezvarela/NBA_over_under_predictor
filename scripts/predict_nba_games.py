@@ -168,36 +168,36 @@ def predict_nba_games(run_tabpfn_client: bool = False) -> None:
     #     ),
     ]
 
-    step_number = 4
-    for step_title, prefix, model_id, prediction_target in model_runs:
-        print_step_header(step_number, f"Generating Predictions ({step_title})")
-        step_number += 1
-        try:
-            if not prefix:
-                raise ValueError(
-                    f"S3 prefix missing in config for model run '{step_title}'"
-                )
+    # step_number = 4
+    # for step_title, prefix, model_id, prediction_target in model_runs:
+    #     print_step_header(step_number, f"Generating Predictions ({step_title})")
+    #     step_number += 1
+    #     try:
+    #         if not prefix:
+    #             raise ValueError(
+    #                 f"S3 prefix missing in config for model run '{step_title}'"
+    #             )
 
-            _ = load_s3_model_and_predict(
-                s3_client=s3,
-                bucket=SETTINGS.s3_bucket,
-                prefix=prefix,
-                df=df_to_predict,
-                model_id=model_id,
-                prediction_datetime=prediction_time,
-                prediction_target=prediction_target,
-            )
-            print_status(f"{step_title} predictions generated")
-        except Exception as e:
-            print_status(f"Failed to generate {step_title} predictions: {e}", ok=False)
-            raise
+    #         _ = load_s3_model_and_predict(
+    #             s3_client=s3,
+    #             bucket=SETTINGS.s3_bucket,
+    #             prefix=prefix,
+    #             df=df_to_predict,
+    #             model_id=model_id,
+    #             prediction_datetime=prediction_time,
+    #             prediction_target=prediction_target,
+    #         )
+    #         print_status(f"{step_title} predictions generated")
+    #     except Exception as e:
+    #         print_status(f"Failed to generate {step_title} predictions: {e}", ok=False)
+    #         raise
 
     if not run_tabpfn_client:
         print("\nPrediction pipeline completed successfully.")
         return
 
     # Step 6: Generate predictions with TabPFN client
-    print_step_header(step_number, "Generating Predictions (TabPFN Client)")
+    # print_step_header(step_number, "Generating Predictions (TabPFN Client)")
     try:
         _ = load_and_predict_tabpfn_client_for_nba_games(
             df=df_to_predict_total,
@@ -220,4 +220,4 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    predict_nba_games(run_tabpfn_client=False)
+    predict_nba_games(run_tabpfn_client=not args.no_tabpfn)
