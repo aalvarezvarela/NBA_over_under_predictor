@@ -9,7 +9,7 @@ from nba_ou.config.settings import SETTINGS
 from nba_ou.data_preparation.missing_data.clean_df_for_training import (
     clean_dataframe_for_training,
 )
-from nba_ou.postgre_db.predictions.create.create_nba_predictions_db import (
+from nba_ou.postgre_db.predictions.create.create_ou_predictions_db import (
     upload_predictions_to_postgre,
 )
 from nba_ou.utils.s3_models import (
@@ -183,8 +183,7 @@ def load_and_predict_tabpfn_client_for_nba_games(
 
     cleaned_df = clean_dataframe_for_training(
         merged_df,
-        nan_threshold=50,
-        drop_all_na_rows=False,
+        nan_threshold=100,
         keep_columns=[
             "GAME_ID",
             "SEASON_TYPE",

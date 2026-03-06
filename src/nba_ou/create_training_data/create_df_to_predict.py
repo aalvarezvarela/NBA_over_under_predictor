@@ -145,9 +145,6 @@ def process_team_statistics_for_training(
     # Compute all rolling statistics
     df = compute_all_rolling_statistics(df, exclude_yahoo=exclude_yahoo)
 
-    total_line_cols = [col for col in df.columns if col.startswith("TOTAL_LINE_")]
-    if total_line_cols:
-        df.loc[:, total_line_cols] = df.loc[:, total_line_cols].replace(0, np.nan)
 
     df = df.drop_duplicates(keep="first")
 

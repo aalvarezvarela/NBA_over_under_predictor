@@ -2,24 +2,13 @@ import pandas as pd
 from nba_api.stats.endpoints import LeagueGameFinder
 from nba_ou.postgre_db.config.db_config import (
     connect_nba_db,
-    get_schema_name_predictions,
 )
-from nba_ou.postgre_db.predictions.create.create_nba_predictions_db import (
+from nba_ou.postgre_db.predictions.create.create_ou_predictions_db import (
+    get_predictions_schema_and_table,
     schema_exists,
 )
 from nba_ou.utils.general_utils import get_nba_season_nullable_from_date
 from psycopg import sql
-
-
-def get_predictions_schema_and_table() -> tuple[str, str]:
-    """
-    In your new structure:
-      schema = SCHEMA_NAME_PREDICTIONS (e.g. 'nba_predictions')
-      table  = same as schema (your convention)
-    """
-    schema = get_schema_name_predictions()
-    table = schema
-    return schema, table
 
 
 def get_game_ids_with_null_total_scored_points() -> pd.DataFrame:

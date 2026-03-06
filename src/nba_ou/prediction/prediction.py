@@ -1,5 +1,6 @@
 from datetime import datetime
 from pathlib import Path
+import re
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -8,7 +9,7 @@ import pandas as pd
 from nba_ou.data_preparation.missing_data.clean_df_for_training import (
     clean_dataframe_for_training,
 )
-from nba_ou.postgre_db.predictions.create.create_nba_predictions_db import (
+from nba_ou.postgre_db.predictions.create.create_ou_predictions_db import (
     upload_predictions_to_postgre,
 )
 from nba_ou.utils.s3_models import (
@@ -145,7 +146,6 @@ def load_and_predict_model_for_nba_games(
     df_predictable = clean_dataframe_for_training(
         df,
         nan_threshold=100,
-        drop_all_na_rows=False,
         keep_columns=[
             "GAME_ID",
             "SEASON_TYPE",
@@ -157,7 +157,7 @@ def load_and_predict_model_for_nba_games(
         ],
         keep_all_cols=True,
         verbose=1,
-        strict_mode=2,
+        strict_mode=21,
     )
 
     df_predictable = _add_na_tracking_columns(df_predictable)

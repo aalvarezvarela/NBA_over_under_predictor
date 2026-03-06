@@ -154,18 +154,18 @@ def predict_nba_games(run_tabpfn_client: bool = False) -> None:
             "recent_games_total_points",
             PREDICTION_TARGET_TOTAL_POINTS,
         ),
-        (
-            "Full Dataset Model (Line Error)",
-            SETTINGS.s3_regressor_full_dataset_prefix,
-            "full_dataset",
-            PREDICTION_TARGET_LINE_ERROR,
-        ),
-        (
-            "Recent Games Model (Line Error)",
-            SETTINGS.s3_regressor_recent_games_prefix,
-            "recent_games",
-            PREDICTION_TARGET_LINE_ERROR,
-        ),
+    #     (
+    #         "Full Dataset Model (Line Error)",
+    #         SETTINGS.s3_regressor_full_dataset_prefix,
+    #         "full_dataset",
+    #         PREDICTION_TARGET_LINE_ERROR,
+    #     ),
+    #     (
+    #         "Recent Games Model (Line Error)",
+    #         SETTINGS.s3_regressor_recent_games_prefix,
+    #         "recent_games",
+    #         PREDICTION_TARGET_LINE_ERROR,
+    #     ),
     ]
 
     step_number = 4
@@ -220,4 +220,4 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    predict_nba_games(run_tabpfn_client=not args.no_tabpfn)
+    predict_nba_games(run_tabpfn_client=False)

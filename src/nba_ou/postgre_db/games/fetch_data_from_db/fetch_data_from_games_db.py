@@ -53,7 +53,7 @@ def load_games_from_db(seasons=None, extra_game_ids=None) -> pd.DataFrame | None
             SELECT *
             FROM {}.{}
             {}
-            ORDER BY game_date DESC
+            ORDER BY game_date DESC, game_id DESC
         """).format(
             sql.Identifier(schema),
             sql.Identifier(table),
