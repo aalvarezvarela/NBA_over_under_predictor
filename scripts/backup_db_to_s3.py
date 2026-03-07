@@ -1,8 +1,9 @@
 """
-Backup all Supabase PostgreSQL schemas to S3 as compressed CSV files.
+Backup all Supabase PostgreSQL schemas to S3 as Parquet files.
 
-Each schema/table is exported as a gzipped CSV and uploaded to:
-    s3://<BUCKET>/backups/db/<YYYY-MM-DD>/<schema>/<table>.csv.gz
+Each schema/table is exported as a Parquet file (preserves data types,
+smaller than CSV) and uploaded to:
+    s3://<BUCKET>/backups/db/<YYYY-MM-DD>/<schema>/<table>.parquet
 
 Usage:
     python scripts/backup_db_to_s3.py              # backup all schemas
@@ -13,7 +14,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import gzip
 import io
 from datetime import datetime, timezone
 
@@ -92,28 +92,34 @@ def discover_tables(conn, schema: str) -> list[str]:
 CHUNK_SIZE = 50_000  # rows per SELECT batch
 
 
-def export_table_to_gzipped_csv(conn, schema: str, table: str) -> bytes:
+def export_table_to_parquet(conn, schema: str, table: str) -> tuple[bytes, int]:
     """
-    Stream a full table into an in-memory gzipped CSV.
+    Export a full table into an in-memory Parquet file.
 
-    Uses server-side cursors to keep memory bounded for large tables.
+    Parquet preserves data types (int, float, datetime, bool, string)
+    and compresses much better than CSV.
+
+    Returns (parquet_bytes, row_count).
     """
     query = f'SELECT * FROM "{schema}"."{table}"'
 
-    buf = io.BytesIO()
-    with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
-        first_chunk = True
-        for chunk_df in pd.read_sql(
-            query,
-            conn,
-            chunksize=CHUNK_SIZE,  # type: ignore[arg-type]
-        ):
-            csv_bytes = chunk_df.to_csv(index=False, header=first_chunk).encode("utf-8")
-            gz.write(csv_bytes)
-            first_chunk = False
+    chunks: list[pd.DataFrame] = []
+    for chunk_df in pd.read_sql(
+        query,
+        conn,
+        chunksize=CHUNK_SIZE,  # type: ignore[arg-type]
+    ):
+        chunks.append(chunk_df)
 
+    if not chunks:
+        df = pd.DataFrame()
+    else:
+        df = pd.concat(chunks, ignore_index=True)
+
+    buf = io.BytesIO()
+    df.to_parquet(buf, engine="pyarrow", compression="snappy", index=False)
     buf.seek(0)
-    return buf.read()
+    return buf.read(), len(df)
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +161,7 @@ def backup_schemas(
 
             keys: list[str] = []
             for table in tables:
-                s3_key = f"{S3_BACKUP_PREFIX}/{tag}/{schema}/{table}.csv.gz"
+                s3_key = f"{S3_BACKUP_PREFIX}/{tag}/{schema}/{table}.parquet"
 
                 if dry_run:
                     print(f"  → {schema}.{table}  →  s3://{bucket}/{s3_key}")
@@ -163,9 +169,9 @@ def backup_schemas(
                     continue
 
                 print(f"  Exporting {schema}.{table} …", end=" ", flush=True)
-                data = export_table_to_gzipped_csv(conn, schema, table)
+                data, row_count = export_table_to_parquet(conn, schema, table)
                 size_mb = len(data) / (1024 * 1024)
-                print(f"{size_mb:.2f} MB", end=" ", flush=True)
+                print(f"{row_count:,} rows, {size_mb:.2f} MB", end=" ", flush=True)
 
                 s3.put_object(Bucket=bucket, Key=s3_key, Body=data)
                 print(f"→ s3://{bucket}/{s3_key} ✓")
