@@ -156,12 +156,12 @@ def predict_nba_games(run_tabpfn_client: bool = False) -> None:
             "full_dataset",
             PREDICTION_TARGET_LINE_ERROR,
         ),
-        #     (
-        #         "Recent Games Model (Line Error)",
-        #         SETTINGS.s3_regressor_recent_games_prefix,
-        #         "recent_games",
-        #         PREDICTION_TARGET_LINE_ERROR,
-        #     ),
+        (
+            "Recent Games Model (Line Error)",
+            SETTINGS.s3_regressor_recent_games_prefix,
+            "recent_games",
+            PREDICTION_TARGET_LINE_ERROR,
+        ),
     ]
 
     step_number = 4
