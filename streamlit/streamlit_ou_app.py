@@ -1249,41 +1249,60 @@ def show_upcoming_predictions() -> None:
 
     st.markdown("---")
 
-    # Add time selector for filtering predictions
-    st.markdown("### ⏰ Select Prediction Time")
-
-    use_custom_time = st.checkbox(
-        "Filter predictions by time (use most recent prediction per model until selected time)",
-        value=False,
-    )
-
-    prediction_cutoff = None
-    if use_custom_time:
-        col_date, col_time = st.columns(2)
-
-        with col_date:
-            selected_datetime = st.date_input(
-                "Date", value=datetime.now().date(), key="pred_cutoff_date"
-            )
-
-        with col_time:
-            selected_time = st.time_input(
-                "Time (Madrid)", value=datetime.now().time(), key="pred_cutoff_time"
-            )
-
-        # Combine date and time, localize to Madrid timezone
-        cutoff_madrid = datetime.combine(selected_datetime, selected_time)
-        cutoff_madrid = pd.Timestamp(cutoff_madrid, tz="Europe/Madrid")
-        prediction_cutoff = cutoff_madrid.tz_convert("UTC")
-
-        st.caption(
-            f"📌 Using predictions up to: {cutoff_madrid.strftime('%Y-%m-%d %H:%M')} Madrid"
-        )
-
-    with st.spinner("Loading upcoming predictions..."):
+    # Load raw data first to extract available prediction times
+    with st.spinner("Loading prediction data..."):
         raw = get_games_with_total_scored_points(only_null=True)
 
-        # Build predictions with optional cutoff
+    if raw.empty:
+        st.info("No upcoming predictions found.")
+        return
+
+    # Extract unique prediction times from raw data
+    prediction_times = []
+    for col in ["prediction_datetime", "prediction_date"]:
+        if col in raw.columns:
+            times = pd.to_datetime(raw[col], errors="coerce", utc=True).dropna()
+            prediction_times.extend(times.tolist())
+
+    if prediction_times:
+        # Get unique times and sort descending (most recent first)
+        unique_times = sorted(set(prediction_times), reverse=True)
+
+        # Format times for display (Madrid timezone)
+        time_options = ["Latest (All available)"]
+        time_values = [None]  # None means no cutoff
+
+        for utc_time in unique_times:
+            madrid_time = pd.Timestamp(utc_time).tz_convert("Europe/Madrid")
+            display_str = madrid_time.strftime("%Y-%m-%d %H:%M:%S (Madrid)")
+            time_options.append(display_str)
+            time_values.append(utc_time)
+
+        # Add time selector dropdown
+        st.markdown("### ⏰ Select Prediction Time")
+        st.caption(
+            "Choose a prediction time to see predictions as they were at that moment (latest available up to selected time)"
+        )
+
+        selected_index = st.selectbox(
+            "Prediction Time",
+            range(len(time_options)),
+            format_func=lambda i: time_options[i],
+            key="pred_time_selector",
+        )
+
+        prediction_cutoff = time_values[selected_index]
+
+        if prediction_cutoff is not None:
+            cutoff_madrid = pd.Timestamp(prediction_cutoff).tz_convert("Europe/Madrid")
+            st.caption(
+                f"📌 Using predictions up to: {cutoff_madrid.strftime('%Y-%m-%d %H:%M:%S')} Madrid"
+            )
+    else:
+        prediction_cutoff = None
+
+    # Build predictions with optional cutoff
+    with st.spinner("Building predictions..."):
         games = build_game_level_predictions(raw, prediction_cutoff=prediction_cutoff)
 
     if games.empty:
@@ -1334,7 +1353,7 @@ def show_upcoming_predictions() -> None:
         render_prediction_cards(games, include_actual=False)
     else:
         st.dataframe(
-            build_upcoming_display(games, show_pred_times=use_custom_time),
+            build_upcoming_display(games, show_pred_times=(prediction_cutoff is not None)),
             width="stretch",
             hide_index=True,
             height=600,
