@@ -1,3 +1,9 @@
+from nba_ou.config.odds_columns import moneyline_col, spread_col, total_line_col
+
+MAIN_TOTAL_LINE_COL = total_line_col()
+MAIN_SPREAD_COL = spread_col()
+MAIN_MONEYLINE_COL = moneyline_col()
+
 # Column name constants for training data selection
 TEAM_INFO_COLUMNS = [
     "TEAM_ID",
@@ -14,6 +20,7 @@ STATIC_COLUMNS = [
     "GAME_ID",
     "GAME_DATE",
     "SEASON_TYPE",
+    "IS_PLAYOFF_GAME_BEFORE",
     "IS_PLAYOFF_GAME",
     "PLAYOFF_GAMES_LAST_SEASON_TEAM_AWAY",
     "PLAYOFF_GAMES_LAST_SEASON_TEAM_HOME",
@@ -21,11 +28,14 @@ STATIC_COLUMNS = [
 ]
 
 ODDS_COLUMNS = [
-    # Bet365 odds (already merged individually per team)
-    "TOTAL_OVER_UNDER_LINE",
-    "SPREAD",
-    "MONEYLINE_TEAM_HOME",
-    "MONEYLINE_TEAM_AWAY",
+    # Configured main sportsbook columns
+    MAIN_TOTAL_LINE_COL,
+    MAIN_SPREAD_COL,
+    f"{MAIN_MONEYLINE_COL}_TEAM_HOME",
+    f"{MAIN_MONEYLINE_COL}_TEAM_AWAY",
+    # Main spread gets _TEAM_HOME/_TEAM_AWAY suffix after merge_home_away_data
+    f"{MAIN_SPREAD_COL}_TEAM_HOME",
+    f"{MAIN_SPREAD_COL}_TEAM_AWAY",
     # Yahoo odds columns
     "spread_home",
     "spread_away",

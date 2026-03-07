@@ -1,4 +1,5 @@
 import pandas as pd
+from nba_ou.config.constants import TEAM_ID_MAP, TEAM_NAME_STANDARDIZATION
 
 
 def standardize_and_merge_scheduled_games_to_team_data(df, scheduled_games):
@@ -55,14 +56,38 @@ def standardize_and_merge_scheduled_games_to_team_data(df, scheduled_games):
 
     # Concatenate both home and away records
     games_expanded = pd.concat([home_games, away_games], ignore_index=True)
-    team_info_from_df = df[
-        [
-            "TEAM_ID",
-            "TEAM_ABBREVIATION",
-            "TEAM_NAME",
-            "TEAM_CITY",
-        ]
-    ].drop_duplicates()
+    team_info_cols = ["TEAM_ID", "TEAM_ABBREVIATION", "TEAM_NAME", "TEAM_CITY"]
+    team_info_source = df[team_info_cols].copy()
+    team_info_source["TEAM_ID"] = team_info_source["TEAM_ID"].astype(str)
+
+    # Pick the most recent metadata per TEAM_ID to avoid reviving historical names
+    # (e.g., "New Jersey Nets" instead of "Brooklyn Nets") on scheduled rows.
+    if "GAME_DATE" in df.columns:
+        team_info_source = team_info_source.join(
+            pd.to_datetime(df["GAME_DATE"], errors="coerce").rename("_GAME_DATE_SORT")
+        )
+        sort_cols = ["TEAM_ID", "_GAME_DATE_SORT"]
+        ascending = [True, False]
+        if "GAME_ID" in df.columns:
+            team_info_source = team_info_source.join(df["GAME_ID"].rename("_GAME_ID_SORT"))
+            sort_cols.append("_GAME_ID_SORT")
+            ascending.append(False)
+        team_info_source = team_info_source.sort_values(
+            by=sort_cols, ascending=ascending, kind="mergesort"
+        )
+
+    team_info_from_df = (
+        team_info_source.drop_duplicates(subset=["TEAM_ID"], keep="first")[team_info_cols]
+        .copy()
+    )
+
+    id_to_name = {team_id: name for name, team_id in TEAM_ID_MAP.items()}
+    team_info_from_df["TEAM_NAME"] = (
+        team_info_from_df["TEAM_NAME"]
+        .map(TEAM_NAME_STANDARDIZATION)
+        .fillna(team_info_from_df["TEAM_NAME"])
+        .fillna(team_info_from_df["TEAM_ID"].astype(str).map(id_to_name))
+    )
     games_expanded = games_expanded.merge(team_info_from_df, on="TEAM_ID", how="left")
 
     # Merge with `df`, keeping columns from both dataframes

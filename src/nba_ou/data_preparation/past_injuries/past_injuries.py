@@ -1,4 +1,5 @@
 from collections import defaultdict
+from functools import lru_cache
 
 import numpy as np
 import pandas as pd
@@ -8,26 +9,81 @@ N_TOP_PLAYERS_NON_INJURED = 8
 N_TOP_PLAYERS_INJURED = 6
 
 
-def get_injured_players_dict(df_injuries):
+def get_injured_players_dict(df_injuries, df_players=None):
     """
     Build a dictionary: injured_dict[game_id][team_id] -> list of injured players for that game/team.
 
+    Injured players are collected from:
+    - `df_injuries` (inactive/injury feed)
+    - `df_players` comments when injury wording appears (e.g. "DND - Injury/Illness")
+
     Args:
         df_injuries (pd.DataFrame): Injury data with GAME_ID, TEAM_ID, PLAYER_ID
+        df_players (pd.DataFrame, optional): Player boxscore data with GAME_ID, TEAM_ID,
+            PLAYER_ID and COMMENT/COMMENTS column
 
     Returns:
         dict: Nested dictionary mapping game_id -> team_id -> list of injured player_ids
     """
-    injured_dict = {}
-    for game_id, df_g in df_injuries.groupby("GAME_ID"):
-        team_map = {}
-        for t_id, df_t in df_g.groupby("TEAM_ID"):
-            team_map[t_id] = df_t["PLAYER_ID"].unique().tolist()
-        injured_dict[game_id] = team_map
+    injured_dict = defaultdict(lambda: defaultdict(set))
+
+    # Source 1: official injuries table
+    if (
+        df_injuries is not None
+        and not df_injuries.empty
+        and {"GAME_ID", "TEAM_ID", "PLAYER_ID"}.issubset(df_injuries.columns)
+    ):
+        valid_injuries = df_injuries.loc[
+            df_injuries["GAME_ID"].notna()
+            & df_injuries["TEAM_ID"].notna()
+            & df_injuries["PLAYER_ID"].notna(),
+            ["GAME_ID", "TEAM_ID", "PLAYER_ID"],
+        ].drop_duplicates()
+
+        for game_id, team_id, player_id in valid_injuries.itertuples(index=False):
+            injured_dict[game_id][team_id].add(player_id)
+
+    # Source 2: player comment field includes injury text
+    if (
+        df_players is not None
+        and not df_players.empty
+        and {"GAME_ID", "TEAM_ID", "PLAYER_ID"}.issubset(df_players.columns)
+    ):
+        comment_col = None
+        for candidate in ["COMMENT", "COMMENTS", "comment", "comments"]:
+            if candidate in df_players.columns:
+                comment_col = candidate
+                break
+
+        if comment_col is not None:
+            injury_mask = (
+                df_players[comment_col]
+                .fillna("")
+                .astype(str)
+                .str.contains(r"injur|injry", case=False, regex=True)
+            )
+            valid_comment_injuries = df_players.loc[
+                injury_mask
+                & df_players["GAME_ID"].notna()
+                & df_players["TEAM_ID"].notna()
+                & df_players["PLAYER_ID"].notna(),
+                ["GAME_ID", "TEAM_ID", "PLAYER_ID"],
+            ].drop_duplicates()
+
+            for game_id, team_id, player_id in valid_comment_injuries.itertuples(
+                index=False
+            ):
+                injured_dict[game_id][team_id].add(player_id)
+
+    injured_dict = {
+        game_id: {team_id: list(player_ids) for team_id, player_ids in team_map.items()}
+        for game_id, team_map in injured_dict.items()
+    }
+
     return injured_dict
 
 
-def create_player_lookup(df_players):
+def create_player_lookup(df_players, injured_dict=None):
     """
     Precompute all necessary indexes for fast player lookups.
     Returns a function that can be called with (season_id, team_id, date_to_filter)
@@ -37,7 +93,8 @@ def create_player_lookup(df_players):
         df_players (pd.DataFrame): Player statistics DataFrame (already sorted by PLAYER_ID, GAME_DATE)
 
     Returns:
-        callable: A lookup function with signature (season_id, team_id, date_to_filter) -> pd.DataFrame
+        callable: A lookup function with signature
+            (season_id, team_id, date_to_filter, game_id=None) -> pd.DataFrame
     """
     # Ensure GAME_DATE is datetime
     df_players = df_players.copy()
@@ -82,7 +139,20 @@ def create_player_lookup(df_players):
 
     empty_df = pd.DataFrame(columns=df_players.columns)
 
-    def lookup(season_id, team_id, date_to_filter):
+    injured_team_by_game_player = {}
+    if injured_dict:
+        for game_id, team_map in injured_dict.items():
+            game_key = str(game_id)
+            player_to_teams = defaultdict(set)
+            for listed_team_id, player_ids in team_map.items():
+                team_key = str(listed_team_id)
+                for player_id in player_ids:
+                    if pd.isna(player_id):
+                        continue
+                    player_to_teams[str(player_id)].add(team_key)
+            injured_team_by_game_player[game_key] = player_to_teams
+
+    def lookup(season_id, team_id, date_to_filter, game_id=None):
         """
         Fast lookup for players on a team in a season before a given date.
         """
@@ -93,6 +163,10 @@ def create_player_lookup(df_players):
 
         # Convert date_to_filter to numpy datetime64 for comparison
         date_np = np.datetime64(date_to_filter)
+        team_key = str(team_id)
+        game_injury_map = (
+            injured_team_by_game_player.get(str(game_id)) if game_id is not None else None
+        )
 
         # Find players whose last game before date_to_filter was with this team
         valid_players = []
@@ -111,6 +185,12 @@ def create_player_lookup(df_players):
                     break
 
             if last_team == team_id:
+                if game_injury_map is not None:
+                    listed_teams = game_injury_map.get(str(player_id), set())
+                    if any(listed_team != team_key for listed_team in listed_teams):
+                        # If the player appears injured for another team in this same game,
+                        # treat them as no longer active for this team.
+                        continue
                 valid_players.append(player_id)
 
         if not valid_players:
@@ -191,3 +271,124 @@ def get_players_for_team_in_season(df_players, season_id, team_id, date_to_filte
     df_result = df_result.dropna(subset=["PTS"])
 
     return df_result
+
+
+def _season_year_from_value(season_value):
+    if pd.isna(season_value):
+        return None
+    # Prefer direct numeric season-year values when available.
+    try:
+        season_int = int(season_value)
+        if 1900 <= season_int <= 2200:
+            return season_int
+    except (TypeError, ValueError):
+        pass
+
+    digits = "".join(ch for ch in str(season_value) if ch.isdigit())
+    if len(digits) < 4:
+        return None
+    try:
+        return int(digits[-4:])
+    except ValueError:
+        return None
+
+
+def create_injury_streak_lookup(df_team, injured_dict, max_seasons_back=2):
+    """
+    Build a lookup for consecutive injured-game streaks.
+
+    Returns a callable:
+        lookup(game_id, team_id, player_id) -> int
+
+    Streak is counted for consecutive team games up to and including `game_id`.
+    Search is limited to the current + previous `max_seasons_back - 1` seasons.
+    """
+    if df_team is None or df_team.empty:
+        return lambda game_id, team_id, player_id: 0
+
+    season_col = "SEASON_YEAR" if "SEASON_YEAR" in df_team.columns else "SEASON_ID"
+    df_games = df_team[["GAME_ID", "TEAM_ID", "GAME_DATE", season_col]].copy()
+    df_games["GAME_DATE"] = pd.to_datetime(df_games["GAME_DATE"], errors="coerce")
+    df_games = df_games.dropna(subset=["GAME_ID", "TEAM_ID", "GAME_DATE"])
+    df_games = df_games.drop_duplicates(subset=["GAME_ID", "TEAM_ID"], keep="first")
+
+    team_games = {}
+    game_pos_by_team = {}
+    season_year_by_team_game = {}
+
+    for team_id, grp in df_games.groupby("TEAM_ID"):
+        team_key = str(team_id)
+        grp_sorted = grp.sort_values(["GAME_DATE", "GAME_ID"], kind="mergesort")
+        games_list = []
+        pos_map = {}
+        season_map = {}
+
+        for idx, row in enumerate(grp_sorted.itertuples(index=False)):
+            game_key = str(row.GAME_ID)
+            games_list.append(game_key)
+            pos_map[game_key] = idx
+            season_map[game_key] = _season_year_from_value(getattr(row, season_col))
+
+        team_games[team_key] = games_list
+        game_pos_by_team[team_key] = pos_map
+        season_year_by_team_game[team_key] = season_map
+
+    injured_sets = {}
+    if injured_dict:
+        for game_id, team_map in injured_dict.items():
+            game_key = str(game_id)
+            per_team = {}
+            for team_id, player_ids in team_map.items():
+                team_key = str(team_id)
+                per_team[team_key] = {
+                    str(pid)
+                    for pid in player_ids
+                    if not pd.isna(pid) and str(pid) not in {"", "0", "None"}
+                }
+            injured_sets[game_key] = per_team
+
+    @lru_cache(maxsize=300_000)
+    def lookup(game_id, team_id, player_id):
+        if pd.isna(game_id) or pd.isna(team_id) or pd.isna(player_id):
+            return 0
+
+        game_key = str(game_id)
+        team_key = str(team_id)
+        player_key = str(player_id)
+
+        games_list = team_games.get(team_key)
+        if not games_list:
+            return 0
+
+        pos_map = game_pos_by_team.get(team_key, {})
+        current_pos = pos_map.get(game_key)
+        if current_pos is None:
+            return 0
+
+        current_season_year = season_year_by_team_game.get(team_key, {}).get(game_key)
+        min_allowed_season_year = None
+        if current_season_year is not None:
+            min_allowed_season_year = current_season_year - max(1, max_seasons_back) + 1
+
+        streak = 0
+        for idx in range(current_pos, -1, -1):
+            hist_game_key = games_list[idx]
+            if min_allowed_season_year is not None:
+                hist_season_year = season_year_by_team_game.get(team_key, {}).get(
+                    hist_game_key
+                )
+                if (
+                    hist_season_year is not None
+                    and hist_season_year < min_allowed_season_year
+                ):
+                    break
+
+            injured_for_team = injured_sets.get(hist_game_key, {}).get(team_key, set())
+            if player_key in injured_for_team:
+                streak += 1
+            else:
+                break
+
+        return streak
+
+    return lookup

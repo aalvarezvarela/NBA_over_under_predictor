@@ -207,6 +207,7 @@ def american_to_decimal_series(odds: pd.Series) -> pd.Series:
 
 def load_and_merge_odds_yahoo_sportsbookreview(
     season_years: list[str] | None = None,
+    extra_game_ids=None,
 ) -> pd.DataFrame:
     """
     Load odds data from Yahoo and Sportsbook databases, merge them, and merge with games.
@@ -227,8 +228,12 @@ def load_and_merge_odds_yahoo_sportsbookreview(
     print(f"Loading odds data for seasons: {season_years}")
 
     # Load data from databases
-    df_yahoo = load_odds_yahoo_from_db(seasons=season_years)
-    df_sportsbook = load_odds_sportsbook_from_db(seasons=season_years)
+    df_yahoo = load_odds_yahoo_from_db(
+        seasons=season_years, extra_game_ids=extra_game_ids
+    )
+    df_sportsbook = load_odds_sportsbook_from_db(
+        seasons=season_years, extra_game_ids=extra_game_ids
+    )
 
     # Handle None returns
     if df_yahoo is None:

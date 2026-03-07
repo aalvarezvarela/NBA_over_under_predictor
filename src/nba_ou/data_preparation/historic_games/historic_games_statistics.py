@@ -92,27 +92,34 @@ def compute_home_points_conceded_avg(df):
         pd.DataFrame: The modified DataFrame with a new column.
     """
 
+    out = df.copy()
+
+    sort_home = ["TEAM_ID_TEAM_HOME", "SEASON_YEAR", "GAME_DATE"]
+    sort_away = ["TEAM_ID_TEAM_AWAY", "SEASON_YEAR", "GAME_DATE"]
+    if "GAME_ID" in out.columns:
+        sort_home.append("GAME_ID")
+        sort_away.append("GAME_ID")
+
     # Sort DataFrame so previous games come first
-    df = df.sort_values(
-        ["TEAM_ID_TEAM_HOME", "SEASON_YEAR", "GAME_DATE"], ascending=True
-    )
+    out = out.sort_values(sort_home, ascending=True)
 
     # Define the new column name
     col_name = "AVG_POINTS_CONCEDED_AT_HOME_BEFORE_GAME"
 
     # Compute rolling average of points conceded at home (excluding current game)
-    df[col_name] = df.groupby(["TEAM_ID_TEAM_HOME", "SEASON_YEAR"])[
+    out[col_name] = out.groupby(["TEAM_ID_TEAM_HOME", "SEASON_YEAR"])[
         "PTS_TEAM_AWAY"
     ].transform(lambda s: s.shift(1).expanding(min_periods=1).mean())
 
     # Sort again for away calculations
-    df = df.sort_values(
-        ["SEASON_YEAR", "TEAM_ID_TEAM_AWAY", "GAME_DATE"], ascending=True
-    )
+    out = out.sort_values(sort_away, ascending=True)
 
     # Compute rolling average of points conceded away by the away team
-    df["AVG_POINTS_CONCEDED_AWAY_BEFORE_GAME"] = df.groupby(
+    out["AVG_POINTS_CONCEDED_AWAY_BEFORE_GAME"] = out.groupby(
         ["TEAM_ID_TEAM_AWAY", "SEASON_YEAR"]
     )["PTS_TEAM_HOME"].transform(lambda s: s.shift(1).expanding(min_periods=1).mean())
-    df = df.sort_values("GAME_DATE", ascending=False)
-    return df
+    final_sort = ["GAME_DATE"]
+    if "GAME_ID" in out.columns:
+        final_sort.append("GAME_ID")
+    out = out.sort_values(final_sort, ascending=False)
+    return out

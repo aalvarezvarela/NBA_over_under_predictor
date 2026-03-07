@@ -4,6 +4,7 @@ from tqdm import tqdm
 from nba_ou.data_preparation.past_injuries.past_injuries import (
     N_TOP_PLAYERS_INJURED,
     N_TOP_PLAYERS_NON_INJURED,
+    create_injury_streak_lookup,
     create_player_lookup,
     get_injured_players_dict,
 )
@@ -90,12 +91,16 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
         dict: Updated injured players dictionary
     """
     # Build injuries lookup
-    injured_dict = get_injured_players_dict(df_injuries)
+    injured_dict = get_injured_players_dict(df_injuries, df_players=df_players)
+    
     if injury_dict_scheduled:
         injured_dict.update(injury_dict_scheduled)
 
     if isinstance(stat_cols, str):
         stat_cols = [stat_cols]
+
+    def _with_before_suffix(col_name: str) -> str:
+        return col_name if col_name.endswith("_BEFORE") else f"{col_name}_BEFORE"
 
     # Collect all column names first to avoid fragmentation
     all_new_cols = []
@@ -129,9 +134,15 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
                 f"TOP{i}_INJURED_PLAYER_{stat_col}"
                 for i in range(1, N_TOP_PLAYERS_INJURED + 1)
             ],
+            *[
+                f"TOP{i}_INJURED_STREAK_{stat_col}"
+                for i in range(1, N_TOP_PLAYERS_INJURED + 1)
+            ],
             f"AVG_INJURED_{stat_col}",
         ]
-        all_new_cols.extend(new_cols)
+        if stat_col in {"PTS", "MIN"}:
+            new_cols.append(f"TOTAL_INJURED_PLAYER_{stat_col}_BEFORE")
+        all_new_cols.extend([_with_before_suffix(c) for c in new_cols])
 
     # Create all columns at once to avoid fragmentation
     new_cols_df = pd.DataFrame(None, index=df_team.index, columns=all_new_cols)
@@ -143,7 +154,10 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
     df_players.sort_values(["PLAYER_ID", "GAME_DATE"], kind="mergesort", inplace=True)
 
     # Create optimized lookup function (precomputes indexes once)
-    player_lookup = create_player_lookup(df_players)
+    player_lookup = create_player_lookup(df_players, injured_dict=injured_dict)
+    injury_streak_lookup = create_injury_streak_lookup(
+        df_team, injured_dict, max_seasons_back=2
+    )
 
     # 3) Iterate over each row in df_team (only needed columns for efficiency)
     cols_needed = ["GAME_ID", "TEAM_ID", "SEASON_ID", "GAME_DATE"]
@@ -151,7 +165,7 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
     # Collect all updates in a list for bulk assignment
     updates_list = []
 
-    for idx, (game_id, team_id, season_id, game_date) in enumerate(
+    for _, (game_id, team_id, season_id, game_date) in enumerate(
         tqdm(
             df_team[cols_needed].itertuples(index=False, name=None),
             total=len(df_team),
@@ -159,7 +173,7 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
         )
     ):
         # Identify active players using optimized lookup
-        df_active = player_lookup(season_id, team_id, game_date)
+        df_active = player_lookup(season_id, team_id, game_date, game_id=game_id)
         if df_active.empty:
             updates_list.append({})
             continue
@@ -192,6 +206,13 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
                 n_players=n_players_inj,
                 injured=True,
             )
+            total_inj_all = get_top_n_averages_with_names(
+                df_inj,
+                date=game_date,
+                stat_col=stat_col,
+                n_players=df_inj["PLAYER_ID"].nunique(),
+                injured=True,
+            )
 
             # Pad to required length with None for IDs/names, 0 for stats
             while len(topn_non_inj) < n_players_noninj:
@@ -200,19 +221,29 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
                 top3_inj.append((None, None, 0))
 
             for i in range(n_players_noninj):
-                row_update[f"TOP{i+1}_PLAYER_ID_{stat_col}"] = topn_non_inj[i][0]
-                row_update[f"TOP{i+1}_PLAYER_NAME_{stat_col}"] = topn_non_inj[i][1]
-                row_update[f"TOP{i+1}_PLAYER_{stat_col}"] = topn_non_inj[i][2]
+                row_update[_with_before_suffix(f"TOP{i+1}_PLAYER_ID_{stat_col}")] = topn_non_inj[i][0]
+                row_update[_with_before_suffix(f"TOP{i+1}_PLAYER_NAME_{stat_col}")] = topn_non_inj[i][1]
+                row_update[_with_before_suffix(f"TOP{i+1}_PLAYER_{stat_col}")] = topn_non_inj[i][2]
 
             for i in range(n_players_inj):
-                row_update[f"TOP{i+1}_INJURED_PLAYER_ID_{stat_col}"] = top3_inj[i][0]
-                row_update[f"TOP{i+1}_INJURED_PLAYER_NAME_{stat_col}"] = top3_inj[i][1]
-                row_update[f"TOP{i+1}_INJURED_PLAYER_{stat_col}"] = top3_inj[i][2]
+                row_update[_with_before_suffix(f"TOP{i+1}_INJURED_PLAYER_ID_{stat_col}")] = top3_inj[i][0]
+                row_update[_with_before_suffix(f"TOP{i+1}_INJURED_PLAYER_NAME_{stat_col}")] = top3_inj[i][1]
+                row_update[_with_before_suffix(f"TOP{i+1}_INJURED_PLAYER_{stat_col}")] = top3_inj[i][2]
+                injured_pid = top3_inj[i][0]
+                row_update[_with_before_suffix(f"TOP{i+1}_INJURED_STREAK_{stat_col}")] = (
+                    injury_streak_lookup(game_id, team_id, injured_pid)
+                    if injured_pid is not None
+                    else 0
+                )
 
             inj_values = [val for (_, _, val) in top3_inj if val != 0]
-            row_update[f"AVG_INJURED_{stat_col}"] = (
+            row_update[_with_before_suffix(f"AVG_INJURED_{stat_col}")] = (
                 sum(inj_values) / len(inj_values) if inj_values else 0
             )
+            if stat_col in {"PTS", "MIN"}:
+                row_update[_with_before_suffix(f"TOTAL_INJURED_PLAYER_{stat_col}_BEFORE")] = sum(
+                    val for (_, _, val) in total_inj_all if val != 0
+                )
 
         updates_list.append(row_update)
 
@@ -221,16 +252,36 @@ def add_player_history_features(df_team, df_players, df_injuries, stat_cols=["PT
     for col in updates_df.columns:
         df_team[col] = updates_df[col]
 
-    df_team["TOTAL_INJURED_PLAYER_PTS_BEFORE"] = (
-        df_team[
-            [
-                "TOP1_INJURED_PLAYER_PTS",
-                "TOP2_INJURED_PLAYER_PTS",
-                "TOP3_INJURED_PLAYER_PTS",
+    streak_cols = [c for c in df_team.columns if "_INJURED_STREAK_" in c]
+    if streak_cols:
+        df_team[streak_cols] = (
+            df_team[streak_cols].apply(pd.to_numeric, errors="coerce").fillna(0).astype(int)
+        )
+
+    if 'PTS' in stat_cols:
+        df_team["TOTAL_TOP_INJURED_PLAYER_PTS_BEFORE"] = (
+            df_team[
+                [
+                    "TOP1_INJURED_PLAYER_PTS_BEFORE",
+                    "TOP2_INJURED_PLAYER_PTS_BEFORE",
+                    "TOP3_INJURED_PLAYER_PTS_BEFORE",
+                ]
             ]
-        ]
-        .sum(axis=1, skipna=True)
-        .fillna(0)
-    )
+            .sum(axis=1, skipna=True)
+            .fillna(0)
+        )
+        
+    if 'MIN' in stat_cols:
+        df_team["TOTAL_TOP_INJURED_PLAYER_MIN_BEFORE"] = (
+            df_team[
+                [
+                    "TOP1_INJURED_PLAYER_MIN_BEFORE",
+                    "TOP2_INJURED_PLAYER_MIN_BEFORE",
+                    "TOP3_INJURED_PLAYER_MIN_BEFORE",
+                ]
+            ]
+            .sum(axis=1, skipna=True)
+            .fillna(0)
+        )
 
     return df_team, injured_dict

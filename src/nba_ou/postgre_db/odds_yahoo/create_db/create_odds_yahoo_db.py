@@ -206,7 +206,11 @@ def build_master_yahoo_df(
     master_df = pd.concat(dfs, ignore_index=True)
 
     master_df = master_df.drop_duplicates()
-    master_df = master_df.dropna(subset=["total_line_over"])
+
+    # Keep ingestion filtering aligned with DB schema (`total_line`).
+    if "total_line" not in master_df.columns:
+        raise ValueError("Expected column 'total_line' in Yahoo master dataframe")
+    master_df = master_df.dropna(subset=["total_line"])
 
     master_df = master_df.dropna(subset=["team_home", "team_away"])
     master_df["team_home"] = master_df["team_home"].map(_normalize_team)

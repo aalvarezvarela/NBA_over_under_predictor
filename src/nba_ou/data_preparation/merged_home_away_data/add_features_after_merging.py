@@ -5,7 +5,112 @@ from nba_ou.config.constants import (
     TEAM_NAME_DIVISION_MAP,
     TEAM_NAME_STANDARDIZATION,
 )
+from nba_ou.config.odds_columns import moneyline_col, spread_col, total_line_col
 from pandas.tseries.holiday import USFederalHolidayCalendar
+
+MAIN_TOTAL_LINE_COL = total_line_col()
+MAIN_SPREAD_COL = spread_col()
+MAIN_MONEYLINE_COL = moneyline_col()
+
+
+def add_betting_stats_differences(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Create difference features (HOME - AWAY) for all betting-related rolling statistics.
+
+    This function identifies columns representing team-level betting stats with rolling
+    windows (those with _TEAM_HOME and _TEAM_AWAY suffixes) and creates difference features
+    to capture the betting market's relative assessment of each team.
+
+    For machine learning, differences often provide stronger signal than absolute values
+    because they directly encode relative strength/weakness between opponents.
+
+    Args:
+        df: Merged DataFrame with _TEAM_HOME and _TEAM_AWAY columns
+
+    Returns:
+        DataFrame with additional difference columns (suffix _DIFF_BEFORE)
+
+    Example:
+        TOTAL_LINE_<book>_LAST_ALL_5_MATCHES_BEFORE_TEAM_HOME -
+        TOTAL_LINE_<book>_LAST_ALL_5_MATCHES_BEFORE_TEAM_AWAY =
+        TOTAL_LINE_<book>_LAST_ALL_5_MATCHES_DIFF_BEFORE
+    """
+    # Patterns that identify betting-related stats
+    betting_patterns = [
+        MAIN_TOTAL_LINE_COL,
+        "TOTAL_LINE_",
+        "DIFF_FROM_",
+        "IS_OVER_",
+        MAIN_MONEYLINE_COL,
+        MAIN_SPREAD_COL,
+        "MONEYLINE_",
+        "SPREAD_",
+        "_pct_bets_",
+        "_pct_money_",
+        "consensus_pct_",
+        "_price_",
+        "TOTAL_POINTS",  # Include total points predictions/actuals
+    ]
+
+    # Patterns that identify rolling/derived stat suffixes (team-specific features)
+    rolling_patterns = [
+        "_LAST_ALL_",
+        "_LAST_HOME_AWAY_",
+        "_SEASON_BEFORE_AVG",
+        "_SEASON_BEFORE_STD",
+        "_WEIGHTED_",
+        "_TREND_SLOPE_",
+    ]
+
+    # Find all home columns that match betting and rolling patterns
+    home_cols = [col for col in df.columns if col.endswith("_TEAM_HOME")]
+
+    new_features = {}
+    updated_features = {}
+
+    for home_col in home_cols:
+        # Check if this is a betting stat with rolling window/derived stat
+        is_betting_stat = any(pattern in home_col for pattern in betting_patterns)
+        is_rolling_stat = any(pattern in home_col for pattern in rolling_patterns)
+
+        if is_betting_stat and is_rolling_stat:
+            # Get corresponding away column
+            away_col = home_col.replace("_TEAM_HOME", "_TEAM_AWAY")
+
+            if away_col in df.columns:
+                # Create difference feature name with consistent temporal suffix.
+                if "_BEFORE_TEAM_HOME" in home_col:
+                    diff_col = home_col.replace("_BEFORE_TEAM_HOME", "_DIFF_BEFORE")
+                else:
+                    diff_col = home_col.replace("_TEAM_HOME", "_DIFF_BEFORE")
+
+                # Calculate difference (HOME - AWAY)
+                # Positive values indicate home team has higher value for this metric
+                diff_values = df[home_col] - df[away_col]
+                if diff_col in df.columns:
+                    updated_features[diff_col] = diff_values
+                else:
+                    new_features[diff_col] = diff_values
+
+    # Idempotent behavior: overwrite existing diff columns in place, add only missing ones.
+    features_to_apply = {**updated_features, **new_features}
+    if features_to_apply:
+        # Use pd.concat to avoid fragmentation warnings
+        # Drop existing columns that will be updated
+        cols_to_drop = [col for col in updated_features.keys() if col in df.columns]
+        if cols_to_drop:
+            df = df.drop(columns=cols_to_drop)
+
+        # Create DataFrame from new features and concat all at once
+        features_df = pd.DataFrame(features_to_apply, index=df.index)
+        df = pd.concat([df, features_df], axis=1)
+
+        print(
+            f"Created {len(new_features)} and refreshed {len(updated_features)} "
+            "betting statistics difference feature(s)"
+        )
+
+    return df
 
 
 def apply_final_transformations(df_training):
@@ -32,11 +137,12 @@ def apply_final_transformations(df_training):
 
     df_training.drop(columns=["IS_OVERTIME"], inplace=True)
 
-    # Move TOTAL_OVER_UNDER_LINE to first column
-    first_col = "TOTAL_OVER_UNDER_LINE"
-    df_training = df_training[
-        [first_col] + [col for col in df_training.columns if col != first_col]
-    ]
+    # Move the configured main total line column to first position (when present)
+    first_col = MAIN_TOTAL_LINE_COL
+    if first_col in df_training.columns:
+        df_training = df_training[
+            [first_col] + [col for col in df_training.columns if col != first_col]
+        ]
 
     return df_training
 
@@ -47,7 +153,8 @@ def add_conference_division_features(
     away_team_col: str = "TEAM_NAME_TEAM_AWAY",
 ) -> pd.DataFrame:
     """
-    Adds SAME_CONFERENCE, SAME_DIVISION, IS_HOME_WEST_CONFERENCE, IS_AWAY_WEST_COMFERENCE
+    Adds SAME_CONFERENCE_BEFORE, SAME_DIVISION_BEFORE, IS_HOME_WEST_CONFERENCE_BEFORE,
+    IS_AWAY_WEST_CONFERENCE_BEFORE
     based on standardized team names and lookup maps.
 
     Notes:
@@ -79,15 +186,16 @@ def add_conference_division_features(
         home_division.notna() & away_division.notna() & (home_division == away_division)
     )
 
-    df["SAME_CONFERENCE"] = same_conference.astype(int)
-    df["SAME_DIVISION"] = same_division.astype(int)
-
-    # 4) West flags
-    df["IS_HOME_WEST_CONFERENCE"] = (
-        (home_conference == "West").fillna(False).astype(int)
-    )
-    df["IS_AWAY_WEST_COMFERENCE"] = (
-        (away_conference == "West").fillna(False).astype(int)
+    # 4) West flags (overwrite-safe)
+    df = df.assign(
+        SAME_CONFERENCE_BEFORE=same_conference.astype(int),
+        SAME_DIVISION_BEFORE=same_division.astype(int),
+        IS_HOME_WEST_CONFERENCE_BEFORE=(home_conference == "West")
+        .fillna(False)
+        .astype(int),
+        IS_AWAY_WEST_CONFERENCE_BEFORE=(away_conference == "West")
+        .fillna(False)
+        .astype(int),
     )
 
     return df
@@ -98,22 +206,20 @@ def add_game_date_features(
     date_col: str = "GAME_DATE",
 ) -> pd.DataFrame:
     """
-    Adds IS_WEEKEND, MONTH, IS_US_HOLIDAY derived from GAME_DATE.
+    Adds IS_WEEKEND_BEFORE, MONTH_BEFORE, IS_US_HOLIDAY_BEFORE derived from GAME_DATE.
 
-    - IS_WEEKEND: Saturday/Sunday -> 1 else 0
-    - MONTH: integer 1..12
-    - IS_US_HOLIDAY: US federal holiday -> 1 else 0
+    - IS_WEEKEND_BEFORE: Saturday/Sunday -> 1 else 0
+    - MONTH_BEFORE: integer 1..12
+    - IS_US_HOLIDAY_BEFORE: US federal holiday -> 1 else 0
 
     Notes:
     - Robust to strings / datetimes; coerces invalid dates to NaT.
-    - If date is NaT, all features default to 0 (and MONTH becomes pd.NA then filled to 0).
+    - If date is NaT, all features default to 0 (and MONTH_BEFORE becomes pd.NA then filled to 0).
     """
     dates = pd.to_datetime(df[date_col], errors="coerce")
 
-    # Weekend and month
-    df["IS_WEEKEND"] = (dates.dt.weekday >= 5).fillna(False).astype(int)
-    df["MONTH"] = dates.dt.month.astype("Int64")  # keep nullable int
-    df["MONTH"] = df["MONTH"].fillna(0).astype(int)
+    # Compute all new columns first
+    month_values = dates.dt.month.astype("Int64").fillna(0).astype(int)
 
     # US Federal holidays within observed min/max date range
     cal = USFederalHolidayCalendar()
@@ -122,12 +228,16 @@ def add_game_date_features(
         start = dates.min().normalize()
         end = dates.max().normalize()
         us_holidays = cal.holidays(start=start, end=end)  # DatetimeIndex (normalized)
-
-        df["IS_US_HOLIDAY"] = (
-            dates.dt.normalize().isin(us_holidays).fillna(False).astype(int)
-        )
+        is_us_holiday = dates.dt.normalize().isin(us_holidays).fillna(False).astype(int)
     else:
-        df["IS_US_HOLIDAY"] = 0
+        is_us_holiday = pd.Series(0, index=df.index, dtype=int)
+
+    # Add all at once (overwrite-safe)
+    df = df.assign(
+        IS_WEEKEND_BEFORE=(dates.dt.weekday >= 5).fillna(False).astype(int),
+        MONTH_BEFORE=month_values,
+        IS_US_HOLIDAY_BEFORE=is_us_holiday,
+    )
 
     return df
 
@@ -144,28 +254,30 @@ def add_derived_features_after_computed_stats(df_training):
     """
     df_training = add_conference_division_features(df_training)
 
-    df_training["TOTAL_PTS_SEASON_BEFORE_AVG"] = (
-        df_training["PTS_SEASON_BEFORE_AVG_TEAM_HOME"]
-        + df_training["PTS_SEASON_BEFORE_AVG_TEAM_AWAY"]
+    # Compute and assign derived features (overwrite-safe)
+    df_training = df_training.assign(
+        TOTAL_PTS_SEASON_AVG_BEFORE=(
+            df_training["PTS_SEASON_BEFORE_AVG_TEAM_HOME"]
+            + df_training["PTS_SEASON_BEFORE_AVG_TEAM_AWAY"]
+        ),
+        TOTAL_PTS_LAST_GAMES_AVG_BEFORE=(
+            df_training["PTS_LAST_ALL_5_MATCHES_BEFORE_TEAM_HOME"]
+            + df_training["PTS_LAST_ALL_5_MATCHES_BEFORE_TEAM_AWAY"]
+        ),
+        BACK_TO_BACK_BEFORE=(
+            (df_training["REST_DAYS_BEFORE_MATCH_TEAM_AWAY"] <= 1)
+            & (df_training["REST_DAYS_BEFORE_MATCH_TEAM_HOME"] <= 1)
+        ),
+        DIFERENCE_HOME_OFF_AWAY_DEF_BEFORE=(
+            df_training["OFF_RATING_LAST_ALL_5_MATCHES_BEFORE_TEAM_HOME"]
+            - df_training["DEF_RATING_LAST_ALL_5_MATCHES_BEFORE_TEAM_AWAY"]
+        ),
+        DIFERENCE_AWAY_OFF_HOME_DEF_BEFORE=(
+            df_training["OFF_RATING_LAST_ALL_5_MATCHES_BEFORE_TEAM_AWAY"]
+            - df_training["DEF_RATING_LAST_ALL_5_MATCHES_BEFORE_TEAM_HOME"]
+        ),
     )
 
-    df_training["TOTAL_PTS_LAST_GAMES_AVG"] = (
-        df_training["PTS_LAST_HOME_AWAY_5_MATCHES_BEFORE_TEAM_HOME"]
-        + df_training["PTS_LAST_HOME_AWAY_5_MATCHES_BEFORE_TEAM_AWAY"]
-    )
-
-    df_training["BACK_TO_BACK"] = (
-        df_training["REST_DAYS_BEFORE_MATCH_TEAM_AWAY"] <= 1
-    ) & (df_training["REST_DAYS_BEFORE_MATCH_TEAM_HOME"] <= 1)
-
-    df_training["DIFERENCE_HOME_OFF_AWAY_DEF_BEFORE_MATCH"] = (
-        df_training["OFF_RATING_LAST_HOME_AWAY_5_MATCHES_BEFORE_TEAM_HOME"]
-        - df_training["DEF_RATING_LAST_HOME_AWAY_5_MATCHES_BEFORE_TEAM_AWAY"]
-    )
-    df_training["DIFERENCE_AWAY_OFF_HOME_DEF_BEFORE_MATCH"] = (
-        df_training["OFF_RATING_LAST_HOME_AWAY_5_MATCHES_BEFORE_TEAM_AWAY"]
-        - df_training["DEF_RATING_LAST_HOME_AWAY_5_MATCHES_BEFORE_TEAM_HOME"]
-    )
     df_training = apply_final_transformations(df_training)
 
     return df_training
@@ -186,6 +298,9 @@ def add_high_value_features_for_team_points(df: pd.DataFrame) -> pd.DataFrame:
     """
     out = df.copy()
 
+    # Dictionary to collect all new columns
+    new_cols = {}
+
     def _has(cols):
         return all(c in out.columns for c in cols)
 
@@ -193,28 +308,40 @@ def add_high_value_features_for_team_points(df: pd.DataFrame) -> pd.DataFrame:
         den = den.replace(0, np.nan)
         return num / den
 
+    def _with_before_suffix(name: str) -> str:
+        return name if name.endswith("_BEFORE") else f"{name}_BEFORE"
+
     def _add(name, series):
+        col_name = _with_before_suffix(name)
         # Add only if it does not already exist (avoid overwriting any preexisting column).
-        if name in out.columns:
+        if col_name in out.columns:
             return
-        out[name] = pd.to_numeric(series, errors="coerce")
+        new_cols[col_name] = pd.to_numeric(series, errors="coerce")
 
     # ---------------------------------------------------------------------
     # 1) Market-derived: implied team totals (strong, non-leaky)
     # ---------------------------------------------------------------------
-    # Uses game-level TOTAL line and SPREAD (assumes SPREAD is from HOME perspective: home - away).
-    # If your SPREAD is opposite, flip the sign.
-    if _has(["TOTAL_OVER_UNDER_LINE", "SPREAD"]):
+    # Uses game-level main TOTAL_LINE_<book> and SPREAD (assumes spread is from
+    # HOME perspective: home - away). If your spread sign is opposite, flip it.
+    # Prefer main close spread from the configured book; fallback to consensus opener.
+    spread_col = None
+    if f"{MAIN_SPREAD_COL}_TEAM_HOME" in out.columns:
+        spread_col = f"{MAIN_SPREAD_COL}_TEAM_HOME"
+    elif "spread_consensus_opener_line_home" in out.columns:
+        spread_col = "spread_consensus_opener_line_home"
+
+    if spread_col and _has([MAIN_TOTAL_LINE_COL]):
+        spread_val = pd.to_numeric(out[spread_col], errors="coerce")
         _add(
             "IMPLIED_PTS_HOME",
-            (out["TOTAL_OVER_UNDER_LINE"] / 2.0) - (out["SPREAD"] / 2.0),
+            (out[MAIN_TOTAL_LINE_COL] / 2.0) - (spread_val / 2.0),
         )
         _add(
             "IMPLIED_PTS_AWAY",
-            (out["TOTAL_OVER_UNDER_LINE"] / 2.0) + (out["SPREAD"] / 2.0),
+            (out[MAIN_TOTAL_LINE_COL] / 2.0) + (spread_val / 2.0),
         )
         # NOTE: Do NOT add implied sum/diff checks: they are algebraic restatements of
-        # TOTAL_OVER_UNDER_LINE and SPREAD, hence redundant.
+        # main TOTAL_LINE_<book> and spread, hence redundant.
 
     # ---------------------------------------------------------------------
     # 2) Offense-vs-defense interaction (often better than raw ratings)
@@ -322,7 +449,6 @@ def add_high_value_features_for_team_points(df: pd.DataFrame) -> pd.DataFrame:
     # 4) Fatigue and travel compression
     # ---------------------------------------------------------------------
 
-
     # Travel intensity: concentration of travel in last 2 vs 14 days
     if _has(
         ["TOTAL_KM_IN_LAST_2_DAYS_HOME_TEAM", "TOTAL_KM_IN_LAST_14_DAYS_HOME_TEAM"]
@@ -401,8 +527,13 @@ def add_high_value_features_for_team_points(df: pd.DataFrame) -> pd.DataFrame:
         )
 
     # ---------------------------------------------------------------------
-    # Final: replace inf with nan, keep NaNs (XGBoost can handle missing)
+    # Final: add all new columns at once to avoid fragmentation
     # ---------------------------------------------------------------------
+    if new_cols:
+        new_df = pd.DataFrame(new_cols, index=out.index)
+        out = pd.concat([out, new_df], axis=1)
+
+    # Replace inf with nan, keep NaNs (XGBoost can handle missing)
     out.replace([np.inf, -np.inf], np.nan, inplace=True)
 
     return out

@@ -1,11 +1,15 @@
 import numpy as np
 import pandas as pd
+from nba_ou.config.odds_columns import spread_col, total_line_col
 from nba_ou.data_preparation.historic_games.historic_games_statistics import (
     compute_differences_in_points_conceeded_annotated,
     compute_home_points_conceded_avg,
     get_last_5_matchup_excluding_current,
 )
 from tqdm import tqdm
+
+MAIN_TOTAL_LINE_COL = total_line_col()
+MAIN_SPREAD_COL = spread_col()
 
 
 def deduplicate_game_level_columns(df_merged):
@@ -47,9 +51,7 @@ def deduplicate_game_level_columns(df_merged):
 
             # Check if this should be deduplicated
             # 1. Must be a total line column
-            is_total_line = base_col == "TOTAL_OVER_UNDER_LINE" or base_col.startswith(
-                "TOTAL_LINE_"
-            )
+            is_total_line = base_col.startswith("TOTAL_LINE_")
 
             # 2. Must NOT contain team-specific keywords
             is_team_specific = any(
@@ -84,19 +86,32 @@ def merge_home_away_data(df, todays_prediction=False):
     """
     # Rename columns that start with 'TOP' by adding '_BEFORE' at the end
     df.rename(
-        columns=lambda x: f"{x}_BEFORE" if x.startswith("TOP") else x, inplace=True
+        columns=lambda x: (
+            f"{x}_BEFORE"
+            if x.startswith("TOP") and not x.endswith("_BEFORE")
+            else x
+        ),
+        inplace=True,
     )
 
     # Add '_BEFORE' suffix to specified AVG_INJURED_* columns
     avg_injured_cols = [
         "AVG_INJURED_PTS",
+        "AVG_INJURED_MIN",
         "AVG_INJURED_PACE_PER40",
         "AVG_INJURED_DEF_RATING",
         "AVG_INJURED_OFF_RATING",
         "AVG_INJURED_TS_PCT",
     ]
 
-    df.rename(columns={col: f"{col}_BEFORE" for col in avg_injured_cols}, inplace=True)
+    df.rename(
+        columns={
+            col: f"{col}_BEFORE"
+            for col in avg_injured_cols
+            if col in df.columns and not col.endswith("_BEFORE")
+        },
+        inplace=True,
+    )
 
     den = df["OFF_RATING_SEASON_BEFORE_AVG"].replace(0, np.nan)
     df["STAR_OFFENSIVE_RATIO_IMPROVEMENT_BEFORE"] = (
@@ -148,16 +163,17 @@ def merge_home_away_data(df, todays_prediction=False):
     # Deduplicate game-level columns (same value for both teams)
     df_merged = deduplicate_game_level_columns(df_merged)
 
-    # Set unified SPREAD column (home team's perspective is standard)
-    if "SPREAD_TEAM_HOME" in df_merged.columns:
-        df_merged["SPREAD"] = df_merged["SPREAD_TEAM_HOME"]
+    # Set unified main-book spread column (home team's perspective is standard)
+    main_spread_team_home = f"{MAIN_SPREAD_COL}_TEAM_HOME"
+    if main_spread_team_home in df_merged.columns:
+        df_merged[MAIN_SPREAD_COL] = df_merged[main_spread_team_home]
 
     # Compute Totals
     df_merged["TOTAL_POINTS"] = df_merged.PTS_TEAM_HOME + df_merged.PTS_TEAM_AWAY
     df_merged["TOTAL_PF"] = df_merged.PF_TEAM_HOME + df_merged.PF_TEAM_AWAY
 
     # IS_PLAYOFF_GAME based on SEASON_TYPE
-    df_merged["IS_PLAYOFF_GAME"] = (
+    df_merged["IS_PLAYOFF_GAME_BEFORE"] = (
         df_merged["SEASON_TYPE"].str.contains("Playoff", case=False, na=False)
     ).astype(int)
 
@@ -173,10 +189,12 @@ def merge_home_away_data(df, todays_prediction=False):
     )
 
     df_merged = compute_differences_in_points_conceeded_annotated(df_merged)
-    df_merged["TEAMS_DIFFERENCE_OVER_UNDER_LINE_BEFORE"] = (
-        df_merged["TOTAL_OVER_UNDER_LINE_SEASON_BEFORE_AVG_TEAM_HOME"]
-        - df_merged["TOTAL_OVER_UNDER_LINE_SEASON_BEFORE_AVG_TEAM_AWAY"]
-    )
+    main_total_home = f"{MAIN_TOTAL_LINE_COL}_SEASON_BEFORE_AVG_TEAM_HOME"
+    main_total_away = f"{MAIN_TOTAL_LINE_COL}_SEASON_BEFORE_AVG_TEAM_AWAY"
+    if main_total_home in df_merged.columns and main_total_away in df_merged.columns:
+        df_merged["TEAMS_DIFFERENCE_OVER_UNDER_LINE_BEFORE"] = (
+            df_merged[main_total_home] - df_merged[main_total_away]
+        )
 
     tqdm.pandas()
     # Apply row-by-row, returning a Series of dictionaries

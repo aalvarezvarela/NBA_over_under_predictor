@@ -97,7 +97,7 @@ def create_games_schema(drop_existing: bool = True):
                     )
                 )
 
-            create_table_query = sql.SQL(  # TODO: Fix HOME column to poorly calculated
+            create_table_query = sql.SQL(
                 """
                 CREATE TABLE IF NOT EXISTS {}.{} (
                     season_id TEXT NOT NULL,

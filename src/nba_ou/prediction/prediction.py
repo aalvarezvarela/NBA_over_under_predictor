@@ -1,13 +1,15 @@
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
+from nba_ou.config.odds_columns import total_line_over_col_raw
 from nba_ou.data_preparation.missing_data.clean_df_for_training import (
     clean_dataframe_for_training,
 )
-from nba_ou.postgre_db.predictions.create.create_nba_predictions_db import (
+from nba_ou.postgre_db.predictions.create.create_ou_predictions_db import (
     upload_predictions_to_postgre,
 )
 from nba_ou.utils.s3_models import (
@@ -16,34 +18,85 @@ from nba_ou.utils.s3_models import (
     read_s3_object_bytes,
 )
 
+PredictionTarget = Literal["PRED_LINE_ERROR", "TOTAL_POINTS"]
 
-def _add_na_tracking_columns(
+PREDICTION_TARGET_LINE_ERROR: PredictionTarget = "PRED_LINE_ERROR"
+PREDICTION_TARGET_TOTAL_POINTS: PredictionTarget = "TOTAL_POINTS"
+PREDICTION_VALUE_TYPE_TOTAL_POINTS = "TOTAL_POINTS"
+PREDICTION_VALUE_TYPE_DIFF_FROM_LINE = "DIFF_FROM_LINE"
+
+
+def _resolve_column_name(df: pd.DataFrame, desired_column: str) -> str | None:
+    """Resolve column name with case-insensitive fallback."""
+    if desired_column in df.columns:
+        return desired_column
+
+    desired_lower = desired_column.lower()
+    for col in df.columns:
+        if col.lower() == desired_lower:
+            return col
+    return None
+
+
+def _prepare_required_features_for_prediction(
     df: pd.DataFrame,
+    required_features: list[str],
     *,
-    count_col: str = "NA_COLUMNS_COUNT",
-    names_col: str = "NA_COLUMNS_NAMES",
-) -> pd.DataFrame:
-    """Add per-row NA count and NA column-name list.
-
-    Excludes TOTAL_POINTS and columns containing 'MATCHUP' (case insensitive) from tracking.
+    mandatory_main_book_col: str | None = None,
+) -> tuple[list[str], pd.DataFrame, pd.Series, pd.Series]:
     """
-    out = df.copy()
+    Ensure required model features exist and track NaN values per row.
 
-    # Filter columns: exclude TOTAL_POINTS and any column containing 'MATCHUP'
-    cols_to_check = [
-        col
-        for col in out.columns
-        if col != "TOTAL_POINTS" and "matchup" not in col.lower()
-    ]
+    Returns:
+        - List of required feature names
+        - Feature DataFrame aligned to the model's expected column names
+        - Per-row count of NaN values in required features
+        - Per-row comma-separated list of feature names with NaN values
+    """
+    normalized_required = [str(feat) for feat in required_features]
 
-    na_mask = out[cols_to_check].isna()
+    # Derive mandatory column from config if not provided
+    if mandatory_main_book_col is None:
+        mandatory_main_book_col = total_line_over_col_raw()
+
+    # Check if mandatory column exists
+    main_book_col = _resolve_column_name(df, mandatory_main_book_col)
+    if main_book_col is None:
+        raise ValueError(
+            f"Column '{mandatory_main_book_col}' is mandatory for prediction."
+        )
+
+    # Resolve all required features with case-insensitive fallback
+    resolved_feature_columns: list[str] = []
+    missing_features: list[str] = []
+    for feat in normalized_required:
+        resolved_col = _resolve_column_name(df, feat)
+        if resolved_col is None:
+            missing_features.append(feat)
+        else:
+            resolved_feature_columns.append(resolved_col)
+
+    if missing_features:
+        raise ValueError(
+            f"Required model features are missing from the dataframe: {missing_features}"
+        )
+
+    # Count NaN values per row in required features
+    required_df = df[resolved_feature_columns].copy()
+    required_df.columns = normalized_required
+    na_mask = required_df.isna()
     col_names = na_mask.columns.to_numpy()
-    out[count_col] = na_mask.sum(axis=1).astype(int)
-    out[names_col] = [
-        ",".join(col_names[row_mask]) if row_mask.any() else None
-        for row_mask in na_mask.to_numpy()
-    ]
-    return out
+
+    na_count = na_mask.sum(axis=1).astype(int)
+    na_names = pd.Series(
+        [
+            ",".join(col_names[row_mask]) if row_mask.any() else None
+            for row_mask in na_mask.to_numpy()
+        ],
+        index=df.index,
+    )
+
+    return normalized_required, required_df, na_count, na_names
 
 
 def load_and_predict_model_for_nba_games(
@@ -53,33 +106,40 @@ def load_and_predict_model_for_nba_games(
     model_type: str,
     model_version: str,
     prediction_datetime: datetime | None = None,
-) -> list[pd.DataFrame]:
+    prediction_target: PredictionTarget = PREDICTION_TARGET_LINE_ERROR,
+    total_points_pick_line_col: str | None = None,
+) -> pd.DataFrame:
     """
-    Predicts the line error for NBA games using a trained regression model.
+    Predict NBA games using a trained regressor for one of two targets:
+    - PRED_LINE_ERROR: model predicts line error directly
+    - TOTAL_POINTS: model predicts total points directly
 
-    This function processes NBA game data and predicts the difference between
-    the actual total score and the over/under line (LINE_ERROR). From this prediction:
-    - Positive error → OVER prediction
-    - Negative error → UNDER prediction
-    - Zero error → PUSH prediction
+    PRED_PICK behavior:
+    - PRED_LINE_ERROR mode: OVER if prediction > 0, UNDER if < 0, PUSH if == 0
+    - TOTAL_POINTS mode: compares predicted total points against the configured line column
 
     Args:
         df: Input DataFrame containing game data with features
-        regressor: Trained regressor model that predicts LINE_ERROR.
+        regressor: Trained regressor model.
         model_name: Name of the model being used for predictions
         model_type: Type of the model (e.g., "regression", "classification")
         model_version: Version identifier for the model
         prediction_datetime: Timestamp when predictions are made. If None, uses current time in Europe/Madrid timezone.
+        prediction_target: Which target this model predicts.
+        total_points_pick_line_col: Line column used to derive OVER/UNDER/PUSH when
+            prediction_target is TOTAL_POINTS. Defaults to main sportsbook from config.
 
     Returns:
         DataFrame containing predictions with key information
     """
+    # Derive total_points_pick_line_col from config if not provided
+    if total_points_pick_line_col is None:
+        total_points_pick_line_col = total_line_over_col_raw()
 
     # Step 1: Clean the DataFrame for prediction
     df_predictable = clean_dataframe_for_training(
         df,
         nan_threshold=100,
-        drop_all_na_rows=False,
         keep_columns=[
             "GAME_ID",
             "SEASON_TYPE",
@@ -91,50 +151,114 @@ def load_and_predict_model_for_nba_games(
         ],
         keep_all_cols=True,
         verbose=1,
-        strict_mode=2,
+        strict_mode=10,
     )
-
-    df_predictable = _add_na_tracking_columns(df_predictable)
 
     # Load the model using joblib
     model = regressor
 
     # Extract required features from model
-    required_features = model.feature_names_in_
-
-    # Ensure all required features are present in the DataFrame
-    missing_features = [
-        feat for feat in required_features if feat not in df_predictable.columns
-    ]
+    required_features_raw = model.feature_names_in_
+    required_features = [str(feat) for feat in required_features_raw]
 
     # Handle IS_TRAINING_DATA if it's missing - create it with all False values
-    if "IS_TRAINING_DATA" in missing_features:
+    if (
+        "IS_TRAINING_DATA" in required_features
+        and "IS_TRAINING_DATA" not in df_predictable
+    ):
         print(
             "⚠️  Warning: 'IS_TRAINING_DATA' column is missing. Creating it with default False values for prediction."
         )
         df_predictable["IS_TRAINING_DATA"] = False
-        missing_features = [f for f in missing_features if f != "IS_TRAINING_DATA"]
 
-    if missing_features:
-        raise ValueError(
-            f"Missing required features for prediction: {missing_features}"
-        )
-    X = df_predictable[required_features]
-
-    # Make predictions - predict LINE_ERROR
-    pred_line_error = model.predict(X)
-
-    df_predictable["PRED_LINE_ERROR"] = pred_line_error
-
-    df_predictable["PRED_PICK"] = np.where(
-        df_predictable["PRED_LINE_ERROR"] > 0,
-        "OVER",
-        np.where(df_predictable["PRED_LINE_ERROR"] < 0, "UNDER", "PUSH"),
+    # Ensure required features exist and track NaN values per row in required features
+    (
+        required_features,
+        X,
+        na_count,
+        na_names,
+    ) = _prepare_required_features_for_prediction(
+        df_predictable,
+        required_features,
+        mandatory_main_book_col=total_points_pick_line_col,
     )
 
-    # Calculate predicted total points from line error
-    df_predictable["PRED_TOTAL_POINTS"] = (
-        df_predictable["TOTAL_OVER_UNDER_LINE"] + df_predictable["PRED_LINE_ERROR"]
+    # Add NaN tracking columns (based on required features only)
+    df_predictable["NA_COLUMNS_COUNT"] = na_count
+    df_predictable["NA_COLUMNS_NAMES"] = na_names
+
+    # Make predictions
+    raw_predictions = model.predict(X)
+    prediction_values = pd.to_numeric(
+        pd.Series(raw_predictions, index=df_predictable.index), errors="coerce"
+    )
+    pick_line: pd.Series | None = None
+
+    main_book_line_col = _resolve_column_name(df_predictable, total_points_pick_line_col)
+    if main_book_line_col is None:
+        raise ValueError(
+            f"Main sportsbook line column '{total_points_pick_line_col}' is mandatory for prediction."
+        )
+    main_book_line = pd.to_numeric(df_predictable[main_book_line_col], errors="coerce")
+    df_predictable["TOTAL_BET365_LINE_AT_PREDICTION"] = main_book_line
+    df_predictable["TOTAL_OVER_UNDER_LINE"] = main_book_line
+
+    if prediction_target == PREDICTION_TARGET_LINE_ERROR:
+        df_predictable["PRED_LINE_ERROR"] = prediction_values
+        df_predictable["PRED_TOTAL_POINTS"] = (
+            df_predictable["TOTAL_OVER_UNDER_LINE"] + df_predictable["PRED_LINE_ERROR"]
+        )
+
+    elif prediction_target == PREDICTION_TARGET_TOTAL_POINTS:
+        df_predictable["PRED_TOTAL_POINTS"] = prediction_values
+        pick_line = df_predictable["TOTAL_OVER_UNDER_LINE"]
+        df_predictable["PRED_LINE_ERROR"] = df_predictable["PRED_TOTAL_POINTS"] - pick_line
+
+    else:
+        raise ValueError(
+            "prediction_target must be one of: "
+            f"{PREDICTION_TARGET_LINE_ERROR}, {PREDICTION_TARGET_TOTAL_POINTS}"
+        )
+
+    if prediction_target == PREDICTION_TARGET_TOTAL_POINTS:
+        if pick_line is None:
+            pick_line_col = _resolve_column_name(
+                df_predictable, total_points_pick_line_col
+            )
+            if pick_line_col is None:
+                raise ValueError(
+                    f"Column '{total_points_pick_line_col}' is required to compute PRED_PICK "
+                    f"when prediction_target={PREDICTION_TARGET_TOTAL_POINTS}."
+                )
+            pick_line = pd.to_numeric(df_predictable[pick_line_col], errors="coerce")
+        pred_total = pd.to_numeric(df_predictable["PRED_TOTAL_POINTS"], errors="coerce")
+        df_predictable["PRED_PICK"] = np.select(
+            [
+                pred_total > pick_line,
+                pred_total < pick_line,
+                (pred_total == pick_line) & pred_total.notna() & pick_line.notna(),
+            ],
+            ["OVER", "UNDER", "PUSH"],
+            default=None,
+        )
+    else:
+        pred_line_error = pd.to_numeric(
+            df_predictable["PRED_LINE_ERROR"], errors="coerce"
+        )
+        df_predictable["PRED_PICK"] = np.select(
+            [
+                pred_line_error > 0,
+                pred_line_error < 0,
+                pred_line_error == 0,
+            ],
+            ["OVER", "UNDER", "PUSH"],
+            default=None,
+        )
+
+    df_predictable["PREDICTION_VALUE_TYPE"] = (
+        PREDICTION_VALUE_TYPE_TOTAL_POINTS
+        if prediction_target == PREDICTION_TARGET_TOTAL_POINTS
+        else PREDICTION_VALUE_TYPE_DIFF_FROM_LINE
     )
 
     df_predictable.rename(columns={"MATCHUP_TEAM_HOME": "MATCHUP"}, inplace=True)
@@ -150,7 +274,9 @@ def load_and_predict_model_for_nba_games(
         "GAME_TIME",
         "TEAM_NAME_TEAM_HOME",
         "TEAM_NAME_TEAM_AWAY",
+        "PREDICTION_VALUE_TYPE",
         "TOTAL_OVER_UNDER_LINE",
+        "TOTAL_BET365_LINE_AT_PREDICTION",
         "PRED_LINE_ERROR",
         "PRED_TOTAL_POINTS",
         "PRED_PICK",
@@ -202,7 +328,10 @@ def load_and_predict_model_for_nba_games(
         game_time_aware - df_summary["PREDICTION_DATETIME"]
     ).dt.total_seconds() / 60
     df_summary["TIME_TO_MATCH_MINUTES"] = (
-        df_summary["TIME_TO_MATCH_MINUTES"].round(0).astype(int)
+        pd.to_numeric(df_summary["TIME_TO_MATCH_MINUTES"], errors="coerce")
+        .fillna(0)
+        .round(0)
+        .astype(int)
     )
 
     # Add model information from parameters
@@ -210,8 +339,11 @@ def load_and_predict_model_for_nba_games(
     df_summary["MODEL_TYPE"] = model_type
     df_summary["MODEL_VERSION"] = model_version
 
-    # Drop rows with NaN in PRED_LINE_ERROR before saving to database
-    df_summary_clean = df_summary.dropna(subset=["PRED_LINE_ERROR"])
+    # Drop rows with NaN in the model's predicted target before saving to database
+    if prediction_target == PREDICTION_TARGET_TOTAL_POINTS:
+        df_summary_clean = df_summary.dropna(subset=["PRED_TOTAL_POINTS"])
+    else:
+        df_summary_clean = df_summary.dropna(subset=["PRED_LINE_ERROR"])
     upload_predictions_to_postgre(df_summary_clean)
 
     return df_summary_clean
@@ -225,6 +357,8 @@ def load_s3_model_and_predict(
     df: pd.DataFrame,
     model_id: str,
     prediction_datetime: datetime | None = None,
+    prediction_target: PredictionTarget = PREDICTION_TARGET_LINE_ERROR,
+    total_points_pick_line_col: str | None = None,
 ) -> pd.DataFrame:
     """
     Load the first .joblib model from an S3 prefix and generate predictions.
@@ -240,6 +374,9 @@ def load_s3_model_and_predict(
         prefix: S3 prefix to search for model
         df: DataFrame containing game data to predict
         prediction_datetime: Timestamp for predictions (defaults to now in Europe/Madrid)
+        prediction_target: Which target this model predicts.
+        total_points_pick_line_col: Line column used for PRED_PICK when
+            prediction_target is TOTAL_POINTS. Defaults to main sportsbook from config.
 
     Returns:
         DataFrame containing predictions
@@ -284,4 +421,6 @@ def load_s3_model_and_predict(
         model_type=model_type,
         model_version=model_version,
         prediction_datetime=prediction_datetime,
+        prediction_target=prediction_target,
+        total_points_pick_line_col=total_points_pick_line_col,
     )

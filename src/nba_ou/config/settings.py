@@ -80,6 +80,7 @@ CONFIG_SCHEMA = {
     "odds_base_url": ("Odds", "BASE_URL", str, None),
     "odds_save_pickle": ("Odds", "SAVE_ODDS_PICKLE", bool, None),
     "odds_pickle_path": ("Odds", "ODDS_PICKLE_PATH", str, None),
+    "main_sportsbook": ("Odds", "MAIN_SPORTSBOOK", str, "consensus_opener"),
     # Secrets (not in config.ini, must be in secrets file or env vars)
     "odds_api_key": ("Odds", "ODDS_API_KEY", "secret", None),
     "db_password": ("DatabaseSupabase", "DB_PASSWORD", "secret", None),
@@ -96,6 +97,18 @@ CONFIG_SCHEMA = {
     "s3_regressor_recent_games_prefix": (
         "S3",
         "REGRESSOR_RECENT_GAMES_PREFIX",
+        str,
+        None,
+    ),
+    "s3_regressor_full_dataset_total_points_prefix": (
+        "S3",
+        "REGRESSOR_FULL_DATASET_TOTAL_POINTS_PREFIX",
+        str,
+        None,
+    ),
+    "s3_regressor_recent_games_total_points_prefix": (
+        "S3",
+        "REGRESSOR_RECENT_GAMES_TOTAL_POINTS_PREFIX",
         str,
         None,
     ),

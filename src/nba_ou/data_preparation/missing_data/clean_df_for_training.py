@@ -11,6 +11,7 @@ This module provides functions to:
 
 import numpy as np
 import pandas as pd
+from nba_ou.config.odds_columns import resolve_main_total_line_col
 from nba_ou.data_preparation.missing_data.handle_missing_data import (
     apply_missing_policy,
 )
@@ -22,7 +23,7 @@ def basic_cleaning(df: pd.DataFrame, verbose: int = 1) -> pd.DataFrame:
 
     This function:
     - Filters out games with unusually low total points (< 130)
-    - Removes rows with missing TOTAL_OVER_UNDER_LINE
+    - Removes rows with missing main total line (TOTAL_LINE_<main_book>)
     - Filters out games with unrealistic betting lines (< 100)
 
     Args:
@@ -32,12 +33,13 @@ def basic_cleaning(df: pd.DataFrame, verbose: int = 1) -> pd.DataFrame:
     Returns:
         pd.DataFrame: Cleaned dataframe
     """
-    if "IS_US_HOLIDAY" in df.columns:
-        df["IS_US_HOLIDAY"] = (
-            df["IS_US_HOLIDAY"]
-            .astype("Int64")  # ensures proper numeric handling
-            .astype("boolean")  # pandas nullable boolean
-        )
+    for holiday_col in ("IS_US_HOLIDAY_BEFORE", "IS_US_HOLIDAY"):
+        if holiday_col in df.columns:
+            df[holiday_col] = (
+                df[holiday_col]
+                .astype("Int64")  # ensures proper numeric handling
+                .astype("boolean")  # pandas nullable boolean
+            )
 
     initial_rows = len(df)
     if verbose >= 1:
@@ -46,21 +48,25 @@ def basic_cleaning(df: pd.DataFrame, verbose: int = 1) -> pd.DataFrame:
     if verbose >= 2:
         print(f"Removed {initial_rows - len(df)} rows with TOTAL_POINTS <= 130")
 
-    # Count and report NaNs in TOTAL_OVER_UNDER_LINE
-    nans = df["TOTAL_OVER_UNDER_LINE"].isna().sum()
+    main_total_line = resolve_main_total_line_col(df)
+    if main_total_line is None:
+        raise ValueError("No TOTAL_LINE_<book> column found for basic cleaning.")
+
+    # Count and report NaNs in the configured main total line column
+    nans = df[main_total_line].isna().sum()
     if verbose >= 2:
-        print(f"Number of NaNs in TOTAL_OVER_UNDER_LINE: {nans}")
+        print(f"Number of NaNs in {main_total_line}: {nans}")
 
     # Drop rows with missing odds data
-    df = df.dropna(subset=["TOTAL_OVER_UNDER_LINE"])
+    df = df.dropna(subset=[main_total_line])
     if verbose >= 2:
-        print(f"Removed {nans} rows with NaN in TOTAL_OVER_UNDER_LINE")
+        print(f"Removed {nans} rows with NaN in {main_total_line}")
 
     # Filter out unrealistic betting lines
     rows_before = len(df)
-    df = df[df["TOTAL_OVER_UNDER_LINE"] > 100].copy()
+    df = df[df[main_total_line] > 100].copy()
     if verbose >= 2:
-        print(f"Removed {rows_before - len(df)} rows with TOTAL_OVER_UNDER_LINE <= 100")
+        print(f"Removed {rows_before - len(df)} rows with {main_total_line} <= 100")
 
     if verbose >= 1:
         print(f"Basic cleaning complete: {len(df)} rows remaining\n")
@@ -271,30 +277,33 @@ def advanced_column_cleaning(
             print("   Skipping highly correlated column removal (keep_all_cols=True)")
     else:
         numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-        corr_matrix = df[numeric_cols].corr().abs()
+        if len(numeric_cols) > 1:
+            corr_matrix = df[numeric_cols].corr().abs()
 
-        # Get upper triangle of correlation matrix
-        upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+            # Get upper triangle of correlation matrix
+            upper = corr_matrix.where(
+                np.triu(np.ones(corr_matrix.shape, dtype=bool), k=1)
+            )
+            high_corr_mask = upper.gt(corr_threshold)
 
-        # Find columns with correlation > 0.99
-        similar_pairs = []
-        for col in upper.columns:
-            high_corr_cols = upper[col][upper[col] > corr_threshold].index.tolist()
-            for corr_col in high_corr_cols:
-                similar_pairs.append((col, corr_col, upper.loc[corr_col, col]))
+            # Preserve current behavior: remove earlier columns correlated with later ones.
+            cols_to_remove = upper.index[high_corr_mask.any(axis=1)].tolist()
 
-        if similar_pairs:
-            if verbose >= 2:
-                print(f"   Found {len(similar_pairs)} highly similar column pairs:")
-            cols_to_remove = set()
-            for col1, col2, corr in similar_pairs:
+            if cols_to_remove:
                 if verbose >= 2:
-                    print(f"      - {col1} ~ {col2} (correlation: {corr:.4f})")
-                # Keep the first one, remove the second
-                cols_to_remove.add(col2)
-            if verbose >= 2:
-                print(f"   Removing {len(cols_to_remove)} similar columns")
-            df = df.drop(columns=list(cols_to_remove))
+                    high_corr_locs = np.where(high_corr_mask.values)
+                    print(
+                        f"   Found {len(high_corr_locs[0])} highly similar column pairs:"
+                    )
+                    for i, j in zip(*high_corr_locs):
+                        print(
+                            f"      - {upper.columns[j]} ~ {upper.index[i]} "
+                            f"(correlation: {upper.iat[i, j]:.4f})"
+                        )
+                    print(f"   Removing {len(cols_to_remove)} similar columns")
+                df = df.drop(columns=cols_to_remove)
+            elif verbose >= 2:
+                print("   No highly similar columns found")
         elif verbose >= 2:
             print("   No highly similar columns found")
 
@@ -345,8 +354,8 @@ def advanced_column_cleaning(
 def clean_dataframe_for_training(
     df: pd.DataFrame,
     nan_threshold: float = 5.0,
-    corr_threshold: float = 0.99,
-    drop_all_na_rows: bool = False,
+    corr_threshold: float = 0.995,
+    max_na_per_row: int = -1,
     drop_2017_na_rows: bool = True,
     create_missing_flags: bool = False,
     keep_columns: list[str] | None = None,
@@ -368,7 +377,8 @@ def clean_dataframe_for_training(
         df (pd.DataFrame): Raw training dataframe
         nan_threshold (float): Percentage threshold for NaN values above which
             a column will be removed. Default: 50.0
-        drop_all_na_rows (bool): If True, drop rows that are all NaN. Default: False
+        max_na_per_row (int): Maximum number of NaN values allowed per row. Rows exceeding this
+            threshold will be dropped. Use -1 to disable, 0 to drop rows with any NaN. Default: -1
         drop_2017_na_rows (bool): If True, drop rows with any NaN values where
             SEASON_YEAR is 2017. Default: False
         keep_all_cols (bool): If True, only drops ID, NAME, and string columns; keeps all others.
@@ -425,21 +435,32 @@ def clean_dataframe_for_training(
     # Apply missing data policy
     if verbose >= 1:
         print("\nApplying missing data policy...")
+    
+    main_total_line = resolve_main_total_line_col(df_cleaned)
+    
     df_cleaned = apply_missing_policy(
         df_cleaned,
-        current_total_line_col="TOTAL_OVER_UNDER_LINE",
+        current_total_line_col=main_total_line,
         create_missing_flags=create_missing_flags,
         keep_all_cols=keep_all_cols,
     )
-    if drop_all_na_rows:
+    if max_na_per_row >= 0:
         if verbose >= 1:
-            print("\nDropping rows that contain NaN...")
+            if max_na_per_row == 0:
+                print("\nDropping rows with any NaN values...")
+            else:
+                print(f"\nDropping rows with more than {max_na_per_row} NaN values...")
 
         initial_rows = len(df_cleaned)
-        df_cleaned = df_cleaned.dropna()
+        # Count NaN values per row
+        na_per_row = df_cleaned.isna().sum(axis=1)
+        # Keep rows with NaN count <= threshold
+        df_cleaned = df_cleaned[na_per_row <= max_na_per_row]
 
-        if verbose >= 2:
-            print(f"Removed {initial_rows - len(df_cleaned)} all-NaN rows")
+        if verbose >= 1:
+            print(
+                f"Removed {initial_rows - len(df_cleaned)} rows exceeding NaN threshold"
+            )
 
     # Check for remaining NaN values in strict mode
     if strict_mode >= 0:
@@ -456,7 +477,7 @@ def clean_dataframe_for_training(
         ]
 
         num_cols_with_nan = len(columns_with_nan)
-        
+
         if num_cols_with_nan > strict_mode:
             error_msg = f"Strict mode: Found {num_cols_with_nan} columns with NaN values, but only {strict_mode} allowed:\n"
             for col, count in columns_with_nan.items():
@@ -470,7 +491,9 @@ def clean_dataframe_for_training(
                 if strict_mode_exclude_cols
                 else ""
             )
-            print(f"\nStrict mode check passed: {num_cols_with_nan}/{strict_mode} columns with NaN values{excluded_info}")
+            print(
+                f"\nStrict mode check passed: {num_cols_with_nan}/{strict_mode} columns with NaN values{excluded_info}"
+            )
 
     if verbose >= 1:
         print("=" * 80)

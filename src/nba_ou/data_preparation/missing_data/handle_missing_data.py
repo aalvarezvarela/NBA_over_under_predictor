@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from typing import Iterable, Literal
 
 import pandas as pd
+from nba_ou.config.odds_columns import moneyline_col, spread_col, total_line_col
 from pandas.api.types import is_numeric_dtype
 
 # ------------------------------------------------------------------------------
@@ -49,9 +50,9 @@ STRUCTURAL_NA_COLS: list[str] = [
 # ------------------------------------------------------------------------------
 
 DROP_IF_MISSING_EXACT = [
-    "SPREAD",
-    "MONEYLINE_TEAM_HOME",
-    "MONEYLINE_TEAM_AWAY",
+    spread_col(),
+    f"{moneyline_col()}_TEAM_HOME",
+    f"{moneyline_col()}_TEAM_AWAY",
 ]
 
 # If you are training, also require the target
@@ -126,8 +127,8 @@ def _build_season_avg_fallback(col: str) -> str | None:
     Map rolling window feature to *_SEASON_BEFORE_AVG_TEAM_{HOME|AWAY} when feasible.
 
     Example:
-      TOTAL_OVER_UNDER_LINE_LAST_HOME_AWAY_10_MATCHES_BEFORE_TEAM_HOME
-        -> TOTAL_OVER_UNDER_LINE_SEASON_BEFORE_AVG_TEAM_HOME
+      TOTAL_LINE_consensus_opener_LAST_HOME_AWAY_10_MATCHES_BEFORE_TEAM_HOME
+        -> TOTAL_LINE_consensus_opener_SEASON_BEFORE_AVG_TEAM_HOME
     """
     m = re.search(r"_BEFORE_TEAM_(HOME|AWAY)$", col)
     if not m:
@@ -222,7 +223,7 @@ def resolve_policy(
 def apply_missing_policy(
     df: pd.DataFrame,
     *,
-    current_total_line_col: str | None = "TOTAL_OVER_UNDER_LINE",
+    current_total_line_col: str | None = total_line_col(),
     mode: Literal["train", "predict"] = "train",
     create_missing_flags: bool = False,
     keep_all_cols: bool = False,

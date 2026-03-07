@@ -5,11 +5,12 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
+from nba_ou.config.odds_columns import total_line_over_col_raw
 from nba_ou.config.settings import SETTINGS
 from nba_ou.data_preparation.missing_data.clean_df_for_training import (
     clean_dataframe_for_training,
 )
-from nba_ou.postgre_db.predictions.create.create_nba_predictions_db import (
+from nba_ou.postgre_db.predictions.create.create_ou_predictions_db import (
     upload_predictions_to_postgre,
 )
 from nba_ou.utils.s3_models import (
@@ -19,23 +20,19 @@ from nba_ou.utils.s3_models import (
     read_s3_object_bytes,
 )
 
+PREDICTION_VALUE_TYPE_TOTAL_POINTS = "TOTAL_POINTS"
 
-def _add_na_tracking_columns(
-    df: pd.DataFrame,
-    *,
-    count_col: str = "NA_COLUMNS_COUNT",
-    names_col: str = "NA_COLUMNS_NAMES",
-) -> pd.DataFrame:
-    """Add per-row NA count and NA column-name list."""
-    out = df.copy()
-    na_mask = out.isna()
-    col_names = na_mask.columns.to_numpy()
-    out[count_col] = na_mask.sum(axis=1).astype(int)
-    out[names_col] = [
-        ",".join(col_names[row_mask]) if row_mask.any() else None
-        for row_mask in na_mask.to_numpy()
-    ]
-    return out
+
+def _resolve_column_name(df: pd.DataFrame, desired_column: str) -> str | None:
+    """Resolve column name with case-insensitive fallback."""
+    if desired_column in df.columns:
+        return desired_column
+
+    desired_lower = desired_column.lower()
+    for col in df.columns:
+        if col.lower() == desired_lower:
+            return col
+    return None
 
 
 def _select_latest_historical_train_key(s3_client, bucket: str, prefix: str) -> str:
@@ -113,6 +110,7 @@ def load_and_predict_tabpfn_client_for_nba_games(
     historical_train_prefix: str = "train_data/",
     model_name: str = "tabpfn_client_regressor",
     model_version: str = "2.5",
+    total_points_pick_line_col: str | None = None,
 ) -> pd.DataFrame:
     """
     Predict NBA totals using TabPFN client regressor and upload to PostgreSQL.
@@ -131,11 +129,34 @@ def load_and_predict_tabpfn_client_for_nba_games(
     if "GAME_ID" not in df.columns:
         raise ValueError("Input dataframe must include GAME_ID")
 
+    # Derive total_points_pick_line_col from config if not provided
+    if total_points_pick_line_col is None:
+        total_points_pick_line_col = total_line_over_col_raw()
+
     if prediction_datetime is None:
         prediction_datetime = datetime.now(ZoneInfo("Europe/Madrid"))
 
     incoming_df = df.copy()
     incoming_df["GAME_ID"] = incoming_df["GAME_ID"].astype(str)
+
+    # Determine prediction day early
+    prediction_day = pd.to_datetime(prediction_date, errors="coerce")
+    if pd.isna(prediction_day):
+        raise ValueError(f"Invalid prediction_date: {prediction_date}")
+    prediction_day = prediction_day.date()
+
+    # Separate today's games BEFORE cleaning - preserve all columns intact
+    incoming_game_dates = pd.to_datetime(
+        incoming_df["GAME_DATE"], errors="coerce"
+    ).dt.date
+    today_mask = incoming_game_dates == prediction_day
+    df_to_predict_today = incoming_df[today_mask].copy()
+    incoming_df_historical = incoming_df[~today_mask].copy()
+
+    if df_to_predict_today.empty:
+        raise ValueError(
+            f"No games found in incoming dataframe for prediction_date={prediction_day}"
+        )
 
     s3 = make_s3_client(profile=SETTINGS.s3_aws_profile, region=SETTINGS.s3_aws_region)
     bucket = SETTINGS.s3_bucket
@@ -162,13 +183,14 @@ def load_and_predict_tabpfn_client_for_nba_games(
 
     historical_df["GAME_ID"] = historical_df["GAME_ID"].astype(str)
 
-    merged_df = pd.concat([historical_df, incoming_df], ignore_index=True, sort=False)
+    # Merge historical data with incoming historical games (excluding today)
+    merged_df = pd.concat(
+        [historical_df, incoming_df_historical], ignore_index=True, sort=False
+    )
     merged_df = merged_df.drop_duplicates(subset=["GAME_ID"], keep="first")
-
-    cleaned_df = clean_dataframe_for_training(
-        merged_df,
-        nan_threshold=50,
-        drop_all_na_rows=False,
+    df_to_predict_today = clean_dataframe_for_training(
+        df_to_predict_today,
+        nan_threshold=100,
         keep_columns=[
             "GAME_ID",
             "SEASON_TYPE",
@@ -181,24 +203,43 @@ def load_and_predict_tabpfn_client_for_nba_games(
         keep_all_cols=True,
         verbose=1,
     )
-    cleaned_df = _add_na_tracking_columns(cleaned_df)
+    # Clean only the historical training data
+    cleaned_df = clean_dataframe_for_training(
+        merged_df,
+        corr_threshold=0.98,
+        nan_threshold=50,
+        max_na_per_row=10,
+        keep_columns=[
+            "GAME_ID",
+            "SEASON_TYPE",
+            "GAME_DATE",
+            "GAME_TIME",
+            "TEAM_NAME_TEAM_HOME",
+            "TEAM_NAME_TEAM_AWAY",
+            "MATCHUP_TEAM_HOME",
+        ],
+        verbose=1,
+    )
 
-    if "TOTAL_OVER_UNDER_LINE" not in cleaned_df.columns:
-        raise ValueError("TOTAL_OVER_UNDER_LINE is required for prediction")
+    if "TOTAL_POINTS" not in cleaned_df.columns:
+        raise ValueError("TOTAL_POINTS is required for TabPFN total points training")
 
-    cleaned_df["LINE_ERROR"] = pd.to_numeric(
-        cleaned_df.get("TOTAL_POINTS"), errors="coerce"
-    ) - pd.to_numeric(cleaned_df["TOTAL_OVER_UNDER_LINE"], errors="coerce")
+    # Align today's intact games with cleaned columns (same columns, same order)
+    cleaned_columns = cleaned_df.columns.tolist()
 
-    prediction_day = pd.to_datetime(prediction_date, errors="coerce")
-    if pd.isna(prediction_day):
-        raise ValueError(f"Invalid prediction_date: {prediction_date}")
-    prediction_day = prediction_day.date()
+    # Reorder columns to match cleaned_df
+    df_to_predict_today = df_to_predict_today[cleaned_columns]
 
-    game_dates = pd.to_datetime(cleaned_df["GAME_DATE"], errors="coerce").dt.date
+    # Concatenate cleaned historical with aligned today's games
+    full_df = pd.concat(
+        [cleaned_df, df_to_predict_today], ignore_index=True, sort=False
+    )
+
+    # Now split into train and predict based on date
+    game_dates = pd.to_datetime(full_df["GAME_DATE"], errors="coerce").dt.date
     predict_mask = game_dates == prediction_day
 
-    df_predictable = cleaned_df[predict_mask].copy()
+    df_predictable = full_df[predict_mask].copy()
 
     if df_predictable.empty:
         raise ValueError(
@@ -206,13 +247,14 @@ def load_and_predict_tabpfn_client_for_nba_games(
             f"prediction_date={prediction_day}"
         )
 
-    train_mask = cleaned_df["LINE_ERROR"].notna() & (~predict_mask)
-    df_train = cleaned_df[train_mask].copy()
+    train_mask = pd.to_numeric(full_df["TOTAL_POINTS"], errors="coerce").notna() & (
+        ~predict_mask
+    )
+    df_train = full_df[train_mask].copy()
     if df_train.empty:
         raise ValueError("No training rows available for TabPFN fit after cleaning")
 
     drop_feature_cols = {
-        "LINE_ERROR",
         "TOTAL_POINTS",
         "GAME_ID",
         "GAME_DATE",
@@ -227,40 +269,96 @@ def load_and_predict_tabpfn_client_for_nba_games(
         "PRED_TOTAL_POINTS",
     }
 
-    feature_cols = [c for c in df_train.columns if c not in drop_feature_cols]
+    feature_cols = [
+        c
+        for c in df_train.columns
+        if c not in drop_feature_cols
+        and (
+            pd.api.types.is_numeric_dtype(df_train[c])
+            or pd.api.types.is_bool_dtype(df_train[c])
+        )
+    ]
     if not feature_cols:
         raise ValueError("No feature columns available for TabPFN")
 
     X_train = df_train[feature_cols].copy()
-    y_train = pd.to_numeric(df_train["LINE_ERROR"], errors="coerce")
+    y_train = pd.to_numeric(df_train["TOTAL_POINTS"], errors="coerce")
     valid_train = y_train.notna()
     X_train = X_train.loc[valid_train]
     y_train = y_train.loc[valid_train]
 
-    X_pred = df_predictable.copy()
-    for col in feature_cols:
-        if col not in X_pred.columns:
-            X_pred[col] = np.nan
-    X_pred = X_pred[feature_cols]
+    # Validate feature consistency between train and prediction sets
+    missing_features = [
+        col for col in feature_cols if col not in df_predictable.columns
+    ]
+    if missing_features:
+        raise ValueError(
+            f"Prediction dataframe is missing {len(missing_features)} feature(s) "
+            f"present in training data: {missing_features[:10]}"
+        )
+
+    # Ensure X_pred has identical columns in same order as X_train
+    X_pred = df_predictable[feature_cols].copy()
+
+    # Final validation: confirm column alignment
+    if not X_train.columns.equals(X_pred.columns):
+        raise ValueError(
+            "Feature column mismatch between X_train and X_pred. "
+            f"X_train has {len(X_train.columns)} columns, X_pred has {len(X_pred.columns)}"
+        )
+
+    # Track NA values only for rows to predict (prediction date)
+    na_mask = df_predictable.isna()
+    col_names = na_mask.columns.to_numpy()
+    df_predictable["NA_COLUMNS_COUNT"] = na_mask.sum(axis=1).astype(int)
+    df_predictable["NA_COLUMNS_NAMES"] = [
+        ",".join(col_names[row_mask]) if row_mask.any() else None
+        for row_mask in na_mask.to_numpy()
+    ]
 
     TabPFNRegressor = _init_tabpfn_client()
     regressor = TabPFNRegressor()
 
-    # print("Remove This line after testing TabPFN client fit/predict")
     print("Training TabPFN client regressor on historical data")
-    regressor.fit(X_train, y_train)  # Temporary limit for testing
+    regressor.fit(X_train, y_train)
     print("Predicting with TabPFN client regressor for incoming games")
-    pred_line_error = regressor.predict(X_pred)
+    pred_total_points = regressor.predict(X_pred)
 
-    df_predictable["PRED_LINE_ERROR"] = pred_line_error
-    df_predictable["PRED_PICK"] = np.where(
-        df_predictable["PRED_LINE_ERROR"] > 0,
-        "OVER",
-        np.where(df_predictable["PRED_LINE_ERROR"] < 0, "UNDER", "PUSH"),
-    )
     df_predictable["PRED_TOTAL_POINTS"] = pd.to_numeric(
-        df_predictable["TOTAL_OVER_UNDER_LINE"], errors="coerce"
-    ) + pd.to_numeric(df_predictable["PRED_LINE_ERROR"], errors="coerce")
+        pred_total_points, errors="coerce"
+    )
+
+    pick_line_col = _resolve_column_name(df_predictable, total_points_pick_line_col)
+    if pick_line_col is None:
+        raise ValueError(
+            f"Column '{total_points_pick_line_col}' is required to compute "
+            "PRED_LINE_ERROR/PRED_PICK for TabPFN total points predictions."
+        )
+    pick_line = pd.to_numeric(df_predictable[pick_line_col], errors="coerce")
+
+    df_predictable["PRED_LINE_ERROR"] = (
+        pd.to_numeric(df_predictable["PRED_TOTAL_POINTS"], errors="coerce") - pick_line
+    )
+    df_predictable["TOTAL_BET365_LINE_AT_PREDICTION"] = pick_line
+    df_predictable["PREDICTION_VALUE_TYPE"] = PREDICTION_VALUE_TYPE_TOTAL_POINTS
+    if "TOTAL_OVER_UNDER_LINE" not in df_predictable.columns:
+        df_predictable["TOTAL_OVER_UNDER_LINE"] = pick_line
+    else:
+        df_predictable["TOTAL_OVER_UNDER_LINE"] = pd.to_numeric(
+            df_predictable["TOTAL_OVER_UNDER_LINE"], errors="coerce"
+        ).fillna(pick_line)
+
+    df_predictable["PRED_PICK"] = np.select(
+        [
+            df_predictable["PRED_TOTAL_POINTS"] > pick_line,
+            df_predictable["PRED_TOTAL_POINTS"] < pick_line,
+            (df_predictable["PRED_TOTAL_POINTS"] == pick_line)
+            & df_predictable["PRED_TOTAL_POINTS"].notna()
+            & pick_line.notna(),
+        ],
+        ["OVER", "UNDER", "PUSH"],
+        default=None,
+    )
 
     df_predictable.rename(columns={"MATCHUP_TEAM_HOME": "MATCHUP"}, inplace=True)
     if "GAME_DATE" in df_predictable.columns:
@@ -275,7 +373,9 @@ def load_and_predict_tabpfn_client_for_nba_games(
         "GAME_TIME",
         "TEAM_NAME_TEAM_HOME",
         "TEAM_NAME_TEAM_AWAY",
+        "PREDICTION_VALUE_TYPE",
         "TOTAL_OVER_UNDER_LINE",
+        "TOTAL_BET365_LINE_AT_PREDICTION",
         "PRED_LINE_ERROR",
         "PRED_TOTAL_POINTS",
         "PRED_PICK",
@@ -321,7 +421,7 @@ def load_and_predict_tabpfn_client_for_nba_games(
     df_summary["MODEL_TYPE"] = "TabPFNRegressor"
     df_summary["MODEL_VERSION"] = f"{model_version}|train={selected_key}"
 
-    df_summary_clean = df_summary.dropna(subset=["PRED_LINE_ERROR"])
+    df_summary_clean = df_summary.dropna(subset=["PRED_TOTAL_POINTS"])
     upload_predictions_to_postgre(df_summary_clean)
 
     return df_summary_clean

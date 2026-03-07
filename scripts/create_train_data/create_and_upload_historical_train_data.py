@@ -3,7 +3,7 @@
 Create historical training dataset (2 years before today) and upload to S3.
 
 This script:
-1. Calculates the date 2 years before today
+1. Calculates the date 30 days before today
 2. Calls `create_df_to_predict` to generate training data up to that date
 3. Saves the file locally
 4. Uploads the file to S3 in the train_data folder
@@ -19,17 +19,17 @@ from nba_ou.utils.s3_models import make_s3_client, upload_bytes_to_s3
 
 
 def main() -> None:
-    """Create historical training data (2 years before today) and upload to S3."""
+    """Create historical training data (30 days before today) and upload to S3."""
 
-    # Calculate the date 2 years before today
+    # Calculate the date 30 days before today
     today = datetime.now()
-    two_years_ago = today - timedelta(
-        days=2 * 365
+    thirty_days_ago = today - timedelta(
+        days=2*30
     )  # Approximate, can adjust for leap years
-    limit_date = two_years_ago.strftime("%Y-%m-%d")
+    limit_date = thirty_days_ago.strftime("%Y-%m-%d")
 
     print(f"Creating training data up to: {limit_date}")
-    print(f"(2 years before today: {today.strftime('%Y-%m-%d')})")
+    print(f"(30 days before today: {thirty_days_ago.strftime('%Y-%m-%d')})")
 
     # Call create_df_to_predict without a scheduled date (no todays prediction)
     df_train = create_df_to_predict(
@@ -41,7 +41,7 @@ def main() -> None:
     print(f"Training data created. Shape: {df_train.shape}")
 
     filename = (
-        f"historical_training_data_until_{two_years_ago.strftime('%Y%m%d')}.parquet"
+        f"historical_training_data_until_{thirty_days_ago.strftime('%Y%m%d')}.parquet"
     )
 
     # Convert object columns to string to avoid Parquet type errors
