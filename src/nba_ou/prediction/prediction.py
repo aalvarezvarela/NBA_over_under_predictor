@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
+import shap
 from nba_ou.config.odds_columns import total_line_over_col_raw
 from nba_ou.data_preparation.missing_data.clean_df_for_training import (
     clean_dataframe_for_training,
@@ -99,6 +100,75 @@ def _prepare_required_features_for_prediction(
     return normalized_required, required_df, na_count, na_names
 
 
+def compute_shap_values(model, X: pd.DataFrame) -> tuple[pd.DataFrame, float | None]:
+    """
+    Compute per-feature SHAP values for tree-based regressors.
+
+    Returns:
+        - DataFrame with one SHAP contribution per feature and row
+        - Scalar expected/base value when available
+    """
+    explainer = shap.TreeExplainer(model)
+    shap_values = explainer.shap_values(X)
+
+    if isinstance(shap_values, list):
+        if len(shap_values) != 1:
+            raise ValueError(
+                "Expected a single SHAP output array for regression predictions."
+            )
+        shap_values = shap_values[0]
+
+    if hasattr(shap_values, "values"):
+        shap_values = shap_values.values
+
+    shap_array = np.asarray(shap_values)
+    if shap_array.ndim != 2:
+        raise ValueError(
+            f"Expected 2D SHAP values, received shape {shap_array.shape!r}."
+        )
+
+    shap_df = pd.DataFrame(
+        shap_array,
+        columns=X.columns,
+        index=X.index,
+    )
+
+    expected_value = getattr(explainer, "expected_value", None)
+    if expected_value is None:
+        base_value: float | None = None
+    else:
+        expected_array = np.asarray(expected_value).reshape(-1)
+        base_value = (
+            float(expected_array[0])
+            if expected_array.size and pd.notna(expected_array[0])
+            else None
+        )
+
+    return shap_df, base_value
+
+
+def top_shap_reasons(
+    shap_row: pd.Series,
+    *,
+    top_n: int = 20,
+    direction: Literal["positive", "negative"] = "positive",
+) -> str | None:
+    """Serialize the strongest positive or negative SHAP contributors."""
+    shap_series = pd.to_numeric(shap_row, errors="coerce").dropna()
+
+    if direction == "positive":
+        selected = shap_series[shap_series > 0].sort_values(ascending=False).head(top_n)
+    elif direction == "negative":
+        selected = shap_series[shap_series < 0].sort_values(ascending=True).head(top_n)
+    else:
+        raise ValueError("direction must be either 'positive' or 'negative'")
+
+    if selected.empty:
+        return None
+
+    return ",".join(f"{feature}:{value:+.3f}" for feature, value in selected.items())
+
+
 def load_and_predict_model_for_nba_games(
     df: pd.DataFrame,
     regressor,
@@ -108,6 +178,7 @@ def load_and_predict_model_for_nba_games(
     prediction_datetime: datetime | None = None,
     prediction_target: PredictionTarget = PREDICTION_TARGET_LINE_ERROR,
     total_points_pick_line_col: str | None = None,
+    shap_top_n: int = 20,
 ) -> pd.DataFrame:
     """
     Predict NBA games using a trained regressor for one of two targets:
@@ -128,6 +199,7 @@ def load_and_predict_model_for_nba_games(
         prediction_target: Which target this model predicts.
         total_points_pick_line_col: Line column used to derive OVER/UNDER/PUSH when
             prediction_target is TOTAL_POINTS. Defaults to main sportsbook from config.
+        shap_top_n: Number of top positive/negative SHAP contributors to store.
 
     Returns:
         DataFrame containing predictions with key information
@@ -339,11 +411,27 @@ def load_and_predict_model_for_nba_games(
     df_summary["MODEL_TYPE"] = model_type
     df_summary["MODEL_VERSION"] = model_version
 
+    shap_df, shap_base_value = compute_shap_values(model, X)
+    df_summary["SHAP_BASE_VALUE"] = shap_base_value
+    df_summary["SHAP_TOP_POSITIVE_FEATURES"] = shap_df.apply(
+        top_shap_reasons,
+        axis=1,
+        direction="positive",
+        top_n=shap_top_n,
+    )
+    df_summary["SHAP_TOP_NEGATIVE_FEATURES"] = shap_df.apply(
+        top_shap_reasons,
+        axis=1,
+        direction="negative",
+        top_n=shap_top_n,
+    )
+
     # Drop rows with NaN in the model's predicted target before saving to database
     if prediction_target == PREDICTION_TARGET_TOTAL_POINTS:
         df_summary_clean = df_summary.dropna(subset=["PRED_TOTAL_POINTS"])
     else:
         df_summary_clean = df_summary.dropna(subset=["PRED_LINE_ERROR"])
+
     upload_predictions_to_postgre(df_summary_clean)
 
     return df_summary_clean
@@ -359,6 +447,7 @@ def load_s3_model_and_predict(
     prediction_datetime: datetime | None = None,
     prediction_target: PredictionTarget = PREDICTION_TARGET_LINE_ERROR,
     total_points_pick_line_col: str | None = None,
+    shap_top_n: int = 20,
 ) -> pd.DataFrame:
     """
     Load the first .joblib model from an S3 prefix and generate predictions.
@@ -377,6 +466,7 @@ def load_s3_model_and_predict(
         prediction_target: Which target this model predicts.
         total_points_pick_line_col: Line column used for PRED_PICK when
             prediction_target is TOTAL_POINTS. Defaults to main sportsbook from config.
+        shap_top_n: Number of top positive/negative SHAP contributors to store.
 
     Returns:
         DataFrame containing predictions
@@ -423,4 +513,5 @@ def load_s3_model_and_predict(
         prediction_datetime=prediction_datetime,
         prediction_target=prediction_target,
         total_points_pick_line_col=total_points_pick_line_col,
+        shap_top_n=shap_top_n,
     )

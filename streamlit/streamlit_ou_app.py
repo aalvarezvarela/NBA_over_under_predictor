@@ -1,4 +1,6 @@
+import html
 import os
+import sys
 import time
 import warnings
 from datetime import datetime, timedelta
@@ -14,8 +16,6 @@ import streamlit as st
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = PROJECT_ROOT / "src"
 
-import sys
-
 for path in (PROJECT_ROOT, SRC_DIR):
     path_str = str(path)
     if path_str not in sys.path:
@@ -26,10 +26,14 @@ try:
 except Exception:
     run_nba_predictor = None
 
-from nba_ou.postgre_db.predictions.update.update_evaluation_predictions import (
+from nba_ou.postgre_db.predictions.shap_utils import (  # noqa: E402
+    ShapFeatureContribution,
+    parse_serialized_shap_contributions,
+)
+from nba_ou.postgre_db.predictions.update.update_evaluation_predictions import (  # noqa: E402
     get_games_with_total_scored_points,
 )
-from nba_ou.utils.streamlit_utils import get_team_logo_url
+from nba_ou.utils.streamlit_utils import get_team_logo_url  # noqa: E402
 
 warnings.filterwarnings("ignore", message="pandas only supports SQLAlchemy connectable")
 
@@ -404,6 +408,9 @@ def build_game_level_predictions(
             "pred_total_points",
             "pred_line_error",
             "prediction_datetime_utc",
+            "shap_base_value",
+            "shap_top_positive_features",
+            "shap_top_negative_features",
             "_prediction_priority",
         ]
         available_model_cols = [col for col in model_cols if col in per_model.columns]
@@ -419,6 +426,9 @@ def build_game_level_predictions(
             "pred_total_points": f"pred_total_{prefix}",
             "pred_line_error": f"line_error_{prefix}",
             "prediction_datetime_utc": f"pred_dt_{prefix}",
+            "shap_base_value": f"shap_base_{prefix}",
+            "shap_top_positive_features": f"shap_pos_{prefix}",
+            "shap_top_negative_features": f"shap_neg_{prefix}",
         }
         per_model = per_model.rename(columns=rename_map)
 
@@ -644,6 +654,182 @@ def get_pick_icon(pick_label: str) -> str:
     if pick_label == "Over":
         return "🔴"
     return "⚪"
+
+
+def _has_model_prediction(row: pd.Series, model_type: str) -> bool:
+    prefix = MODEL_PREFIXES[model_type]
+    return any(
+        pd.notna(row.get(col))
+        for col in (
+            f"pred_total_{prefix}",
+            f"line_diff_{prefix}",
+            f"pick_{prefix}",
+        )
+    )
+
+
+def _format_prediction_timestamp(value: object) -> str:
+    pred_dt = pd.to_datetime(value, errors="coerce", utc=True)
+    if pd.isna(pred_dt):
+        return "N/A"
+    return pred_dt.tz_convert("Europe/Madrid").strftime("%Y-%m-%d %H:%M")
+
+
+def _render_shap_reason_block(
+    title: str,
+    items: list[ShapFeatureContribution],
+    *,
+    accent_color: str,
+    empty_text: str,
+) -> None:
+    if not items:
+        body_html = (
+            '<div style="padding:14px 12px;border-radius:12px;'
+            "background:rgba(148,163,184,0.08);color:#64748b;"
+            'font-size:0.95rem;font-weight:500;">'
+            f"{html.escape(empty_text)}"
+            "</div>"
+        )
+    else:
+        rows_html = "".join(
+            (
+                '<div style="display:flex;align-items:center;justify-content:space-between;'
+                "gap:10px;padding:10px 12px;margin-bottom:8px;border-radius:12px;"
+                'background:rgba(15,23,42,0.035);border:1px solid rgba(148,163,184,0.2);">'
+                '<div style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;'
+                'font-size:0.86rem;color:#0f172a;word-break:break-word;">'
+                f"{html.escape(item.feature)}"
+                "</div>"
+                f'<div style="font-size:0.95rem;font-weight:800;color:{accent_color};'
+                'white-space:nowrap;">'
+                f"{item.value:+.3f}"
+                "</div>"
+                "</div>"
+            )
+            for item in items
+        )
+        body_html = rows_html
+
+    st.markdown(
+        f"""
+        <div style="border:1px solid rgba(148,163,184,0.28);border-radius:16px;
+                    padding:14px;background:#ffffff;min-height:100%;">
+          <div style="font-size:0.78rem;font-weight:800;color:{accent_color};
+                      text-transform:uppercase;letter-spacing:0.08em;margin-bottom:12px;">
+            {html.escape(title)}
+          </div>
+          {body_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_model_reasoning_tab(row: pd.Series, model_type: str) -> None:
+    prefix = MODEL_PREFIXES[model_type]
+    pick = format_pick_label(row.get(f"pick_{prefix}"))
+    pred_total = pd.to_numeric(row.get(f"pred_total_{prefix}"), errors="coerce")
+    line_diff = pd.to_numeric(row.get(f"line_diff_{prefix}"), errors="coerce")
+    shap_base = pd.to_numeric(row.get(f"shap_base_{prefix}"), errors="coerce")
+
+    base_label = (
+        "SHAP Base Total" if model_type in TOTAL_POINTS_MODELS else "SHAP Base Margin"
+    )
+    explanation_text = (
+        "Positive SHAP values push the predicted total points higher. "
+        "Negative values pull it lower."
+        if model_type in TOTAL_POINTS_MODELS
+        else "Positive SHAP values push the predicted margin above the line "
+        "(toward OVER). Negative values pull it below the line (toward UNDER)."
+    )
+
+    metric_cols = st.columns(4)
+    with metric_cols[0]:
+        st.metric("Pick", pick)
+    with metric_cols[1]:
+        st.metric(
+            "Predicted Total",
+            f"{pred_total:.1f}" if pd.notna(pred_total) else "N/A",
+        )
+    with metric_cols[2]:
+        st.metric(
+            "Diff vs Line",
+            f"{line_diff:+.1f}" if pd.notna(line_diff) else "N/A",
+        )
+    with metric_cols[3]:
+        st.metric(
+            base_label,
+            f"{shap_base:.3f}" if pd.notna(shap_base) else "N/A",
+        )
+
+    st.caption(
+        "Prediction time: "
+        f"{_format_prediction_timestamp(row.get(f'pred_dt_{prefix}'))}. "
+        f"{explanation_text}"
+    )
+
+    positive_items = parse_serialized_shap_contributions(row.get(f"shap_pos_{prefix}"))
+    negative_items = parse_serialized_shap_contributions(row.get(f"shap_neg_{prefix}"))
+
+    col_up, col_down = st.columns(2)
+    with col_up:
+        _render_shap_reason_block(
+            "Pushes Prediction Higher",
+            positive_items,
+            accent_color="#c0392b",
+            empty_text="No positive SHAP drivers stored for this prediction.",
+        )
+    with col_down:
+        _render_shap_reason_block(
+            "Pulls Prediction Lower",
+            negative_items,
+            accent_color="#1f618d",
+            empty_text="No negative SHAP drivers stored for this prediction.",
+        )
+
+
+def _render_game_reasoning_content(row: pd.Series) -> None:
+    available_models = [m for m in MODEL_ORDER if _has_model_prediction(row, m)]
+    if not available_models:
+        st.info("No model details available for this game.")
+        return
+
+    st.caption(
+        "Open a model tab to inspect the main SHAP features that pushed the prediction higher or lower."
+    )
+    tabs = st.tabs([MODEL_LABELS[model_type] for model_type in available_models])
+    for tab, model_type in zip(tabs, available_models, strict=False):
+        with tab:
+            _render_model_reasoning_tab(row, model_type)
+
+
+def _format_reasoning_game_option(row: pd.Series) -> str:
+    game_time = pd.to_datetime(row.get("game_time_utc"), errors="coerce", utc=True)
+    if pd.isna(game_time):
+        time_text = "TBD"
+    else:
+        time_text = game_time.tz_convert("Europe/Madrid").strftime("%m-%d %H:%M")
+
+    return (
+        f"{row['team_name_team_home']} vs {row['team_name_team_away']} "
+        f"• {time_text} Madrid"
+    )
+
+
+def render_prediction_reasoning_selector(df: pd.DataFrame, *, key_prefix: str) -> None:
+    if df.empty:
+        return
+
+    st.markdown("### Model Reasoning")
+    with st.expander("Inspect SHAP drivers for a game", expanded=False):
+        options = list(df.index)
+        selected_idx = st.selectbox(
+            "Game",
+            options=options,
+            format_func=lambda idx: _format_reasoning_game_option(df.loc[idx]),
+            key=f"{key_prefix}_game_reasoning_selector",
+        )
+        _render_game_reasoning_content(df.loc[selected_idx])
 
 
 def _build_model_cell_html(
@@ -947,6 +1133,8 @@ def render_prediction_cards(df: pd.DataFrame, include_actual: bool = False) -> N
                 break
             row = df.iloc[row_idx]
             with col:
+                with st.expander("🧠 Model Reasoning & SHAP Analysis", expanded=False):
+                    _render_game_reasoning_content(row)
                 _render_game_card(row, include_actual)
 
 
@@ -1353,11 +1541,14 @@ def show_upcoming_predictions() -> None:
         render_prediction_cards(games, include_actual=False)
     else:
         st.dataframe(
-            build_upcoming_display(games, show_pred_times=(prediction_cutoff is not None)),
+            build_upcoming_display(
+                games, show_pred_times=(prediction_cutoff is not None)
+            ),
             width="stretch",
             hide_index=True,
             height=600,
         )
+        render_prediction_reasoning_selector(games, key_prefix="upcoming")
 
     st.markdown("---")
     st.markdown("")
@@ -1373,6 +1564,7 @@ def show_upcoming_predictions() -> None:
         - **📏 Diff from Line Models**: Full (Diff), Recent (Diff) — predict the difference from the line
         - **🎯 Consensus**: Average of all model margins to decide OVER/UNDER
         - **Margin**: How far the consensus prediction is from the line (positive = OVER)
+        - **🧠 Model Reasoning**: Open "Inspect model reasoning" to see SHAP drivers for each model
 
         ### ⏰ Time Filtering
 
@@ -1496,6 +1688,7 @@ def show_past_games_results() -> None:
         st.dataframe(
             build_past_display(games), width="stretch", hide_index=True, height=600
         )
+        render_prediction_reasoning_selector(games, key_prefix="past")
 
 
 def show_historical_performance() -> None:

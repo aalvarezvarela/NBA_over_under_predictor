@@ -97,6 +97,9 @@ def create_predictions_table(drop: bool = False):
                         time_to_match_minutes INTEGER,
                         na_columns_count INTEGER,
                         na_columns_names TEXT,
+                        shap_base_value NUMERIC,
+                        shap_top_positive_features TEXT,
+                        shap_top_negative_features TEXT,
                         prediction_source TEXT NOT NULL DEFAULT 'unknown',
                         source_run_id TEXT,
                         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -174,6 +177,27 @@ def create_predictions_table(drop: bool = False):
             cur.execute(
                 sql.SQL(
                     "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS na_columns_names TEXT"
+                ).format(sql.Identifier(schema), sql.Identifier(table))
+            )
+            cur.execute(
+                sql.SQL(
+                    "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS shap_base_value NUMERIC"
+                ).format(sql.Identifier(schema), sql.Identifier(table))
+            )
+            cur.execute(
+                sql.SQL(
+                    """
+                    ALTER TABLE {}.{}
+                    ADD COLUMN IF NOT EXISTS shap_top_positive_features TEXT
+                    """
+                ).format(sql.Identifier(schema), sql.Identifier(table))
+            )
+            cur.execute(
+                sql.SQL(
+                    """
+                    ALTER TABLE {}.{}
+                    ADD COLUMN IF NOT EXISTS shap_top_negative_features TEXT
+                    """
                 ).format(sql.Identifier(schema), sql.Identifier(table))
             )
             cur.execute(
@@ -376,6 +400,9 @@ def upload_predictions_to_postgre(df: "pd.DataFrame"):
                 "TIME_TO_MATCH_MINUTES": "time_to_match_minutes",
                 "NA_COLUMNS_COUNT": "na_columns_count",
                 "NA_COLUMNS_NAMES": "na_columns_names",
+                "SHAP_BASE_VALUE": "shap_base_value",
+                "SHAP_TOP_POSITIVE_FEATURES": "shap_top_positive_features",
+                "SHAP_TOP_NEGATIVE_FEATURES": "shap_top_negative_features",
                 "PREDICTION_SOURCE": "prediction_source",
                 "SOURCE_RUN_ID": "source_run_id",
                 "HOME_PTS": "home_pts",
@@ -400,6 +427,9 @@ def upload_predictions_to_postgre(df: "pd.DataFrame"):
             "pred_pick",
             "na_columns_count",
             "na_columns_names",
+            "shap_base_value",
+            "shap_top_positive_features",
+            "shap_top_negative_features",
             "prediction_source",
             "source_run_id",
             "total_scored_points",
@@ -451,6 +481,9 @@ def upload_predictions_to_postgre(df: "pd.DataFrame"):
             "time_to_match_minutes",
             "na_columns_count",
             "na_columns_names",
+            "shap_base_value",
+            "shap_top_positive_features",
+            "shap_top_negative_features",
             "prediction_source",
             "source_run_id",
             "total_scored_points",
