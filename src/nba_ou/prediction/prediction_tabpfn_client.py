@@ -188,7 +188,21 @@ def load_and_predict_tabpfn_client_for_nba_games(
         [historical_df, incoming_df_historical], ignore_index=True, sort=False
     )
     merged_df = merged_df.drop_duplicates(subset=["GAME_ID"], keep="first")
-
+    df_to_predict_today = clean_dataframe_for_training(
+        df_to_predict_today,
+        nan_threshold=100,
+        keep_columns=[
+            "GAME_ID",
+            "SEASON_TYPE",
+            "GAME_DATE",
+            "GAME_TIME",
+            "TEAM_NAME_TEAM_HOME",
+            "TEAM_NAME_TEAM_AWAY",
+            "MATCHUP_TEAM_HOME",
+        ],
+        keep_all_cols=True,
+        verbose=1,
+    )
     # Clean only the historical training data
     cleaned_df = clean_dataframe_for_training(
         merged_df,
@@ -212,9 +226,6 @@ def load_and_predict_tabpfn_client_for_nba_games(
 
     # Align today's intact games with cleaned columns (same columns, same order)
     cleaned_columns = cleaned_df.columns.tolist()
-    for col in cleaned_columns:
-        if col not in df_to_predict_today.columns:
-            df_to_predict_today[col] = np.nan
 
     # Reorder columns to match cleaned_df
     df_to_predict_today = df_to_predict_today[cleaned_columns]

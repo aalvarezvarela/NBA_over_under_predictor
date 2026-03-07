@@ -435,7 +435,9 @@ def clean_dataframe_for_training(
     # Apply missing data policy
     if verbose >= 1:
         print("\nApplying missing data policy...")
+    
     main_total_line = resolve_main_total_line_col(df_cleaned)
+    
     df_cleaned = apply_missing_policy(
         df_cleaned,
         current_total_line_col=main_total_line,
