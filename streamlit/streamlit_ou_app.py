@@ -747,6 +747,47 @@ def _render_game_card(row: pd.Series, include_actual: bool) -> None:
         for m in DIFF_FROM_LINE_MODELS
     )
 
+    # Get team scores for past games
+    home_pts = pd.to_numeric(row.get("home_pts"), errors="coerce")
+    away_pts = pd.to_numeric(row.get("away_pts"), errors="coerce")
+
+    # Build score display for scoreboard (only for past games)
+    home_score_html = ""
+    away_score_html = ""
+    if include_actual and pd.notna(home_pts) and pd.notna(away_pts):
+        winner_style = "background:rgba(46,204,113,0.25);border:2px solid #27ae60;"
+        loser_style = (
+            "background:rgba(231,76,60,0.15);border:2px solid rgba(231,76,60,0.4);"
+        )
+
+        home_style = (
+            winner_style
+            if home_pts > away_pts
+            else loser_style
+            if home_pts < away_pts
+            else "border:2px solid rgba(127,140,141,0.5);"
+        )
+        away_style = (
+            winner_style
+            if away_pts > home_pts
+            else loser_style
+            if away_pts < home_pts
+            else "border:2px solid rgba(127,140,141,0.5);"
+        )
+
+        home_score_html = (
+            f'<div style="margin-top:8px;{home_style}border-radius:8px;'
+            f'padding:6px 12px;display:inline-block;">'
+            f'<span style="font-size:1.8rem;font-weight:900;color:#fff;">'
+            f"{int(home_pts)}</span></div>"
+        )
+        away_score_html = (
+            f'<div style="margin-top:8px;{away_style}border-radius:8px;'
+            f'padding:6px 12px;display:inline-block;">'
+            f'<span style="font-size:1.8rem;font-weight:900;color:#fff;">'
+            f"{int(away_pts)}</span></div>"
+        )
+
     # Actual result banner (past games only)
     actual_banner = ""
     if include_actual:
@@ -773,7 +814,7 @@ def _render_game_card(row: pd.Series, include_actual: bool) -> None:
         icon = (
             "✅"
             if pd.notna(cons_correct) and cons_correct
-            else "❌"
+            else "✖"
             if pd.notna(cons_correct)
             else "⏳"
         )
@@ -821,6 +862,7 @@ def _render_game_card(row: pd.Series, include_actual: bool) -> None:
                  onerror="this.style.display='none'">
             <div style="font-size:1.05rem;font-weight:700;line-height:1.2;">
               {home_team}</div>
+            {home_score_html}
           </div>
           <div style="flex:0.5;text-align:center;">
             <div style="font-size:0.85rem;opacity:0.8;">{game_date}</div>
@@ -832,6 +874,7 @@ def _render_game_card(row: pd.Series, include_actual: bool) -> None:
                  onerror="this.style.display='none'">
             <div style="font-size:1.05rem;font-weight:700;line-height:1.2;">
               {away_team}</div>
+            {away_score_html}
           </div>
         </div>
       </div>
@@ -884,7 +927,7 @@ def _render_game_card(row: pd.Series, include_actual: bool) -> None:
       {model_results_html}
     </div>
     """
-    card_height = 570 if not include_actual else 640
+    card_height = 570 if not include_actual else 680
     st.components.v1.html(card_html, height=card_height)
 
 
@@ -1188,7 +1231,7 @@ def show_upcoming_predictions() -> None:
 
     if run_nba_predictor is None:
         st.warning("Predictor module could not be imported in this environment.")
-    elif st.button("Run Predictor Now", type="primary", use_container_width=True):
+    elif st.button("Run Predictor Now", type="primary", width="stretch"):
         try:
             with st.spinner("Running predictor. This may take a few minutes..."):
                 run_nba_predictor(run_tabpfn_client=True)
@@ -1546,13 +1589,23 @@ def show_historical_performance() -> None:
     ax_acc.set_ylabel("Accuracy (%)")
     ax_acc.set_xlabel("Date")
     ax_acc.set_ylim(0, 100)
-    ax_acc.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=5, maxticks=9))
-    ax_acc.xaxis.set_major_formatter(
-        mdates.ConciseDateFormatter(ax_acc.xaxis.get_major_locator())
-    )
+
+    # Handle date locator with better edge case handling
+    if len(accuracy_pivot.index) > 1:
+        try:
+            ax_acc.xaxis.set_major_locator(
+                mdates.AutoDateLocator(minticks=3, maxticks=9)
+            )
+            ax_acc.xaxis.set_major_formatter(
+                mdates.ConciseDateFormatter(ax_acc.xaxis.get_major_locator())
+            )
+        except Exception:
+            # Fallback for problematic date ranges
+            ax_acc.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d"))
+
     ax_acc.legend(frameon=False)
     fig_acc.tight_layout()
-    st.pyplot(fig_acc, use_container_width=True)
+    st.pyplot(fig_acc, width="stretch")
 
     st.markdown("---")
     st.markdown("### 📉 Daily Mean Absolute Error")
@@ -1575,13 +1628,23 @@ def show_historical_performance() -> None:
     ax_mae.set_title("Daily MAE by Model", fontsize=16, fontweight="bold")
     ax_mae.set_ylabel("MAE (points)")
     ax_mae.set_xlabel("Date")
-    ax_mae.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=5, maxticks=9))
-    ax_mae.xaxis.set_major_formatter(
-        mdates.ConciseDateFormatter(ax_mae.xaxis.get_major_locator())
-    )
+
+    # Handle date locator with better edge case handling
+    if len(mae_pivot.index) > 1:
+        try:
+            ax_mae.xaxis.set_major_locator(
+                mdates.AutoDateLocator(minticks=3, maxticks=9)
+            )
+            ax_mae.xaxis.set_major_formatter(
+                mdates.ConciseDateFormatter(ax_mae.xaxis.get_major_locator())
+            )
+        except Exception:
+            # Fallback for problematic date ranges
+            ax_mae.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d"))
+
     ax_mae.legend(frameon=False)
     fig_mae.tight_layout()
-    st.pyplot(fig_mae, use_container_width=True)
+    st.pyplot(fig_mae, width="stretch")
 
 
 def main() -> None:

@@ -9,8 +9,6 @@ from nba_ou.create_training_data.create_df_to_predict import (
 from nba_ou.create_training_data.get_all_info_for_scheduled_games import (
     get_all_info_for_scheduled_games,
 )
-
-# from models import predict_nba_games, save_predictions_to_excel
 from nba_ou.postgre_db.update_all.update_all_databases import update_all_databases
 from nba_ou.prediction.prediction import (
     PREDICTION_TARGET_LINE_ERROR,
@@ -124,7 +122,7 @@ def predict_nba_games(run_tabpfn_client: bool = False) -> None:
             df_to_predict_total["GAME_DATE"] == date_to_predict
         ].copy()
         print_status("Feature DataFrame prepared")
-    
+
     except Exception as e:
         print_status(f"Failed to prepare features: {e}", ok=False)
         raise
@@ -140,32 +138,30 @@ def predict_nba_games(run_tabpfn_client: bool = False) -> None:
     prediction_time = datetime.now(ZoneInfo("Europe/Madrid"))
 
     model_runs = [
-       
         (
             "Full Dataset Model (Total Points)",
             SETTINGS.s3_regressor_full_dataset_total_points_prefix,
             "full_dataset_total_points",
             PREDICTION_TARGET_TOTAL_POINTS,
         ),
-        
         (
             "Recent Games Model (Total Points)",
             SETTINGS.s3_regressor_recent_games_total_points_prefix,
             "recent_games_total_points",
             PREDICTION_TARGET_TOTAL_POINTS,
         ),
-    #     (
-    #         "Full Dataset Model (Line Error)",
-    #         SETTINGS.s3_regressor_full_dataset_prefix,
-    #         "full_dataset",
-    #         PREDICTION_TARGET_LINE_ERROR,
-    #     ),
-    #     (
-    #         "Recent Games Model (Line Error)",
-    #         SETTINGS.s3_regressor_recent_games_prefix,
-    #         "recent_games",
-    #         PREDICTION_TARGET_LINE_ERROR,
-    #     ),
+        (
+            "Full Dataset Model (Line Error)",
+            SETTINGS.s3_regressor_full_dataset_prefix,
+            "full_dataset",
+            PREDICTION_TARGET_LINE_ERROR,
+        ),
+        #     (
+        #         "Recent Games Model (Line Error)",
+        #         SETTINGS.s3_regressor_recent_games_prefix,
+        #         "recent_games",
+        #         PREDICTION_TARGET_LINE_ERROR,
+        #     ),
     ]
 
     step_number = 4
@@ -197,7 +193,7 @@ def predict_nba_games(run_tabpfn_client: bool = False) -> None:
         return
 
     # Step 6: Generate predictions with TabPFN client
-    # print_step_header(step_number, "Generating Predictions (TabPFN Client)")
+    print_step_header(step_number, "Generating Predictions (TabPFN Client)")
     try:
         _ = load_and_predict_tabpfn_client_for_nba_games(
             df=df_to_predict_total,
