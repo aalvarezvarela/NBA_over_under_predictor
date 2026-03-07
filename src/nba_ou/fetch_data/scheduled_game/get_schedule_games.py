@@ -1,7 +1,10 @@
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from nba_api.stats.endpoints import ScoreboardV2
+
+EASTERN_TZ = ZoneInfo("America/New_York")
 
 
 def nba_api_schedule_games(date):
@@ -27,6 +30,35 @@ def nba_api_schedule_games(date):
     games = scoreboard_v2.get_data_frames()[0]
 
     return games
+
+
+def filter_started_games(
+    games: pd.DataFrame, now_et: pd.Timestamp | datetime | None = None
+) -> pd.DataFrame:
+    """
+    Keep only games that have not started yet based on GAME_TIME in Eastern Time.
+    """
+    if games.empty or "GAME_TIME" not in games.columns:
+        return games
+
+    current_time_et = pd.Timestamp.now(tz=EASTERN_TZ)
+    if now_et is not None:
+        current_time_et = pd.Timestamp(now_et)
+        if current_time_et.tzinfo is None:
+            current_time_et = current_time_et.tz_localize(EASTERN_TZ)
+        else:
+            current_time_et = current_time_et.tz_convert(EASTERN_TZ)
+
+    upcoming_games = games[games["GAME_TIME"] > current_time_et].copy()
+
+    filtered_count = len(games) - len(upcoming_games)
+    if filtered_count > 0:
+        print(
+            f"Excluded {filtered_count} scheduled game(s) that already started "
+            f"as of {current_time_et}."
+        )
+
+    return upcoming_games
 
 
 def get_schedule_games(date_to_predict: str) -> pd.DataFrame:
@@ -73,6 +105,7 @@ def get_schedule_games(date_to_predict: str) -> pd.DataFrame:
 
     # Make it timezone-aware (Eastern Time)
     games["GAME_TIME"] = games["GAME_TIME"].dt.tz_localize(
-        "US/Eastern", ambiguous="infer", nonexistent="shift_forward"
+        EASTERN_TZ, ambiguous="infer", nonexistent="shift_forward"
     )
+    games = filter_started_games(games)
     return games
