@@ -422,6 +422,10 @@ def build_game_level_predictions(
         }
         per_model = per_model.rename(columns=rename_map)
 
+        # Drop the priority column before merging to avoid conflicts
+        if "_prediction_priority" in per_model.columns:
+            per_model = per_model.drop(columns=["_prediction_priority"])
+
         base = base.merge(per_model, on="game_id", how="left")
 
     line = pd.to_numeric(base.get("total_over_under_line"), errors="coerce")
