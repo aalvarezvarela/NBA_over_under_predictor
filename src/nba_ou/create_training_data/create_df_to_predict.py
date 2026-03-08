@@ -41,7 +41,7 @@ from nba_ou.data_preparation.odds.merge_scheduled_odds import (
     merge_and_validate_scheduled_odds,
 )
 from nba_ou.data_preparation.past_injuries.injury_effects import (
-    add_top3_absence_effect_features_for_columns,
+    add_top3_availability_effect_features_for_columns,
 )
 from nba_ou.data_preparation.players.attach_player_features import (
     add_player_history_features,
@@ -378,7 +378,7 @@ def create_df_to_predict(
 
     df_training = add_derived_features_after_computed_stats(df_training)
 
-    df_training = add_top3_absence_effect_features_for_columns(
+    df_training = add_top3_availability_effect_features_for_columns(
         df_training,
         injured_dict,
         total_line_book=DEFAULT_TOTAL_LINE_BOOK,
@@ -387,21 +387,19 @@ def create_df_to_predict(
             "TOP2_PLAYER_ID_PTS_BEFORE_TEAM_HOME",
             "TOP3_PLAYER_ID_PTS_BEFORE_TEAM_HOME",
             "TOP1_PLAYER_ID_MIN_BEFORE_TEAM_HOME",
-            "TOP2_PLAYER_ID_MIN_BEFORE_TEAM_HOME",
         ),
         away_player_cols=(
             "TOP1_PLAYER_ID_PTS_BEFORE_TEAM_AWAY",
             "TOP2_PLAYER_ID_PTS_BEFORE_TEAM_AWAY",
             "TOP3_PLAYER_ID_PTS_BEFORE_TEAM_AWAY",
             "TOP1_PLAYER_ID_MIN_BEFORE_TEAM_AWAY",
-            "TOP2_PLAYER_ID_MIN_BEFORE_TEAM_AWAY",
         ),
-        out_prefix="TOP3_ABSENCE_EFFECT",
+        out_prefix="TOP3_AVAILABILITY_EFFECT",
         shrinkage_k=10.0,
         include_per_player_columns=False,
     )
 
-    df_training = add_top3_absence_effect_features_for_columns(
+    df_training = add_top3_availability_effect_features_for_columns(
         df_training,
         injured_dict,
         total_line_book=DEFAULT_TOTAL_LINE_BOOK,
@@ -410,16 +408,14 @@ def create_df_to_predict(
             "TOP2_INJURED_PLAYER_ID_PTS_BEFORE_TEAM_HOME",
             "TOP3_INJURED_PLAYER_ID_PTS_BEFORE_TEAM_HOME",
             "TOP1_INJURED_PLAYER_ID_MIN_BEFORE_TEAM_HOME",
-            "TOP2_INJURED_PLAYER_ID_MIN_BEFORE_TEAM_HOME",
         ),
         away_player_cols=(
             "TOP1_INJURED_PLAYER_ID_PTS_BEFORE_TEAM_AWAY",
             "TOP2_INJURED_PLAYER_ID_PTS_BEFORE_TEAM_AWAY",
             "TOP3_INJURED_PLAYER_ID_PTS_BEFORE_TEAM_AWAY",
             "TOP1_INJURED_PLAYER_ID_MIN_BEFORE_TEAM_AWAY",
-            "TOP2_INJURED_PLAYER_ID_MIN_BEFORE_TEAM_AWAY",
         ),
-        out_prefix="TOP3_INJURED_ABSENCE_EFFECT",
+        out_prefix="TOP3_INJURED_AVAILABILITY_EFFECT",
         shrinkage_k=10.0,
         include_per_player_columns=False,
     )

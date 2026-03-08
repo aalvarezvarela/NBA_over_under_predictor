@@ -5,8 +5,8 @@ import numpy as np
 import pandas as pd
 
 # Constants for top player statistics
-N_TOP_PLAYERS_NON_INJURED = 8
-N_TOP_PLAYERS_INJURED = 6
+N_TOP_PLAYERS_NON_INJURED = 3
+N_TOP_PLAYERS_INJURED = 3
 
 
 def get_injured_players_dict(df_injuries, df_players=None):
@@ -165,7 +165,9 @@ def create_player_lookup(df_players, injured_dict=None):
         date_np = np.datetime64(date_to_filter)
         team_key = str(team_id)
         game_injury_map = (
-            injured_team_by_game_player.get(str(game_id)) if game_id is not None else None
+            injured_team_by_game_player.get(str(game_id))
+            if game_id is not None
+            else None
         )
 
         # Find players whose last game before date_to_filter was with this team

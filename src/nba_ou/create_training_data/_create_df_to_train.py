@@ -23,7 +23,7 @@
 #     select_training_columns,
 # )
 # from nba_ou.data_preparation.past_injuries.injury_effects import (
-#     add_top3_absence_effect_features_for_columns,
+#     add_top3_availability_effect_features_for_columns,
 # )
 # from nba_ou.data_preparation.players.attach_player_features import (
 #     add_player_history_features,
@@ -198,7 +198,7 @@
 #     df_training = select_training_columns(df_merged, original_columns)
 #     df_training = add_derived_features_after_computed_stats(df_training)
 
-#     df_training = add_top3_absence_effect_features_for_columns(
+#     df_training = add_top3_availability_effect_features_for_columns(
 #         df_training,
 #         injured_dict,
 #         home_player_cols=(
@@ -215,10 +215,10 @@
 #             "TOP1_PLAYER_ID_MIN_BEFORE_TEAM_AWAY",
 #             "TOP2_PLAYER_ID_MIN_BEFORE_TEAM_AWAY",
 #         ),
-#         out_prefix="TOP3_ABSENCE_EFFECT",
+#         out_prefix="TOP3_AVAILABILITY_EFFECT",
 #     )
 
-#     df_training = add_top3_absence_effect_features_for_columns(
+#     df_training = add_top3_availability_effect_features_for_columns(
 #         df_training,
 #         injured_dict,
 #         home_player_cols=(
@@ -235,7 +235,7 @@
 #             "TOP1_INJURED_PLAYER_ID_MIN_BEFORE_TEAM_AWAY",
 #             "TOP2_INJURED_PLAYER_ID_MIN_BEFORE_TEAM_AWAY",
 #         ),
-#         out_prefix="TOP3_INJURED_ABSENCE_EFFECT",
+#         out_prefix="TOP3_INJURED_AVAILABILITY_EFFECT",
 #     )
 
 #     df_training = compute_travel_features(df_training, log_scale=True)
@@ -270,4 +270,3 @@
 #     print(
 #         f"Training data features saved to {output_name_before_referee}"
 #     )
-
