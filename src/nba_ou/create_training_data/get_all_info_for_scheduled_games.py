@@ -220,6 +220,7 @@ def get_all_info_for_scheduled_games(
 
     # First Get the games itself
     scheduled_games = get_schedule_games(date_to_predict)
+    
     if scheduled_games.empty:
         print(f"No scheduled games found for {date_to_predict}")
         return {
