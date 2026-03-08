@@ -34,6 +34,34 @@ def _canonicalize_referee_name(name: str) -> str:
     return name or pd.NA
 
 
+def _normalize_referee_slots(refs) -> pd.Series:
+    """
+    Convert a referee crew into deterministic REF_1/REF_2/REF_3 slots.
+
+    The feature computation is order-invariant, so both scheduled and
+    historical sources should be normalized to the same unique, sorted crew.
+    """
+    unique_refs = []
+    seen = set()
+
+    for ref_name in refs:
+        normalized_name = _canonicalize_referee_name(ref_name)
+        if pd.isna(normalized_name) or normalized_name in seen:
+            continue
+        seen.add(normalized_name)
+        unique_refs.append(normalized_name)
+
+    unique_refs.sort()
+
+    return pd.Series(
+        {
+            "REF_1": unique_refs[0] if len(unique_refs) > 0 else pd.NA,
+            "REF_2": unique_refs[1] if len(unique_refs) > 1 else pd.NA,
+            "REF_3": unique_refs[2] if len(unique_refs) > 2 else pd.NA,
+        }
+    )
+
+
 def compute_referee_features(df_refs_pivot):
     """
     Compute aggregate referee features for each game based on historical performance.
@@ -68,14 +96,9 @@ def compute_referee_features(df_refs_pivot):
     """
 
     def _extract_unique_refs(row):
-        refs = []
-        for ref_col in ["REF_1", "REF_2", "REF_3"]:
-            ref_name = row[ref_col]
-            if pd.isna(ref_name):
-                continue
-            if ref_name not in refs:
-                refs.append(ref_name)
-        return refs
+        return _normalize_referee_slots(
+            [row["REF_1"], row["REF_2"], row["REF_3"]]
+        ).dropna().tolist()
 
     # Ensure GAME_DATE is datetime
     df = df_refs_pivot.copy()
@@ -85,7 +108,9 @@ def compute_referee_features(df_refs_pivot):
     df = df.sort_values("GAME_DATE").reset_index(drop=True)
 
     # Cache order-invariant trio key per game for faster matching
-    df["REF_TRIO_KEY"] = df.apply(lambda row: frozenset(_extract_unique_refs(row)), axis=1)
+    df["REF_TRIO_KEY"] = df.apply(
+        lambda row: frozenset(_extract_unique_refs(row)), axis=1
+    )
 
     # Initialize aggregate referee and trio features
     for metric in REFEREE_METRICS:
@@ -132,7 +157,9 @@ def compute_referee_features(df_refs_pivot):
 
             if per_ref_diffs:
                 per_ref_diffs_series = pd.Series(per_ref_diffs, dtype="float64")
-                df.at[idx, f"REF_AVG_{metric}_DIFF_BEFORE"] = per_ref_diffs_series.mean()
+                df.at[idx, f"REF_AVG_{metric}_DIFF_BEFORE"] = (
+                    per_ref_diffs_series.mean()
+                )
                 df.at[idx, f"REF_STD_{metric}_DIFF_BEFORE"] = per_ref_diffs_series.std(
                     ddof=0
                 )
@@ -189,16 +216,7 @@ def process_referee_data_for_training(
         # Group by GAME_ID and create REF_1, REF_2, REF_3 columns
         df_refs_pivot = (
             df_refs.groupby("GAME_ID")
-            .apply(
-                lambda x: pd.Series(
-                    {
-                        "REF_1": x["FULL_NAME"].iloc[0] if len(x) > 0 else None,
-                        "REF_2": x["FULL_NAME"].iloc[1] if len(x) > 1 else None,
-                        "REF_3": x["FULL_NAME"].iloc[2] if len(x) > 2 else None,
-                    }
-                ),
-                include_groups=False,
-            )
+            .apply(lambda x: _normalize_referee_slots(x["FULL_NAME"]), include_groups=False)
             .reset_index()
         )
 
@@ -211,6 +229,30 @@ def process_referee_data_for_training(
             for ref_col in ["REF_1", "REF_2", "REF_3"]:
                 new_ref_data_subset[ref_col] = new_ref_data_subset[ref_col].map(
                     _canonicalize_referee_name
+                )
+            new_ref_data_subset[["REF_1", "REF_2", "REF_3"]] = new_ref_data_subset[
+                ["REF_1", "REF_2", "REF_3"]
+            ].apply(lambda row: _normalize_referee_slots(row), axis=1)
+
+            # Get all unique scheduled referees
+            scheduled_refs = set()
+            for ref_col in ["REF_1", "REF_2", "REF_3"]:
+                refs = new_ref_data_subset[ref_col].dropna().unique()
+                scheduled_refs.update(refs)
+
+            # Get all unique historical referees from database
+            historical_refs = set()
+            for ref_col in ["REF_1", "REF_2", "REF_3"]:
+                refs = df_refs_pivot[ref_col].dropna().unique()
+                historical_refs.update(refs)
+
+            # Check for referees without historical data
+            unmatched_refs = scheduled_refs - historical_refs
+            if unmatched_refs:
+                unmatched_list = sorted(list(unmatched_refs))
+                raise ValueError(
+                    f"Scheduled referee(s) not found in historical data: {unmatched_list}. "
+                    f"These referees have no prior games to compute features from."
                 )
 
             # Append new referee data to df_refs_pivot
