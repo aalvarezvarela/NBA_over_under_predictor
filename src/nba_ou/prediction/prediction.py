@@ -147,6 +147,81 @@ def compute_shap_values(model, X: pd.DataFrame) -> tuple[pd.DataFrame, float | N
     return shap_df, base_value
 
 
+def compute_shap_confidence_metrics(
+    shap_row: pd.Series,
+    pred_margin: float,
+    top_k: int = 10,
+) -> dict:
+    """
+    Compute SHAP-based confidence metrics for one prediction.
+
+    Measures how decisively the feature contributions support the predicted edge.
+    A prediction can have the same margin but very different internal coherence:
+    - High confidence: most SHAP mass points in one direction
+    - Low confidence: large positive and negative forces cancel out
+
+    Args:
+        shap_row: SHAP values for a single row, indexed by feature name
+        pred_margin: predicted margin vs line (pred_total - line)
+        top_k: number of top absolute SHAP features to inspect
+
+    Returns:
+        dict with confidence metrics:
+            - shap_directional_confidence: abs(net_margin) / total_abs (0-1)
+            - shap_support_ratio: support_sum / opposing_sum
+            - shap_top_k_agreement: fraction of top-k features agreeing with pick
+            - shap_confidence_score: composite score (0-1)
+    """
+    shap_values = shap_row.astype(float)
+
+    positive_sum = float(shap_values[shap_values > 0].sum())
+    negative_sum = float(np.abs(shap_values[shap_values < 0].sum()))
+    total_abs = float(np.abs(shap_values).sum())
+    net_margin_from_shap = positive_sum - negative_sum
+
+    if total_abs == 0:
+        directional_confidence = 0.0
+    else:
+        directional_confidence = abs(net_margin_from_shap) / total_abs
+
+    predicted_sign = np.sign(pred_margin)
+
+    if predicted_sign > 0:
+        support_sum = positive_sum
+        opposing_sum = negative_sum
+    elif predicted_sign < 0:
+        support_sum = negative_sum
+        opposing_sum = positive_sum
+    else:
+        support_sum = 0.0
+        opposing_sum = 0.0
+
+    support_ratio = float(support_sum / (opposing_sum + 1e-9))
+
+    top_features = shap_values.reindex(
+        shap_values.abs().sort_values(ascending=False).head(top_k).index
+    )
+    top_signs = np.sign(top_features.values)
+
+    if predicted_sign == 0 or len(top_signs) == 0:
+        top_k_agreement = 0.0
+    else:
+        top_k_agreement = float(np.mean(top_signs == predicted_sign))
+
+    edge_strength = min(abs(pred_margin) / 3.0, 1.0)
+
+    confidence_score = (
+        0.5 * edge_strength + 0.3 * directional_confidence + 0.2 * top_k_agreement
+    )
+
+    return {
+        "SHAP_DIRECTIONAL_CONFIDENCE": round(directional_confidence, 4),
+        "SHAP_SUPPORT_RATIO": round(support_ratio, 4),
+        "SHAP_TOP_K_AGREEMENT": round(top_k_agreement, 4),
+        "SHAP_CONFIDENCE_SCORE": round(confidence_score, 4),
+    }
+
+
 def top_shap_reasons(
     shap_row: pd.Series,
     *,
@@ -266,7 +341,9 @@ def load_and_predict_model_for_nba_games(
     )
     pick_line: pd.Series | None = None
 
-    main_book_line_col = _resolve_column_name(df_predictable, total_points_pick_line_col)
+    main_book_line_col = _resolve_column_name(
+        df_predictable, total_points_pick_line_col
+    )
     if main_book_line_col is None:
         raise ValueError(
             f"Main sportsbook line column '{total_points_pick_line_col}' is mandatory for prediction."
@@ -284,7 +361,9 @@ def load_and_predict_model_for_nba_games(
     elif prediction_target == PREDICTION_TARGET_TOTAL_POINTS:
         df_predictable["PRED_TOTAL_POINTS"] = prediction_values
         pick_line = df_predictable["TOTAL_OVER_UNDER_LINE"]
-        df_predictable["PRED_LINE_ERROR"] = df_predictable["PRED_TOTAL_POINTS"] - pick_line
+        df_predictable["PRED_LINE_ERROR"] = (
+            df_predictable["PRED_TOTAL_POINTS"] - pick_line
+        )
 
     else:
         raise ValueError(
@@ -356,6 +435,7 @@ def load_and_predict_model_for_nba_games(
         "NA_COLUMNS_NAMES",
     ]
 
+    # SHAP confidence columns are added after summary creation
     df_summary = df_predictable[summary_columns].copy()
 
     # Add prediction timestamp and time to match
@@ -425,6 +505,23 @@ def load_and_predict_model_for_nba_games(
         direction="negative",
         top_n=shap_top_n,
     )
+
+    # Compute SHAP confidence metrics per row
+    pred_margins = df_summary["PRED_LINE_ERROR"]
+    confidence_metrics = shap_df.apply(
+        lambda row: pd.Series(
+            compute_shap_confidence_metrics(
+                shap_row=row,
+                pred_margin=float(pred_margins.loc[row.name])
+                if pd.notna(pred_margins.loc[row.name])
+                else 0.0,
+                top_k=10,
+            )
+        ),
+        axis=1,
+    )
+    for col in confidence_metrics.columns:
+        df_summary[col] = confidence_metrics[col].values
 
     # Drop rows with NaN in the model's predicted target before saving to database
     if prediction_target == PREDICTION_TARGET_TOTAL_POINTS:

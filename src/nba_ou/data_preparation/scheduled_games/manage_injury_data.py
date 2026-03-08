@@ -85,6 +85,24 @@ def process_injury_data(games_original: pd.DataFrame, injur_df: pd.DataFrame):
         lambda row: get_player_id(row["Player Name"], row["Team"]), axis=1
     )
 
+    # Validate that all player names were successfully matched to IDs
+    unmatched_players = injur_df[
+        injur_df["Player ID"].isna() & injur_df["Player Name"].notna()
+    ]
+    if not unmatched_players.empty:
+        unmatched_details = unmatched_players[
+            ["Player Name", "Team", "Game Date"]
+        ].drop_duplicates()
+        error_msg = "Failed to match the following player(s) to NBA player IDs:\n"
+        for _, row in unmatched_details.iterrows():
+            error_msg += f"  - {row['Player Name']} (Team: {row['Team']}, Date: {row['Game Date'].strftime('%Y-%m-%d')})\n"
+        error_msg += "\nPossible reasons:\n"
+        error_msg += "  1. Player name spelling mismatch with NBA API database\n"
+        error_msg += "  2. Player not found in nba_api.stats.static.players\n"
+        error_msg += "  3. Team name doesn't match when multiple players have same name"
+        print(error_msg)
+        # raise ValueError(error_msg)
+
     injur_df["Team_ID"] = injur_df["Team"].map(TEAM_CONVERSION_DICT)
     # Extract out players
     out_players_dict = get_out_players_by_game_and_team(injur_df)

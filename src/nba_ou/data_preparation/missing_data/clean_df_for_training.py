@@ -435,9 +435,9 @@ def clean_dataframe_for_training(
     # Apply missing data policy
     if verbose >= 1:
         print("\nApplying missing data policy...")
-    
+
     main_total_line = resolve_main_total_line_col(df_cleaned)
-    
+
     df_cleaned = apply_missing_policy(
         df_cleaned,
         current_total_line_col=main_total_line,
@@ -468,32 +468,73 @@ def clean_dataframe_for_training(
         if strict_mode_exclude_cols is None:
             strict_mode_exclude_cols = ["MATCHUP_TEAM_HOME", "TOTAL_POINTS"]
 
-        nan_counts = df_cleaned.isna().sum()
-        columns_with_nan = nan_counts[nan_counts > 0]
-
-        # Filter out excluded columns
-        columns_with_nan = columns_with_nan[
-            ~columns_with_nan.index.isin(strict_mode_exclude_cols)
+        # Get all columns except excluded ones
+        cols_to_check = [
+            col for col in df_cleaned.columns if col not in strict_mode_exclude_cols
         ]
 
-        num_cols_with_nan = len(columns_with_nan)
+        # Count NaNs per row (only in non-excluded columns)
+        nan_counts_per_row = df_cleaned[cols_to_check].isna().sum(axis=1)
 
-        if num_cols_with_nan > strict_mode:
-            error_msg = f"Strict mode: Found {num_cols_with_nan} columns with NaN values, but only {strict_mode} allowed:\n"
-            for col, count in columns_with_nan.items():
-                pct = (count / len(df_cleaned)) * 100
-                error_msg += f"  - {col}: {count} NaN values ({pct:.2f}%)\n"
-            raise ValueError(error_msg)
+        # Identify rows that exceed the strict_mode threshold
+        rows_exceeding_threshold = nan_counts_per_row > strict_mode
+        num_rows_exceeding = rows_exceeding_threshold.sum()
 
-        if verbose >= 1:
-            excluded_info = (
-                f" (excluding {strict_mode_exclude_cols})"
-                if strict_mode_exclude_cols
-                else ""
-            )
-            print(
-                f"\nStrict mode check passed: {num_cols_with_nan}/{strict_mode} columns with NaN values{excluded_info}"
-            )
+        if num_rows_exceeding > 0:
+            total_rows = len(df_cleaned)
+
+            # Check if ALL rows exceed the threshold (cannot be fixed)
+            if num_rows_exceeding == total_rows:
+                # Find which columns contribute to the issue
+                nan_counts = df_cleaned[cols_to_check].isna().sum()
+                columns_with_nan = nan_counts[nan_counts > 0].sort_values(
+                    ascending=False
+                )
+
+                error_msg = f"Strict mode: ALL {total_rows} rows have NaNs in more than {strict_mode} columns (cannot be fixed by dropping rows).\n"
+                error_msg += "Columns with NaN values:\n"
+                for col, count in columns_with_nan.head(10).items():
+                    pct = (count / total_rows) * 100
+                    error_msg += f"  - {col}: {count} NaN values ({pct:.2f}%)\n"
+                if len(columns_with_nan) > 10:
+                    error_msg += (
+                        f"  ... and {len(columns_with_nan) - 10} more columns\n"
+                    )
+                raise ValueError(error_msg)
+
+            # Drop rows exceeding the threshold
+            initial_rows = len(df_cleaned)
+
+            if verbose >= 1:
+                print(
+                    f"\nStrict mode: Found {num_rows_exceeding} rows with NaNs in more than {strict_mode} columns"
+                )
+                if verbose >= 2:
+                    # Show distribution of NaN counts per row
+                    print(f"   Distribution of NaN counts per row:")
+                    for nan_count in sorted(nan_counts_per_row.unique()):
+                        if nan_count > strict_mode:
+                            count = (nan_counts_per_row == nan_count).sum()
+                            print(
+                                f"      {count} rows with {int(nan_count)} NaN columns"
+                            )
+                print(f"Dropping rows with more than {strict_mode} NaN columns...")
+
+            df_cleaned = df_cleaned[~rows_exceeding_threshold]
+            rows_dropped = initial_rows - len(df_cleaned)
+
+            if verbose >= 1:
+                print(f"Dropped {rows_dropped} rows to meet strict mode requirements")
+        else:
+            if verbose >= 1:
+                excluded_info = (
+                    f" (excluding {strict_mode_exclude_cols})"
+                    if strict_mode_exclude_cols
+                    else ""
+                )
+                print(
+                    f"\nStrict mode check passed: All rows have ≤{strict_mode} NaN columns{excluded_info}"
+                )
 
     if verbose >= 1:
         print("=" * 80)

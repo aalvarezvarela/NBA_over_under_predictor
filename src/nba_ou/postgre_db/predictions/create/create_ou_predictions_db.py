@@ -11,6 +11,7 @@ from psycopg import sql
 if TYPE_CHECKING:
     import pandas as pd
 
+
 def get_predictions_schema_and_table() -> tuple[str, str]:
     """Return the canonical predictions schema/table names."""
     schema = get_schema_name_predictions().strip()
@@ -48,317 +49,204 @@ def create_prediction_schema_if_not_exists(
     conn.commit()
 
 
-def create_predictions_table(drop: bool = False):
-    """
-    Create predictions table inside the configured predictions schema.
+def get_existing_columns(conn: psycopg.Connection, schema: str, table: str) -> set[str]:
+    """Get set of existing column names for a table."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_schema = %s AND table_name = %s
+            """,
+            (schema, table),
+        )
+        return {row[0] for row in cur.fetchall()}
 
-    Args:
-        drop (bool): If True, drops the existing table before creating it. Default: False
-    """
 
+def table_exists(conn: psycopg.Connection, schema: str, table: str) -> bool:
+    """Check if a table exists in the target schema."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = %s AND table_name = %s
+            LIMIT 1
+            """,
+            (schema, table),
+        )
+        return cur.fetchone() is not None
+
+
+def _create_predictions_table_base(
+    conn: psycopg.Connection, schema: str, table: str, *, drop: bool = False
+) -> None:
+    """Create the predictions table and indexes without running migrations."""
+    create_prediction_schema_if_not_exists(conn, schema)
+
+    with conn.cursor() as cur:
+        if drop:
+            cur.execute(
+                sql.SQL("DROP TABLE IF EXISTS {}.{} CASCADE").format(
+                    sql.Identifier(schema), sql.Identifier(table)
+                )
+            )
+            print(f"Dropped existing table '{schema}.{table}'")
+
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE TABLE IF NOT EXISTS {}.{} (
+                    id SERIAL PRIMARY KEY,
+                    game_id TEXT NOT NULL,
+                    season_type TEXT,
+                    game_date DATE,
+                    game_time TEXT,
+                    team_name_team_home TEXT,
+                    team_name_team_away TEXT,
+                    prediction_value_type TEXT NOT NULL,
+                    total_over_under_line NUMERIC,
+                    total_bet365_line_at_prediction NUMERIC,
+                    pred_line_error NUMERIC,
+                    pred_total_points NUMERIC,
+                    pred_pick TEXT,
+                    model_name TEXT NOT NULL,
+                    model_type TEXT,
+                    model_version TEXT,
+                    prediction_date TEXT,
+                    prediction_datetime TIMESTAMP NOT NULL,
+                    time_to_match_minutes INTEGER,
+                    na_columns_count INTEGER,
+                    na_columns_names TEXT,
+                    shap_base_value NUMERIC,
+                    shap_top_positive_features TEXT,
+                    shap_top_negative_features TEXT,
+                    shap_directional_confidence NUMERIC,
+                    shap_support_ratio NUMERIC,
+                    shap_top_k_agreement NUMERIC,
+                    shap_confidence_score NUMERIC,
+                    prediction_source TEXT NOT NULL DEFAULT 'unknown',
+                    source_run_id TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    total_scored_points NUMERIC,
+                    home_pts NUMERIC,
+                    away_pts NUMERIC,
+                    CONSTRAINT chk_prediction_value_type
+                        CHECK (
+                            prediction_value_type IN ('TOTAL_POINTS', 'DIFF_FROM_LINE')
+                        ),
+                    CONSTRAINT chk_prediction_target_present
+                        CHECK (
+                            pred_line_error IS NOT NULL
+                            OR pred_total_points IS NOT NULL
+                        ),
+                    CONSTRAINT chk_pred_pick
+                        CHECK (
+                            pred_pick IS NULL
+                            OR pred_pick IN ('OVER', 'UNDER', 'PUSH')
+                        ),
+                    CONSTRAINT unique_game_prediction
+                        UNIQUE (
+                            game_id,
+                            model_name,
+                            prediction_datetime,
+                            prediction_value_type
+                        )
+                )
+                """
+            ).format(sql.Identifier(schema), sql.Identifier(table))
+        )
+
+        index_specs = [
+            (f"idx_{table}_game_id", "game_id"),
+            (f"idx_{table}_game_date", "game_date"),
+            (f"idx_{table}_prediction_datetime", "prediction_datetime"),
+            (f"idx_{table}_model_name", "model_name"),
+        ]
+        for index_name, column_name in index_specs:
+            cur.execute(
+                sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {}.{} ({})").format(
+                    sql.Identifier(index_name),
+                    sql.Identifier(schema),
+                    sql.Identifier(table),
+                    sql.Identifier(column_name),
+                )
+            )
+
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE INDEX IF NOT EXISTS {} ON {}.{} (game_id)
+                WHERE total_scored_points IS NULL OR home_pts IS NULL OR away_pts IS NULL
+                """
+            ).format(
+                sql.Identifier(f"idx_{table}_pending_results"),
+                sql.Identifier(schema),
+                sql.Identifier(table),
+            )
+        )
+
+    conn.commit()
+
+
+def ensure_predictions_table_exists() -> None:
+    """Create the predictions table only when it does not already exist."""
     schema, table = get_predictions_schema_and_table()
     conn = connect_nba_db()
 
     try:
-        create_prediction_schema_if_not_exists(conn, schema)
+        if table_exists(conn, schema, table):
+            return
 
-        with conn.cursor() as cur:
-            # Drop table if requested
-            if drop:
-                cur.execute(
-                    sql.SQL("DROP TABLE IF EXISTS {}.{} CASCADE").format(
-                        sql.Identifier(schema), sql.Identifier(table)
-                    )
-                )
-                print(f"Dropped existing table '{schema}.{table}'")
+        _create_predictions_table_base(conn, schema, table, drop=False)
+        print(f"Table '{schema}.{table}' created.")
+    finally:
+        conn.close()
 
-            cur.execute(
-                sql.SQL(
-                    """
-                    CREATE TABLE IF NOT EXISTS {}.{} (
-                        id SERIAL PRIMARY KEY,
-                        game_id TEXT NOT NULL,
-                        season_type TEXT,
-                        game_date DATE,
-                        game_time TEXT,
-                        team_name_team_home TEXT,
-                        team_name_team_away TEXT,
-                        prediction_value_type TEXT NOT NULL,
-                        total_over_under_line NUMERIC,
-                        total_bet365_line_at_prediction NUMERIC,
-                        pred_line_error NUMERIC,
-                        pred_total_points NUMERIC,
-                        pred_pick TEXT,
-                        model_name TEXT NOT NULL,
-                        model_type TEXT,
-                        model_version TEXT,
-                        prediction_date TEXT,
-                        prediction_datetime TIMESTAMP NOT NULL,
-                        time_to_match_minutes INTEGER,
-                        na_columns_count INTEGER,
-                        na_columns_names TEXT,
-                        shap_base_value NUMERIC,
-                        shap_top_positive_features TEXT,
-                        shap_top_negative_features TEXT,
-                        prediction_source TEXT NOT NULL DEFAULT 'unknown',
-                        source_run_id TEXT,
-                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                        total_scored_points NUMERIC,
-                        home_pts NUMERIC,
-                        away_pts NUMERIC,
-                        CONSTRAINT chk_prediction_value_type
-                            CHECK (
-                                prediction_value_type IN ('TOTAL_POINTS', 'DIFF_FROM_LINE')
-                            ),
-                        CONSTRAINT chk_prediction_target_present
-                            CHECK (
-                                pred_line_error IS NOT NULL
-                                OR pred_total_points IS NOT NULL
-                            ),
-                        CONSTRAINT chk_pred_pick
-                            CHECK (
-                                pred_pick IS NULL
-                                OR pred_pick IN ('OVER', 'UNDER', 'PUSH')
-                            )
-                    )
-                    """
-                ).format(sql.Identifier(schema), sql.Identifier(table))
-            )
 
-            # Forward-compatible migration for existing tables
-            cur.execute(
-                sql.SQL(
-                    "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS prediction_value_type TEXT"
-                ).format(sql.Identifier(schema), sql.Identifier(table))
-            )
-            cur.execute(
-                sql.SQL(
-                    "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS total_over_under_line NUMERIC"
-                ).format(sql.Identifier(schema), sql.Identifier(table))
-            )
-            cur.execute(
-                sql.SQL(
-                    "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS total_bet365_line_at_prediction NUMERIC"
-                ).format(sql.Identifier(schema), sql.Identifier(table))
-            )
-            cur.execute(
-                sql.SQL(
-                    "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS pred_line_error NUMERIC"
-                ).format(sql.Identifier(schema), sql.Identifier(table))
-            )
-            cur.execute(
-                sql.SQL(
-                    "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS pred_total_points NUMERIC"
-                ).format(sql.Identifier(schema), sql.Identifier(table))
-            )
-            cur.execute(
-                sql.SQL(
-                    "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS pred_pick TEXT"
-                ).format(sql.Identifier(schema), sql.Identifier(table))
-            )
+def has_prediction_upsert_constraint(
+    conn: psycopg.Connection, schema: str, table: str
+) -> bool:
+    """Check whether the upload conflict target is backed by a unique constraint/index."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1
+            FROM pg_indexes
+            WHERE schemaname = %s
+              AND tablename = %s
+              AND indexdef ILIKE %s
+            LIMIT 1
+            """,
+            (
+                schema,
+                table,
+                "%(game_id, model_name, prediction_datetime, prediction_value_type)%",
+            ),
+        )
+        return cur.fetchone() is not None
 
-            cur.execute(
-                sql.SQL(
-                    "ALTER TABLE {}.{} ALTER COLUMN pred_line_error DROP NOT NULL"
-                ).format(sql.Identifier(schema), sql.Identifier(table))
-            )
-            cur.execute(
-                sql.SQL(
-                    "ALTER TABLE {}.{} ALTER COLUMN pred_total_points DROP NOT NULL"
-                ).format(sql.Identifier(schema), sql.Identifier(table))
-            )
 
-            cur.execute(
-                sql.SQL(
-                    "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS na_columns_count INTEGER"
-                ).format(sql.Identifier(schema), sql.Identifier(table))
-            )
-            cur.execute(
-                sql.SQL(
-                    "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS na_columns_names TEXT"
-                ).format(sql.Identifier(schema), sql.Identifier(table))
-            )
-            cur.execute(
-                sql.SQL(
-                    "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS shap_base_value NUMERIC"
-                ).format(sql.Identifier(schema), sql.Identifier(table))
-            )
-            cur.execute(
-                sql.SQL(
-                    """
-                    ALTER TABLE {}.{}
-                    ADD COLUMN IF NOT EXISTS shap_top_positive_features TEXT
-                    """
-                ).format(sql.Identifier(schema), sql.Identifier(table))
-            )
-            cur.execute(
-                sql.SQL(
-                    """
-                    ALTER TABLE {}.{}
-                    ADD COLUMN IF NOT EXISTS shap_top_negative_features TEXT
-                    """
-                ).format(sql.Identifier(schema), sql.Identifier(table))
-            )
-            cur.execute(
-                sql.SQL(
-                    "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS prediction_source TEXT"
-                ).format(sql.Identifier(schema), sql.Identifier(table))
-            )
-            cur.execute(
-                sql.SQL(
-                    "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS source_run_id TEXT"
-                ).format(sql.Identifier(schema), sql.Identifier(table))
-            )
-            cur.execute(
-                sql.SQL(
-                    "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()"
-                ).format(sql.Identifier(schema), sql.Identifier(table))
-            )
-            cur.execute(
-                sql.SQL(
-                    "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()"
-                ).format(sql.Identifier(schema), sql.Identifier(table))
-            )
-            cur.execute(
-                sql.SQL(
-                    """
-                    UPDATE {}.{}
-                    SET prediction_source = 'unknown'
-                    WHERE prediction_source IS NULL
-                    """
-                ).format(sql.Identifier(schema), sql.Identifier(table))
-            )
-            cur.execute(
-                sql.SQL(
-                    "ALTER TABLE {}.{} ALTER COLUMN prediction_source SET DEFAULT 'unknown'"
-                ).format(sql.Identifier(schema), sql.Identifier(table))
-            )
-            cur.execute(
-                sql.SQL(
-                    "ALTER TABLE {}.{} ALTER COLUMN prediction_source SET NOT NULL"
-                ).format(sql.Identifier(schema), sql.Identifier(table))
-            )
+def create_predictions_table(drop: bool = False):
+    """
+    Create predictions table inside the configured predictions schema.
 
-            cur.execute(
-                sql.SQL(
-                    """
-                    UPDATE {}.{}
-                    SET prediction_value_type = 'DIFF_FROM_LINE'
-                    WHERE prediction_value_type IS NULL
-                    """
-                ).format(sql.Identifier(schema), sql.Identifier(table))
-            )
-            cur.execute(
-                sql.SQL(
-                    "ALTER TABLE {}.{} ALTER COLUMN prediction_value_type SET NOT NULL"
-                ).format(sql.Identifier(schema), sql.Identifier(table))
-            )
+    Note: This function only creates new tables or drops/recreates existing ones.
+    For migrating existing tables with data preservation, use migrate_predictions_table().
 
-            cur.execute(
-                sql.SQL(
-                    "ALTER TABLE {}.{} DROP CONSTRAINT IF EXISTS chk_prediction_value_type"
-                ).format(sql.Identifier(schema), sql.Identifier(table))
-            )
-            cur.execute(
-                sql.SQL(
-                    """
-                    ALTER TABLE {}.{}
-                    ADD CONSTRAINT chk_prediction_value_type
-                    CHECK (
-                        prediction_value_type IN ('TOTAL_POINTS', 'DIFF_FROM_LINE')
-                    )
-                    """
-                ).format(sql.Identifier(schema), sql.Identifier(table))
-            )
+    Args:
+        drop (bool): If True, drops the existing table before creating it. Default: False
+    """
+    schema, table = get_predictions_schema_and_table()
+    conn = connect_nba_db()
 
-            # Ensure table allows either prediction target:
-            # line error OR total points (at least one must be present).
-            cur.execute(
-                sql.SQL(
-                    "ALTER TABLE {}.{} DROP CONSTRAINT IF EXISTS chk_prediction_target_present"
-                ).format(sql.Identifier(schema), sql.Identifier(table))
-            )
-            cur.execute(
-                sql.SQL(
-                    """
-                    ALTER TABLE {}.{}
-                    ADD CONSTRAINT chk_prediction_target_present
-                    CHECK (
-                        pred_line_error IS NOT NULL
-                        OR pred_total_points IS NOT NULL
-                    )
-                    """
-                ).format(sql.Identifier(schema), sql.Identifier(table))
-            )
-
-            cur.execute(
-                sql.SQL("ALTER TABLE {}.{} DROP CONSTRAINT IF EXISTS chk_pred_pick").format(
-                    sql.Identifier(schema), sql.Identifier(table)
-                )
-            )
-            cur.execute(
-                sql.SQL(
-                    """
-                    ALTER TABLE {}.{}
-                    ADD CONSTRAINT chk_pred_pick
-                    CHECK (
-                        pred_pick IS NULL
-                        OR pred_pick IN ('OVER', 'UNDER', 'PUSH')
-                    )
-                    """
-                ).format(sql.Identifier(schema), sql.Identifier(table))
-            )
-
-            # Unique constraint on (game_id, model_name, prediction_datetime, prediction_value_type)
-            # Always drop and recreate constraint to ensure it has correct columns
-            cur.execute(
-                sql.SQL(
-                    "ALTER TABLE {}.{} DROP CONSTRAINT IF EXISTS unique_game_prediction"
-                ).format(sql.Identifier(schema), sql.Identifier(table))
-            )
-
-            cur.execute(
-                sql.SQL(
-                    """
-                    ALTER TABLE {}.{}
-                    ADD CONSTRAINT unique_game_prediction 
-                    UNIQUE (game_id, model_name, prediction_datetime, prediction_value_type)
-                    """
-                ).format(sql.Identifier(schema), sql.Identifier(table))
-            )
-
-            index_specs = [
-                (f"idx_{table}_game_id", "game_id"),
-                (f"idx_{table}_game_date", "game_date"),
-                (f"idx_{table}_prediction_datetime", "prediction_datetime"),
-                (f"idx_{table}_model_name", "model_name"),
-            ]
-            for index_name, column_name in index_specs:
-                cur.execute(
-                    sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {}.{} ({})").format(
-                        sql.Identifier(index_name),
-                        sql.Identifier(schema),
-                        sql.Identifier(table),
-                        sql.Identifier(column_name),
-                    )
-                )
-
-            cur.execute(
-                sql.SQL(
-                    """
-                    CREATE INDEX IF NOT EXISTS {} ON {}.{} (game_id)
-                    WHERE total_scored_points IS NULL OR home_pts IS NULL OR away_pts IS NULL
-                    """
-                ).format(
-                    sql.Identifier(f"idx_{table}_pending_results"),
-                    sql.Identifier(schema),
-                    sql.Identifier(table),
-                )
-            )
-
-        conn.commit()
+    try:
+        _create_predictions_table_base(conn, schema, table, drop=drop)
         print(f"Table '{schema}.{table}' is ready.")
+    except Exception as e:
+        print(f"Error in create_predictions_table: {e}")
+        raise
     finally:
         conn.close()
 
@@ -366,11 +254,11 @@ def create_predictions_table(drop: bool = False):
 def upload_predictions_to_postgre(df: "pd.DataFrame"):
     """
     Insert the summary DataFrame into the configured predictions schema/table.
-    Upserts on (game_id, model_name, prediction_datetime).
+    Upserts on (game_id, model_name, prediction_datetime, prediction_value_type).
     """
     import pandas as pd
 
-    create_predictions_table()
+    ensure_predictions_table_exists()
 
     schema, table = get_predictions_schema_and_table()
 
@@ -403,6 +291,10 @@ def upload_predictions_to_postgre(df: "pd.DataFrame"):
                 "SHAP_BASE_VALUE": "shap_base_value",
                 "SHAP_TOP_POSITIVE_FEATURES": "shap_top_positive_features",
                 "SHAP_TOP_NEGATIVE_FEATURES": "shap_top_negative_features",
+                "SHAP_DIRECTIONAL_CONFIDENCE": "shap_directional_confidence",
+                "SHAP_SUPPORT_RATIO": "shap_support_ratio",
+                "SHAP_TOP_K_AGREEMENT": "shap_top_k_agreement",
+                "SHAP_CONFIDENCE_SCORE": "shap_confidence_score",
                 "PREDICTION_SOURCE": "prediction_source",
                 "SOURCE_RUN_ID": "source_run_id",
                 "HOME_PTS": "home_pts",
@@ -430,6 +322,10 @@ def upload_predictions_to_postgre(df: "pd.DataFrame"):
             "shap_base_value",
             "shap_top_positive_features",
             "shap_top_negative_features",
+            "shap_directional_confidence",
+            "shap_support_ratio",
+            "shap_top_k_agreement",
+            "shap_confidence_score",
             "prediction_source",
             "source_run_id",
             "total_scored_points",
@@ -484,6 +380,10 @@ def upload_predictions_to_postgre(df: "pd.DataFrame"):
             "shap_base_value",
             "shap_top_positive_features",
             "shap_top_negative_features",
+            "shap_directional_confidence",
+            "shap_support_ratio",
+            "shap_top_k_agreement",
+            "shap_confidence_score",
             "prediction_source",
             "source_run_id",
             "total_scored_points",
@@ -494,6 +394,26 @@ def upload_predictions_to_postgre(df: "pd.DataFrame"):
         missing_columns = [col for col in columns if col not in df.columns]
         if missing_columns:
             raise ValueError(f"Missing required columns for upload: {missing_columns}")
+
+        existing_table_columns = get_existing_columns(conn, schema, table)
+        missing_table_columns = [
+            col for col in columns if col not in existing_table_columns
+        ]
+        if missing_table_columns:
+            raise ValueError(
+                "Predictions table exists but is missing required columns for upload: "
+                f"{missing_table_columns}. Run create_predictions_table() once to "
+                "migrate the table before uploading."
+            )
+
+        if not has_prediction_upsert_constraint(conn, schema, table):
+            raise ValueError(
+                "Predictions table exists but is missing the unique constraint/index "
+                "required for upserts on "
+                "(game_id, model_name, prediction_datetime, prediction_value_type). "
+                "Run create_predictions_table() once to migrate the table before "
+                "uploading."
+            )
 
         # Convert pandas NA to None
         df = df.where(pd.notna(df), None)
@@ -543,6 +463,92 @@ def recreate_predictions_table() -> None:
     create_predictions_table(drop=True)
 
 
+def migrate_predictions_table() -> None:
+    """
+    Safely migrate the predictions table to the latest schema by:
+    1. Reading all existing rows into memory
+    2. Dropping and recreating the table with the full schema
+    3. Re-inserting the old rows (missing columns filled with NULL)
+
+    This avoids ALTER TABLE lock contention on hosted databases like Supabase.
+    """
+    import pandas as pd
+
+    schema, table = get_predictions_schema_and_table()
+    conn = connect_nba_db()
+
+    try:
+        if not table_exists(conn, schema, table):
+            conn.close()
+            print(f"Table '{schema}.{table}' does not exist. Creating from scratch.")
+            _create_predictions_table_base(conn, schema, table, drop=False)
+            print(f"Table '{schema}.{table}' created.")
+            return
+
+        # 1. Read all existing data
+        print(f"Reading existing data from '{schema}.{table}'...")
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL("SELECT * FROM {}.{}").format(
+                    sql.Identifier(schema), sql.Identifier(table)
+                )
+            )
+            rows = cur.fetchall()
+            col_names = [desc[0] for desc in cur.description]
+
+        df_backup = pd.DataFrame(rows, columns=col_names)
+        print(f"  Backed up {len(df_backup)} rows.")
+
+        # 2. Drop and recreate with full schema
+        print("  Recreating table with latest schema...")
+        _create_predictions_table_base(conn, schema, table, drop=True)
+        print(f"  Table '{schema}.{table}' recreated.")
+
+        if df_backup.empty:
+            print("  No rows to restore.")
+            return
+
+        # 3. Re-insert old rows (skip 'id' — it's SERIAL)
+        insert_cols = [c for c in col_names if c != "id"]
+
+        # Get the new table's columns to know which ones exist
+        new_cols = get_existing_columns(conn, schema, table)
+        # Only insert columns that exist in the new table
+        insert_cols = [c for c in insert_cols if c in new_cols]
+
+        insert_values = []
+        for _, row in df_backup.iterrows():
+            vals = []
+            for c in insert_cols:
+                v = row[c] if c in row.index else None
+                if pd.isna(v):
+                    v = None
+                vals.append(v)
+            insert_values.append(tuple(vals))
+
+        insert_query = sql.SQL("INSERT INTO {}.{} ({}) VALUES ({})").format(
+            sql.Identifier(schema),
+            sql.Identifier(table),
+            sql.SQL(", ").join(map(sql.Identifier, insert_cols)),
+            sql.SQL(", ").join(sql.Placeholder() for _ in insert_cols),
+        )
+
+        with conn.cursor() as cur:
+            cur.executemany(insert_query, insert_values)
+        conn.commit()
+        print(f"  Restored {len(insert_values)} rows with new schema.")
+
+    except Exception as e:
+        print(f"Error during migration: {e}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Create or recreate predictions table in configured schema"
@@ -550,14 +556,21 @@ if __name__ == "__main__":
     parser.add_argument(
         "--recreate",
         action="store_true",
-        help="Drop and recreate table from scratch",
+        help="Drop and recreate table from scratch (loses data)",
+    )
+    parser.add_argument(
+        "--migrate",
+        action="store_true",
+        help="Migrate existing table: backup rows, recreate schema, restore data",
     )
     args = parser.parse_args()
 
-    if args.recreate:
+    if args.migrate:
+        migrate_predictions_table()
+    elif args.recreate:
         recreate_predictions_table()
     else:
         create_predictions_table(False)
-    
+
     schema, table = get_predictions_schema_and_table()
     print(f"{schema}.{table} table is ready.")
