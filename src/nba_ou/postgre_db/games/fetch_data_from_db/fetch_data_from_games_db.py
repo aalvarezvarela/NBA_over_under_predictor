@@ -157,7 +157,7 @@ def get_historical_game_ids_for_home_away_matchups(
                 AND g_away.home = FALSE
                 AND COALESCE(g_home.season_type, '') NOT IN ('All Star', 'Preseason')
                 AND COALESCE(g_away.season_type, '') NOT IN ('All Star', 'Preseason')
-                AND g_home.season_year >= 2020
+                AND g_home.season_year >= 2019
                 {}
                 {}
             GROUP BY g_home.game_id

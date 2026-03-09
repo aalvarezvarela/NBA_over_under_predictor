@@ -70,6 +70,61 @@ def clear_player_statistics(df_players, df_team):
     return df_players
 
 
+def _build_bench_stats_lookup(df_players):
+    """
+    Precompute per-player bench stats from valid games (MIN > 2).
+
+    Returns a closure that, for a given player at a given date, provides
+    their average minutes, PTS per minute, and PACE_PER40 from their
+    last 5 valid games before that date.
+
+    Args:
+        df_players (pd.DataFrame): Full player boxscore history with
+            PLAYER_ID, GAME_DATE, MIN, PTS, and optionally PACE_PER40.
+
+    Returns:
+        function: bench_lookup(player_id, game_date) ->
+            (avg_min, avg_pts_per_min, avg_pace_per40) or None
+    """
+    df = df_players.copy()
+    df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], errors="coerce")
+    df["MIN"] = pd.to_numeric(df["MIN"], errors="coerce").fillna(0)
+    df["PTS"] = pd.to_numeric(df["PTS"], errors="coerce").fillna(0)
+
+    has_pace = "PACE_PER40" in df.columns
+    if has_pace:
+        df["PACE_PER40"] = pd.to_numeric(df["PACE_PER40"], errors="coerce").fillna(0)
+    else:
+        df["PACE_PER40"] = 0.0
+
+    # Filter to valid games (MIN > 2) and compute PTS per minute
+    valid = df[df["MIN"] > 2].copy()
+    valid["PTS_PER_MIN"] = valid["PTS"] / valid["MIN"]
+    valid = valid.sort_values(["PLAYER_ID", "GAME_DATE"])
+
+    # Build per-player sorted history: (game_date, min, pts_per_min, pace_per40)
+    player_history = {}
+    cols = ["GAME_DATE", "MIN", "PTS_PER_MIN", "PACE_PER40"]
+    for pid, grp in valid.groupby("PLAYER_ID"):
+        player_history[pid] = list(grp[cols].itertuples(index=False, name=None))
+
+    def bench_lookup(player_id, game_date):
+        """Returns (avg_min, avg_pts_per_min, avg_pace_per40) or None."""
+        hist = player_history.get(player_id)
+        if not hist:
+            return None
+        prior = [h for h in hist if h[0] < game_date]
+        if not prior:
+            return None
+        last5 = prior[-5:]
+        avg_min = sum(h[1] for h in last5) / len(last5)
+        avg_pts_pm = sum(h[2] for h in last5) / len(last5)
+        avg_pace = sum(h[3] for h in last5) / len(last5)
+        return (avg_min, avg_pts_pm, avg_pace)
+
+    return bench_lookup
+
+
 def add_player_history_features(
     df_team, df_players, df_injuries, stat_cols=["PTS"], injury_dict_scheduled=None
 ):
@@ -156,6 +211,16 @@ def add_player_history_features(
         ]
         all_new_cols.extend([_with_before_suffix(c) for c in new_cols])
 
+    # Bench player columns (stat-independent, added once)
+    bench_cols = [
+        "BENCH_AVG_PTS_PER_MIN",
+        "BENCH_MAX_PTS_PER_MIN",
+        "BENCH_AVG_PACE_PER40",
+        "BENCH_MAX_PACE_PER40",
+        "N_BENCH_PLAYERS",
+    ]
+    all_new_cols.extend([_with_before_suffix(c) for c in bench_cols])
+
     # Create all columns at once to avoid fragmentation
     new_cols_df = pd.DataFrame(None, index=df_team.index, columns=all_new_cols)
     df_team = pd.concat([df_team, new_cols_df], axis=1)
@@ -170,6 +235,7 @@ def add_player_history_features(
     injury_streak_lookup = create_injury_streak_lookup(
         df_team, injured_dict, max_seasons_back=2
     )
+    bench_lookup = _build_bench_stats_lookup(df_players)
 
     # 3) Iterate over each row in df_team (only needed columns for efficiency)
     cols_needed = ["GAME_ID", "TEAM_ID", "SEASON_ID", "GAME_DATE"]
@@ -199,6 +265,29 @@ def add_player_history_features(
         df_inj = df_active[df_active["PLAYER_ID"].isin(injured_players)]
 
         row_update = {}
+
+        # Bench player stats (available non-starters with 7-21 avg MIN)
+        bench_players = []
+        for pid in df_non_inj["PLAYER_ID"].unique():
+            stats = bench_lookup(pid, game_date)
+            if stats is not None:
+                avg_min, pts_per_min, pace = stats
+                if 7 <= avg_min <= 21:
+                    bench_players.append((pts_per_min, pace))
+
+        if bench_players:
+            pts_pm_vals = [b[0] for b in bench_players]
+            pace_vals = [b[1] for b in bench_players]
+            row_update[_with_before_suffix("BENCH_AVG_PTS_PER_MIN")] = sum(
+                pts_pm_vals
+            ) / len(pts_pm_vals)
+            row_update[_with_before_suffix("BENCH_MAX_PTS_PER_MIN")] = max(pts_pm_vals)
+            row_update[_with_before_suffix("BENCH_AVG_PACE_PER40")] = sum(
+                pace_vals
+            ) / len(pace_vals)
+            row_update[_with_before_suffix("BENCH_MAX_PACE_PER40")] = max(pace_vals)
+        row_update[_with_before_suffix("N_BENCH_PLAYERS")] = len(bench_players)
+
         for stat_col in stat_cols:
             n_players_noninj = N_TOP_PLAYERS_NON_INJURED
             n_players_inj = N_TOP_PLAYERS_INJURED

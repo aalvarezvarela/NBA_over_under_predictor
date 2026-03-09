@@ -220,7 +220,8 @@ def create_df_to_predict(
         recent_limit_to_include (str | datetime): Latest date to include in training data (YYYY-MM-DD)
         scheduled_data (dict, optional): Scheduled data including odds and injury information
         older_limit_to_include (str | datetime, optional): Starting date for training data. If None, starts from 2006-07
-        strict_mode (bool, optional): If True, raises error if df_odds_predict has NaN/None values. Default is True.
+        strict_mode (int, optional): Maximum number of columns allowed to have NaN/None values
+            when validating scheduled odds. Use a negative value to disable the check. Default is 2.
 
     Returns:
         pd.DataFrame: Complete training dataset with all features
