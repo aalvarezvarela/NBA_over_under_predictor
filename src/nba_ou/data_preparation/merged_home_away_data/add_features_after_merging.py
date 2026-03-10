@@ -6,6 +6,7 @@ from nba_ou.config.constants import (
     TEAM_NAME_STANDARDIZATION,
 )
 from nba_ou.config.odds_columns import moneyline_col, spread_col, total_line_col
+from nba_ou.utils.general_utils import _with_before_suffix
 from pandas.tseries.holiday import USFederalHolidayCalendar
 
 MAIN_TOTAL_LINE_COL = total_line_col()
@@ -307,9 +308,6 @@ def add_high_value_features_for_team_points(df: pd.DataFrame) -> pd.DataFrame:
     def _safe_div(num, den):
         den = den.replace(0, np.nan)
         return num / den
-
-    def _with_before_suffix(name: str) -> str:
-        return name if name.endswith("_BEFORE") else f"{name}_BEFORE"
 
     def _add(name, series):
         col_name = _with_before_suffix(name)

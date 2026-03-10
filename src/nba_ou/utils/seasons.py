@@ -16,6 +16,7 @@ def classify_season_type(game_id):
         return "In-Season Final Game"
     return "Unknown"
 
+
 def get_all_seasons_from_2006(date_to_train_until):
     """
     Get all NBA seasons from 2006-07 until the season containing date_to_train_until.
@@ -50,6 +51,42 @@ def get_all_seasons_from_2006(date_to_train_until):
         seasons.append(season_str)
 
     return seasons
+
+
+def get_season_start_date_n_seasons_back(
+    n_seasons: int, reference_date=None
+) -> pd.Timestamp:
+    """
+    Get the start date of the season N seasons back from reference_date.
+
+    NBA seasons start in October. For example, if n_seasons=2 and we're in
+    the 2025-26 season, returns the start of the 2024-25 season (Oct 2024).
+
+    Args:
+        n_seasons (int): Number of seasons to include (1 = current season only,
+                        2 = current + previous, etc.)
+        reference_date (datetime, optional): Reference date to compute from.
+                                             Defaults to today.
+
+    Returns:
+        pd.Timestamp: Start date (October 1st) of the earliest season to include.
+    """
+    if reference_date is None:
+        reference_date = pd.Timestamp.now()
+    if isinstance(reference_date, str):
+        reference_date = pd.to_datetime(reference_date)
+
+    # Determine current season year
+    year = reference_date.year
+    month = reference_date.month
+    # If Jan-Jun, we're in season that started previous year
+    # If Jul-Dec, we're in (or about to start) season starting this year
+    current_season_start_year = year - 1 if month <= 6 else year
+
+    # Go back n_seasons - 1 (since n_seasons=1 means current season only)
+    target_season_start_year = current_season_start_year - (n_seasons - 1)
+
+    return pd.Timestamp(year=target_season_start_year, month=10, day=1)
 
 
 def get_seasons_between_dates(date_from, date_to):

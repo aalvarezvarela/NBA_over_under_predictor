@@ -19,7 +19,7 @@ from nba_ou.create_training_data.get_all_info_for_scheduled_games import (
 )
 from nba_ou.create_training_data.predict_data_utils import (
     extract_home_away_pairs_from_scheduled_games,
-    filter_by_date_range_with_extra_game_ids,
+    filter_by_seasons_with_extra_game_ids,
     normalize_game_ids,
 )
 from nba_ou.data_preparation.merged_home_away_data.add_features_after_merging import (
@@ -27,6 +27,9 @@ from nba_ou.data_preparation.merged_home_away_data.add_features_after_merging im
     add_derived_features_after_computed_stats,
     add_game_date_features,
     add_high_value_features_for_team_points,
+)
+from nba_ou.data_preparation.merged_home_away_data.global_market_features import (
+    add_global_market_features,
 )
 from nba_ou.data_preparation.merged_home_away_data.merge_home_away import (
     merge_home_away_data,
@@ -78,6 +81,7 @@ from nba_ou.postgre_db.injuries_refs.fetch_injury_db.get_injury_data_from_db imp
 from nba_ou.postgre_db.odds.merge_odds_data import (
     load_and_merge_odds_yahoo_sportsbookreview,
 )
+from nba_ou.utils.general_utils import get_season_year_from_date
 from nba_ou.utils.seasons import get_seasons_between_dates
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
@@ -132,7 +136,7 @@ def process_team_statistics_for_training(
     df = add_last_season_playoff_games(df)
 
     df = add_team_record_before_game(df)
-    
+
     df = compute_rest_days_before_match(df)
 
     # Merge odds percentages and prices BEFORE computing rolling stats
@@ -145,7 +149,6 @@ def process_team_statistics_for_training(
     # Compute all rolling statistics
     df = compute_all_rolling_statistics(df, exclude_yahoo=exclude_yahoo)
 
-
     df = df.drop_duplicates(keep="first")
 
     return df
@@ -155,7 +158,7 @@ def process_player_statistics_for_training(
     df_players,
     df_team,
     df_injuries,
-    older_limit_to_include,
+    seasons,
     recent_limit_to_include,
     injury_dict_scheduled=None,
     extra_game_ids=None,
@@ -170,18 +173,23 @@ def process_player_statistics_for_training(
 
     Args:
         df_players (pd.DataFrame): Player statistics DataFrame
-        df (pd.DataFrame): Processed team DataFrame with GAME_ID, GAME_DATE, SEASON_ID
+        df_team (pd.DataFrame): Processed team DataFrame with GAME_ID, GAME_DATE, SEASON_ID
+        df_injuries (pd.DataFrame): Injury data
+        seasons (list[str]): Season strings like ["2024-25", "2023-24"] to filter to
+        recent_limit_to_include (datetime): Upper date cap for player data
         injury_dict_scheduled (dict, optional): Dictionary of scheduled injury data
+        extra_game_ids (list, optional): Extra game IDs to include
 
     Returns:
         pd.DataFrame: Processed player DataFrame
     """
 
     df_players = clear_player_statistics(df_players, df_team)
-    df_players = filter_by_date_range_with_extra_game_ids(
+    # Filter by season and upper date cap
+    df_players = filter_by_seasons_with_extra_game_ids(
         df_players,
-        older_limit_to_include,
-        recent_limit_to_include,
+        seasons=seasons,
+        recent_limit_to_include=recent_limit_to_include,
         extra_game_ids=extra_game_ids,
     )
     # Define statistics to compute for top players
@@ -203,23 +211,26 @@ def create_df_to_predict(
     todays_prediction: bool = False,
     scheduled_data: dict = None,
     recent_limit_to_include: str = None,
-    older_limit_to_include: str = None,
+    older_season_limit: int = None,
     strict_mode: int = 2,
 ) -> pd.DataFrame:
     """
     Create prediction dataset for NBA over/under prediction models.
 
     This function:
-    - Loads data from database for seasons from older_limit_to_include (or 2006-07) to recent_limit_to_include
+    - Loads data from database for the specified number of seasons up to recent_limit_to_include
     - Processes injuries from database (not from live reports)
     - Computes all team and player statistics
     - Calculates rolling averages and trends
     - Merges home/away data and prepares final training features
 
     Args:
-        recent_limit_to_include (str | datetime): Latest date to include in training data (YYYY-MM-DD)
-        scheduled_data (dict, optional): Scheduled data including odds and injury information
-        older_limit_to_include (str | datetime, optional): Starting date for training data. If None, starts from 2006-07
+        todays_prediction (bool): If True, include today's scheduled games. Default is False.
+        scheduled_data (dict, optional): Scheduled data including odds and injury information.
+        recent_limit_to_include (str | datetime): Latest date to include in training data (YYYY-MM-DD).
+        older_season_limit (int, optional): Number of seasons to include.
+            For todays_prediction=True, defaults to 2 (current + previous season).
+            For todays_prediction=False, defaults to all seasons from 2017-18.
         strict_mode (int, optional): Maximum number of columns allowed to have NaN/None values
             when validating scheduled odds. Use a negative value to disable the check. Default is 2.
 
@@ -252,7 +263,7 @@ def create_df_to_predict(
 
     recent_limit_to_include = pd.to_datetime(recent_limit_to_include, format="%Y-%m-%d")
 
-    # Determine older_limit_to_include based on todays_prediction flag
+    # Determine seasons to load
     if todays_prediction:
         recent_limit_to_include = pd.Timestamp.now(
             tz=ZoneInfo("US/Pacific")
@@ -260,20 +271,21 @@ def create_df_to_predict(
         recent_limit_to_include = pd.to_datetime(
             recent_limit_to_include, format="%Y-%m-%d"
         )
+        # Default to 2 seasons back (current + previous) for today's prediction
+        n_seasons = older_season_limit if older_season_limit is not None else 2
+    else:
+        n_seasons = older_season_limit  # May be None → fall back to default below
 
-        # If predicting today, go back two years from today
-        older_limit_to_include = pd.Timestamp.now(
-            tz=ZoneInfo("US/Pacific")
-        ) - pd.Timedelta(days=365 * 1)
+    current_season_year = get_season_year_from_date(recent_limit_to_include)
+    if n_seasons is not None:
+        # Build Oct-1 start date for the earliest season to include
+        season_start_year = current_season_year - (n_seasons - 1)
+        season_start_date = pd.Timestamp(year=season_start_year, month=10, day=1)
+    else:
+        # Default to 2017-18 season
+        season_start_date = pd.to_datetime("2017-10-01")
 
-    elif older_limit_to_include is None:
-        # Default to 2017 (start of 2017-18 season)
-        older_limit_to_include = pd.to_datetime("2017-10-01")
-
-    older_limit_to_include = pd.to_datetime(older_limit_to_include, format="%Y-%m-%d")
-
-    # Determine which seasons to load
-    seasons = get_seasons_between_dates(older_limit_to_include, recent_limit_to_include)
+    seasons = get_seasons_between_dates(season_start_date, recent_limit_to_include)
 
     extra_game_ids = []
     if todays_prediction:
@@ -302,11 +314,11 @@ def create_df_to_predict(
     # Ensure GAME_DATE column is pandas Timestamp for df (df_players doesn't have it yet)
     df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
 
-    # Filter df by date range while preserving any explicit extra historical GAME_IDs
-    df = filter_by_date_range_with_extra_game_ids(
+    # Filter df to seasons and upper date cap; lower bound set by seasons loaded from DB
+    df = filter_by_seasons_with_extra_game_ids(
         df,
-        older_limit_to_include,
-        recent_limit_to_include,
+        seasons=seasons,
+        recent_limit_to_include=recent_limit_to_include,
         extra_game_ids=extra_game_ids,
     )
 
@@ -343,7 +355,7 @@ def create_df_to_predict(
         df_players,
         df,
         df_injuries,
-        older_limit_to_include,
+        seasons,
         recent_limit_to_include,
         injury_dict_scheduled=injury_dict_scheduled if todays_prediction else None,
         extra_game_ids=extra_game_ids,
@@ -363,6 +375,9 @@ def create_df_to_predict(
 
     # Create difference features for betting stats (HOME - AWAY)
     df_merged = add_betting_stats_differences(df_merged)
+
+    # Add global market regime features (league-wide, game-date level)
+    df_merged = add_global_market_features(df_merged)
 
     df_merged = add_referee_features_to_training_data(
         seasons,
@@ -458,8 +473,7 @@ if __name__ == "__main__":
     )
     # Create training data up to a specific date
     date_to_train = "2026-01-10"
-    # older_limit_to_include = "2025-11-01"  # Optional: specify start date
-    older_limit_to_include = "2023-12-01"  # Optional: specify start date
+    n_seasons = 3  # Optional: specify number of seasons to include
 
     # # Get all info for scheduled games
     # date_to_predict = pd.Timestamp.now(tz=ZoneInfo("US/Pacific")).strftime("%Y-%m-%d")
@@ -473,7 +487,7 @@ if __name__ == "__main__":
         todays_prediction=False,
         scheduled_data=None,
         recent_limit_to_include=date_to_train,
-        older_limit_to_include=older_limit_to_include,
+        older_season_limit=n_seasons,
     )
 
     output_name_before_referee = f"{output_path}/test_predict_data_{pd.to_datetime(date_to_train).strftime('%Y%m%d')}.csv"

@@ -24,7 +24,7 @@ def main() -> None:
     # Calculate the date 30 days before today
     today = datetime.now()
     thirty_days_ago = today - timedelta(
-        days=2*30
+        days=2 * 30
     )  # Approximate, can adjust for leap years
     limit_date = thirty_days_ago.strftime("%Y-%m-%d")
 
@@ -35,7 +35,7 @@ def main() -> None:
     df_train = create_df_to_predict(
         todays_prediction=False,
         recent_limit_to_include=limit_date,
-        older_limit_to_include=None,
+        n_seasons_to_include=None,  # Uses default (all from 2017-18)
     )
 
     print(f"Training data created. Shape: {df_train.shape}")

@@ -12,6 +12,7 @@ from nba_ou.data_preparation.players.players_statistics import (
     get_top_n_averages_with_names,
     precompute_cumulative_avg_stat,
 )
+from nba_ou.utils.general_utils import _with_before_suffix
 
 
 def _parse_minutes_series(min_series: pd.Series) -> pd.Series:
@@ -155,9 +156,6 @@ def add_player_history_features(
 
     if isinstance(stat_cols, str):
         stat_cols = [stat_cols]
-
-    def _with_before_suffix(col_name: str) -> str:
-        return col_name if col_name.endswith("_BEFORE") else f"{col_name}_BEFORE"
 
     # Collect all column names first to avoid fragmentation
     all_new_cols = []

@@ -96,9 +96,11 @@ def compute_referee_features(df_refs_pivot):
     """
 
     def _extract_unique_refs(row):
-        return _normalize_referee_slots(
-            [row["REF_1"], row["REF_2"], row["REF_3"]]
-        ).dropna().tolist()
+        return (
+            _normalize_referee_slots([row["REF_1"], row["REF_2"], row["REF_3"]])
+            .dropna()
+            .tolist()
+        )
 
     # Ensure GAME_DATE is datetime
     df = df_refs_pivot.copy()
@@ -124,13 +126,14 @@ def compute_referee_features(df_refs_pivot):
         current_game = df.iloc[idx]
         current_date = current_game["GAME_DATE"]
         current_season = current_game["SEASON_YEAR"]
-        # Define the two-season window (current season and previous season)
-        target_seasons = [current_season, current_season - 1]
 
-        # Get all past games in the two-season window (excluding current game)
+        # Prefer same-season history; fall back to previous season if unavailable
         past_games = df[
-            (df["GAME_DATE"] < current_date) & (df["SEASON_YEAR"].isin(target_seasons))
+            (df["GAME_DATE"] < current_date) & (df["SEASON_YEAR"] == current_season)
         ].copy()
+
+        if past_games.empty:
+            past_games = df[(df["SEASON_YEAR"] == current_season - 1)].copy()
 
         # Skip if no past games available
         if past_games.empty:
@@ -216,7 +219,9 @@ def process_referee_data_for_training(
         # Group by GAME_ID and create REF_1, REF_2, REF_3 columns
         df_refs_pivot = (
             df_refs.groupby("GAME_ID")
-            .apply(lambda x: _normalize_referee_slots(x["FULL_NAME"]), include_groups=False)
+            .apply(
+                lambda x: _normalize_referee_slots(x["FULL_NAME"]), include_groups=False
+            )
             .reset_index()
         )
 
