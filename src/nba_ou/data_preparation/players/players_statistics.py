@@ -57,9 +57,14 @@ def get_top_n_averages_with_names(
 
     # Check if MIN_CUM_AVG already exists (e.g., when stat_col="MIN")
     if "MIN_CUM_AVG" not in df_last.columns:
+        current_season = (
+            df_last["SEASON_YEAR"].iloc[0] if "SEASON_YEAR" in df_last.columns else None
+        )
+        df_prior = df[df["GAME_DATE"] < date]
+        if current_season is not None and "SEASON_YEAR" in df_prior.columns:
+            df_prior = df_prior[df_prior["SEASON_YEAR"] == current_season]
         df_cum_min = (
-            df[df["GAME_DATE"] < date]
-            .groupby("PLAYER_ID", as_index=False)["MIN"]
+            df_prior.groupby("PLAYER_ID", as_index=False)["MIN"]
             .mean()
             .rename(columns={"MIN": "MIN_CUM_AVG"})
         )
@@ -90,17 +95,19 @@ def get_top_n_averages_with_names(
 
 
 def precompute_cumulative_avg_stat(
-    df_players: pd.DataFrame, stat_col: str = "PTS", ewm_halflife_games: int = EWMA_HALFLIFE_GAMES
+    df_players: pd.DataFrame,
+    stat_col: str = "PTS",
+    ewm_halflife_games: int = EWMA_HALFLIFE_GAMES,
 ) -> pd.DataFrame:
     """
-    Recency-weighted average (EWMA) of `stat_col` per (SEASON_ID, PLAYER_ID),
+    Recency-weighted average (EWMA) of `stat_col` per (SEASON_YEAR, PLAYER_ID),
     using only prior valid appearances (MIN > 0) and excluding the current game.
 
     - Excludes the current game's stat from the estimate (via shift).
     - Gives slightly higher weight to recent games.
     - If a player has no prior valid game, the value is 0.
     - Only considers games where MIN > 0 as valid appearances.
-    - Groups by both SEASON_ID and PLAYER_ID.
+    - Groups by both SEASON_YEAR and PLAYER_ID.
 
     Args:
         df_players (pd.DataFrame): Player statistics DataFrame
@@ -119,7 +126,7 @@ def precompute_cumulative_avg_stat(
 
     # Sort to make shift/expanding meaningful
     out.sort_values(
-        ["SEASON_ID", "PLAYER_ID", "GAME_DATE"], ascending=True, inplace=True
+        ["SEASON_YEAR", "PLAYER_ID", "GAME_DATE"], ascending=True, inplace=True
     )
 
     # Keep only valid appearances for the signal; invalid games are ignored.
@@ -127,12 +134,14 @@ def precompute_cumulative_avg_stat(
     valid_stat = out[stat_col].where(valid_mask)
 
     # Use only prior games (shift) to avoid target leakage.
-    shifted_valid_stat = valid_stat.groupby([out["SEASON_ID"], out["PLAYER_ID"]]).shift(1)
+    shifted_valid_stat = valid_stat.groupby(
+        [out["SEASON_YEAR"], out["PLAYER_ID"]]
+    ).shift(1)
 
     # Recency-weighted estimate by player-season.
     out[f"{stat_col}_CUM_AVG"] = (
         shifted_valid_stat.groupby(
-            [out["SEASON_ID"], out["PLAYER_ID"]],
+            [out["SEASON_YEAR"], out["PLAYER_ID"]],
             group_keys=False,
         ).transform(
             lambda s: s.ewm(

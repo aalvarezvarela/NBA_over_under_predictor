@@ -270,6 +270,13 @@ def process_referee_data_for_training(
 
         df_refs_pivot["GAME_ID"] = df_refs_pivot["GAME_ID"].astype(str)
         df_refs["GAME_ID"] = df_refs["GAME_ID"].astype(str)
+        # Normalize all NA representations (None, pd.NA, np.nan) to np.nan for consistency
+        for ref_col in ["REF_1", "REF_2", "REF_3"]:
+            if ref_col in df_refs_pivot.columns:
+                df_refs_pivot[ref_col] = df_refs_pivot[ref_col].where(
+                    df_refs_pivot[ref_col].notna() & (df_refs_pivot[ref_col] != ""),
+                    np.nan,
+                )
         # Ensure exactly one crew row per game; prefer scheduled rows when provided.
         df_refs_pivot = df_refs_pivot.drop_duplicates(subset=["GAME_ID"], keep="last")
 

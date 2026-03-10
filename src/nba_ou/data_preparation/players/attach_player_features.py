@@ -56,8 +56,14 @@ def clear_player_statistics(df_players, df_team):
     Returns:
         pd.DataFrame: Processed player DataFrame
     """
+    desired_cols = ["GAME_ID", "GAME_DATE", "SEASON_ID", "SEASON_YEAR"]
+    merge_cols = ["GAME_ID"] + [
+        c
+        for c in desired_cols[1:]
+        if c in df_team.columns and c not in df_players.columns
+    ]
     df_players = df_players.merge(
-        df_team[["GAME_ID", "GAME_DATE", "SEASON_ID"]],
+        df_team[merge_cols].drop_duplicates(subset=["GAME_ID"]),
         on="GAME_ID",
         how="left",
     )

@@ -107,6 +107,10 @@ def filter_by_seasons_with_extra_game_ids(
         filtered_df = pd.concat([filtered_df, extra_rows], ignore_index=True)
         filtered_df = filtered_df.drop_duplicates(keep="first")
 
+    sort_cols = [c for c in ["GAME_DATE", "GAME_ID"] if c in filtered_df.columns]
+    if sort_cols:
+        filtered_df = filtered_df.sort_values(sort_cols).reset_index(drop=True)
+
     return filtered_df
 
 
@@ -138,4 +142,9 @@ def filter_by_date_range_with_extra_game_ids(
 
     filtered_df = pd.concat([filtered_df, extra_rows], ignore_index=True)
     filtered_df = filtered_df.drop_duplicates(keep="first")
+
+    sort_cols = [c for c in ["GAME_DATE", "GAME_ID"] if c in filtered_df.columns]
+    if sort_cols:
+        filtered_df = filtered_df.sort_values(sort_cols).reset_index(drop=True)
+
     return filtered_df

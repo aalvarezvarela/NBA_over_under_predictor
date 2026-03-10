@@ -61,14 +61,12 @@ def get_last_5_matchup_excluding_current(row, df):
 
     totals_list = df_matchups["TOTAL_POINTS"].tolist()
 
-    if len(totals_list) == 0:
-        totals_list = [np.nan] * 5
-    elif len(totals_list) < 5:
-        while len(totals_list) < 5:
-            # append the mean of totals_list
-            totals_list.append(sum(totals_list) / len(totals_list))
+    # Pad with NaN if fewer than 5 real matchups found
+    while len(totals_list) < 5:
+        totals_list.append(np.nan)
 
-    mean = sum(totals_list) / 5
+    real_values = [v for v in totals_list if not np.isnan(v)]
+    mean = sum(real_values) / len(real_values) if real_values else np.nan
     return {
         "LAST_1_GAMES_TOTAL_POINTS_BEFORE": totals_list[0],
         "LAST_2_GAMES_TOTAL_POINTS_BEFORE": totals_list[1],

@@ -1,11 +1,13 @@
 import pandas as pd
 
 # Paths
-predictions_path = "/home/adrian_alvarez/Projects/NBA_over_under_predictor/070326_df_predictable_1800.csv"
-other_path = "data/train_data/ all_odds_training_data_until_20260307.csv"
+predictions_path = "/home/adrian_alvarez/Projects/NBA_over_under_predictor/df_to_predict_total_9_march.csv"
+predictions_path = "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/train_data/all_odds_training_data_until_20260310.csv"
+other_path = "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/train_data/all_odds_training_data_until_20260310_2.csv"
 
 # Load data
 df_pred = pd.read_csv(predictions_path)
+df_pred = df_pred[df_pred["GAME_DATE"] == "2026-03-09"]
 df_other = pd.read_csv(other_path)
 
 # Ensure consistent dtype
@@ -64,4 +66,4 @@ df_differences = df_differences[
 ]
 
 # Save results
-df_differences.to_csv("predictions_vs_other_differences.csv", index=False)
+df_differences.to_csv("predictions_vs_other_differences_10_only3seasons_what.csv", index=False)

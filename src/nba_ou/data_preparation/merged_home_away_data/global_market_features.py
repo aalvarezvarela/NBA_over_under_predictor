@@ -150,11 +150,10 @@ def add_global_market_features(df: pd.DataFrame) -> pd.DataFrame:
         Same DataFrame with new global market feature columns appended.
     """
     out = df.copy()
-    out["_ORIG_ROW_ORDER"] = np.arange(len(out))
     out["GAME_DATE"] = pd.to_datetime(out["GAME_DATE"])
 
-    # Sort chronologically for rolling calculations
-    out = out.sort_values(["GAME_DATE", "_ORIG_ROW_ORDER"]).reset_index(drop=True)
+    # Sort chronologically for rolling calculations; GAME_ID as stable tie-breaker
+    out = out.sort_values(["GAME_DATE", "GAME_ID"]).reset_index(drop=True)
 
     # ---- resolve columns ----
     close_col = resolve_main_total_line_col(out)
@@ -487,12 +486,7 @@ def add_global_market_features(df: pd.DataFrame) -> pd.DataFrame:
     features_df = pd.DataFrame(new_cols, index=out.index)
     out = pd.concat([out, features_df], axis=1)
 
-    # Restore original row order and drop helper column
-    out = (
-        out.sort_values("_ORIG_ROW_ORDER")
-        .drop(columns="_ORIG_ROW_ORDER")
-        .reset_index(drop=True)
-    )
+    out = out.reset_index(drop=True)
 
     n_features = len(new_cols)
     print(f"Added {n_features} global market regime features")
