@@ -121,19 +121,61 @@ def compute_referee_features(df_refs_pivot):
         df[f"REF_TRIO_{metric}_DIFF_BEFORE"] = np.nan
         df[f"REF_TRIO_{metric}_STD_BEFORE"] = np.nan
 
+    def _split_past_games_by_season(
+        current_date: pd.Timestamp, current_season: int
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        same_season = df[
+            (df["GAME_DATE"] < current_date) & (df["SEASON_YEAR"] == current_season)
+        ].copy()
+        prev_season = df[df["SEASON_YEAR"] == current_season - 1].copy()
+        return same_season, prev_season
+
+    def _select_games_for_ref(
+        past_same_season: pd.DataFrame,
+        past_prev_season: pd.DataFrame,
+        ref_name: str,
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        for past_games in (past_same_season, past_prev_season):
+            if past_games.empty:
+                continue
+            ref_participated = (
+                (past_games["REF_1"] == ref_name)
+                | (past_games["REF_2"] == ref_name)
+                | (past_games["REF_3"] == ref_name)
+            )
+            games_with_ref = past_games[ref_participated]
+            games_without_ref = past_games[~ref_participated]
+            if len(games_with_ref) > 0 and len(games_without_ref) > 0:
+                return games_with_ref, games_without_ref
+        return pd.DataFrame(), pd.DataFrame()
+
+    def _select_games_for_trio(
+        past_games: pd.DataFrame,
+        trio_key: frozenset,
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        if past_games.empty:
+            return pd.DataFrame(), pd.DataFrame()
+        trio_mask = past_games["REF_TRIO_KEY"] == trio_key
+        games_with_trio = past_games[trio_mask]
+        games_without_trio = past_games[~trio_mask]
+        if len(games_with_trio) > 0:
+            return games_with_trio, games_without_trio
+        return pd.DataFrame(), pd.DataFrame()
+
     # Process each game
     for idx in tqdm(range(len(df)), desc="Computing referee features"):
         current_game = df.iloc[idx]
         current_date = current_game["GAME_DATE"]
         current_season = current_game["SEASON_YEAR"]
 
-        # Prefer same-season history; fall back to previous season if unavailable
-        past_games = df[
-            (df["GAME_DATE"] < current_date) & (df["SEASON_YEAR"] == current_season)
-        ].copy()
-
-        if past_games.empty:
-            past_games = df[(df["SEASON_YEAR"] == current_season - 1)].copy()
+        past_games_same_season, past_games_prev_season = _split_past_games_by_season(
+            current_date, current_season
+        )
+        past_games = (
+            past_games_same_season
+            if not past_games_same_season.empty
+            else past_games_prev_season
+        )
 
         # Skip if no past games available
         if past_games.empty:
@@ -145,13 +187,9 @@ def compute_referee_features(df_refs_pivot):
         for metric in REFEREE_METRICS:
             per_ref_diffs = []
             for ref_name in current_refs:
-                ref_participated = (
-                    (past_games["REF_1"] == ref_name)
-                    | (past_games["REF_2"] == ref_name)
-                    | (past_games["REF_3"] == ref_name)
+                games_with_ref, games_without_ref = _select_games_for_ref(
+                    past_games_same_season, past_games_prev_season, ref_name
                 )
-                games_with_ref = past_games[ref_participated]
-                games_without_ref = past_games[~ref_participated]
 
                 if len(games_with_ref) > 0 and len(games_without_ref) > 0:
                     per_ref_diffs.append(
@@ -168,11 +206,20 @@ def compute_referee_features(df_refs_pivot):
                 )
 
         # Process referee trio (all three referees together, regardless of order)
+        # Use a wider lookback (current + 1 prior seasons) since exact trios are rare
         if len(current_refs) == 3:
             current_trio_key = frozenset(current_refs)
-            trio_participated = past_games["REF_TRIO_KEY"] == current_trio_key
-            games_with_trio = past_games[trio_participated]
-            games_without_trio = past_games[~trio_participated]
+            trio_past_games = df[
+                (df["GAME_DATE"] < current_date)
+                & (
+                    df["SEASON_YEAR"].isin(
+                        {current_season, current_season - 1}
+                    )
+                )
+            ]
+            games_with_trio, games_without_trio = _select_games_for_trio(
+                trio_past_games, current_trio_key
+            )
 
             for metric in REFEREE_METRICS:
                 if len(games_with_trio) > 0 and len(games_without_trio) > 0:

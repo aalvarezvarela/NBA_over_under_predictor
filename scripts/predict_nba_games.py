@@ -83,6 +83,7 @@ def predict_nba_games(run_tabpfn_client: bool = False) -> None:
             end_season_year=int(season_to_update),
             only_new_games=True,
             headless=SETTINGS.headless,
+            exclude_game_date=date_to_predict,
         )
         print_status("Databases updated")
 
@@ -115,7 +116,6 @@ def predict_nba_games(run_tabpfn_client: bool = False) -> None:
         df_to_predict_total = create_df_to_predict(
             todays_prediction=True,
             scheduled_data=scheduled_data,
-            recent_limit_to_include=date_to_predict,
             strict_mode=2,
         )
         df_to_predict = df_to_predict_total[

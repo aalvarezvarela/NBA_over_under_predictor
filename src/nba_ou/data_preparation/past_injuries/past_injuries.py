@@ -5,8 +5,8 @@ import numpy as np
 import pandas as pd
 
 # Constants for top player statistics
-N_TOP_PLAYERS_NON_INJURED = 3
-N_TOP_PLAYERS_INJURED = 3
+N_TOP_PLAYERS_NON_INJURED = 6
+N_TOP_PLAYERS_INJURED = 4
 
 
 def get_injured_players_dict(df_injuries, df_players=None):

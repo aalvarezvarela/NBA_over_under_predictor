@@ -54,6 +54,7 @@ from nba_ou.data_preparation.referees.add_referee_features import (
     add_referee_features_to_training_data,
 )
 from nba_ou.data_preparation.scheduled_games.merge_scheduled_with_existing_data import (
+    standardize_and_merge_scheduled_games_to_players_data,
     standardize_and_merge_scheduled_games_to_team_data,
 )
 from nba_ou.data_preparation.team.cleaning_teams import adjust_overtime, clean_team_data
@@ -88,6 +89,30 @@ warnings.simplefilter(action="ignore", category=FutureWarning)
 
 DEFAULT_SPREAD_ML_BOOK = get_main_book()
 DEFAULT_TOTAL_LINE_BOOK = get_main_book()
+
+
+def _infer_recent_limit_for_scheduled_games(
+    scheduled_games: pd.DataFrame | None,
+) -> pd.Timestamp:
+    """
+    Derive the historical cutoff for scheduled-game prediction.
+
+    The cutoff is the calendar day immediately before the scheduled games.
+    Falls back to yesterday in US/Pacific when scheduled dates are unavailable.
+    """
+    if scheduled_games is not None and not scheduled_games.empty:
+        for candidate_col in ["GAME_DATE_EST", "GAME_DATE"]:
+            if candidate_col in scheduled_games.columns:
+                scheduled_dates = pd.to_datetime(
+                    scheduled_games[candidate_col], errors="coerce"
+                ).dropna()
+                if not scheduled_dates.empty:
+                    return scheduled_dates.dt.normalize().max() - pd.Timedelta(days=1)
+
+    return (
+        pd.Timestamp.now(tz=ZoneInfo("US/Pacific")).normalize()
+        - pd.Timedelta(days=1)
+    ).tz_localize(None)
 
 
 def process_team_statistics_for_training(
@@ -160,6 +185,7 @@ def process_player_statistics_for_training(
     df_injuries,
     seasons,
     recent_limit_to_include,
+    scheduled_games=None,
     injury_dict_scheduled=None,
     extra_game_ids=None,
 ):
@@ -177,6 +203,9 @@ def process_player_statistics_for_training(
         df_injuries (pd.DataFrame): Injury data
         seasons (list[str]): Season strings like ["2024-25", "2023-24"] to filter to
         recent_limit_to_include (datetime): Upper date cap for player data
+        scheduled_games (pd.DataFrame, optional): Scheduled games to append as
+            synthetic player rows so active-player cumulative stats are aligned
+            with historical mode.
         injury_dict_scheduled (dict, optional): Dictionary of scheduled injury data
         extra_game_ids (list, optional): Extra game IDs to include
 
@@ -192,6 +221,17 @@ def process_player_statistics_for_training(
         recent_limit_to_include=recent_limit_to_include,
         extra_game_ids=extra_game_ids,
     )
+
+    if scheduled_games is not None and not scheduled_games.empty:
+        scheduled_player_rows = standardize_and_merge_scheduled_games_to_players_data(
+            scheduled_games, df_players
+        )
+        if not scheduled_player_rows.empty:
+            df_players = pd.concat(
+                [df_players, scheduled_player_rows], ignore_index=True, sort=False
+            )
+            df_players = df_players.drop_duplicates(keep="first")
+
     # Define statistics to compute for top players
     stats = ["PTS", "PACE_PER40", "DEF_RATING", "OFF_RATING", "TS_PCT", "MIN"]
 
@@ -255,22 +295,21 @@ def create_df_to_predict(
             and (injury_dict_scheduled is not None)
         ), "Scheduled games and referees data must be provided to include current day"
 
-    # Set default recent_limit_to_include to yesterday if not provided
+    # Determine the historical cutoff date.
     if recent_limit_to_include is None:
-        recent_limit_to_include = pd.Timestamp.now(
-            tz=ZoneInfo("US/Pacific")
-        ) - pd.Timedelta(days=1)
+        if todays_prediction:
+            recent_limit_to_include = _infer_recent_limit_for_scheduled_games(
+                scheduled_games
+            )
+        else:
+            recent_limit_to_include = pd.Timestamp.now(
+                tz=ZoneInfo("US/Pacific")
+            ) - pd.Timedelta(days=1)
 
     recent_limit_to_include = pd.to_datetime(recent_limit_to_include, format="%Y-%m-%d")
 
     # Determine seasons to load
     if todays_prediction:
-        recent_limit_to_include = pd.Timestamp.now(
-            tz=ZoneInfo("US/Pacific")
-        ) - pd.Timedelta(days=1)
-        recent_limit_to_include = pd.to_datetime(
-            recent_limit_to_include, format="%Y-%m-%d"
-        )
         # Default to 2 seasons back (current + previous) for today's prediction
         n_seasons = older_season_limit if older_season_limit is not None else 2
     else:
@@ -357,6 +396,7 @@ def create_df_to_predict(
         df_injuries,
         seasons,
         recent_limit_to_include,
+        scheduled_games=scheduled_games if todays_prediction else None,
         injury_dict_scheduled=injury_dict_scheduled if todays_prediction else None,
         extra_game_ids=extra_game_ids,
     )

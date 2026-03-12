@@ -136,7 +136,7 @@ def standardize_and_merge_scheduled_games_to_players_data(
     df_players = df_players.sort_values(by=["PLAYER_ID", "GAME_DATE"])
 
     # 3) Group by PLAYER_ID and grab the last row in each group
-    df_last_game = df_players.groupby("PLAYER_ID", as_index=False).tail(1)
+    df_last_game = df_players.groupby("PLAYER_ID", as_index=False).tail(1).copy()
     df_last_game["TEAM_ID"] = df_last_game["TEAM_ID"].astype(str)
 
     cols_to_keep = []
@@ -145,7 +145,7 @@ def standardize_and_merge_scheduled_games_to_players_data(
             break
         cols_to_keep.append(col)
 
-    df_next_game = pd.DataFrame(columns=df_last_game.columns)
+    next_game_parts = []
     for row in games_teams.itertuples():
         df_temp = df_last_game[df_last_game["TEAM_ID"] == row.TEAM_ID].copy()
         # set all to null except cols to keep
@@ -157,6 +157,11 @@ def standardize_and_merge_scheduled_games_to_players_data(
         df_temp["SEASON_ID"] = row.SEASON_ID
         df_temp["SEASON_YEAR"] = row.SEASON_YEAR
         df_temp["GAME_DATE"] = row.GAME_DATE
-        df_next_game = pd.concat([df_next_game, df_temp], ignore_index=True)
+        next_game_parts.append(df_temp)
+
+    if not next_game_parts:
+        return pd.DataFrame(columns=df_last_game.columns)
+
+    df_next_game = pd.concat(next_game_parts, ignore_index=True, sort=False)
 
     return df_next_game

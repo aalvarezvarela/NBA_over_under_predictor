@@ -1,7 +1,10 @@
 import time
 
 from nba_ou.config.settings import SETTINGS
-from nba_ou.fetch_data.live_games.live_games import get_live_game_ids
+from nba_ou.fetch_data.live_games.live_games import (
+    get_game_ids_for_date,
+    get_live_game_ids,
+)
 from nba_ou.postgre_db.games.update_games.update_database import (
     update_team_players_database,
 )
@@ -22,6 +25,7 @@ def update_all_databases(
     only_new_games: bool = True,
     headless: bool | None = None,
     sleep_seconds_between_seasons: float = 2.0,
+    exclude_game_date: str | None = None,
 ) -> None:
     """
     Backfill from `start_season_year`-YY through `end_season_year`-(YY+1).
@@ -35,7 +39,15 @@ def update_all_databases(
     if headless is None:
         headless = SETTINGS.headless
 
-    games_id_to_exclude = get_live_game_ids()
+    games_id_to_exclude = set(get_live_game_ids())
+    if exclude_game_date:
+        games_id_to_exclude.update(get_game_ids_for_date(exclude_game_date))
+        print(
+            f"Excluding {len(games_id_to_exclude)} game IDs from upload "
+            f"(live games + games on {exclude_game_date})."
+        )
+
+    games_id_to_exclude = list(games_id_to_exclude)
 
     for y in range(start_season_year, end_season_year + 1):
         season_year = str(y)

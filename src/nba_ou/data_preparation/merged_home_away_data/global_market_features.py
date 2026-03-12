@@ -60,21 +60,50 @@ OPEN_LINE_COL = "TOTAL_LINE_consensus_opener"
 
 def _rolling_game_agg(
     series: pd.Series,
+    dates: pd.Series,
     window: int,
     func: str,
 ) -> pd.Series:
-    """Rolling aggregation over the last *window* games (shifted, no leakage)."""
-    if func == "mean":
-        return series.shift(1).rolling(window, min_periods=1).mean()
-    if func == "std":
-        return series.shift(1).rolling(window, min_periods=1).std(ddof=0)
-    if func == "median":
-        return series.shift(1).rolling(window, min_periods=1).median()
-    if func == "sum":
-        return series.shift(1).rolling(window, min_periods=1).sum()
-    if func == "count":
-        return series.shift(1).rolling(window, min_periods=1).count()
-    raise ValueError(f"Unsupported func: {func}")
+    """
+    Rolling aggregation over the last *window* games from strictly earlier dates.
+
+    All rows on the same calendar date receive the same value, so same-day games
+    can never influence each other.
+    """
+    result = pd.Series(np.nan, index=series.index, dtype="float64")
+    date_days = pd.to_datetime(dates, errors="coerce").values.astype("datetime64[D]")
+    values = pd.to_numeric(series, errors="coerce").astype("float64").values
+
+    if len(result) == 0:
+        return result
+
+    group_starts = np.flatnonzero(
+        np.r_[True, date_days[1:] != date_days[:-1]]
+    )
+    group_ends = np.r_[group_starts[1:], len(values)]
+
+    for start, end in zip(group_starts, group_ends, strict=True):
+        window_vals = values[max(0, start - window) : start]
+        valid_vals = window_vals[~np.isnan(window_vals)]
+
+        if func == "count":
+            agg_value = float(len(valid_vals))
+        elif len(valid_vals) == 0:
+            agg_value = np.nan
+        elif func == "mean":
+            agg_value = float(np.mean(valid_vals))
+        elif func == "std":
+            agg_value = float(np.std(valid_vals, ddof=0))
+        elif func == "median":
+            agg_value = float(np.median(valid_vals))
+        elif func == "sum":
+            agg_value = float(np.sum(valid_vals))
+        else:
+            raise ValueError(f"Unsupported func: {func}")
+
+        result.iloc[start:end] = agg_value
+
+    return result
 
 
 def _rolling_day_agg(
@@ -112,14 +141,68 @@ def _rolling_day_agg(
     return result
 
 
-def _ewm_game_mean(series: pd.Series, span: int) -> pd.Series:
-    """EWM mean over games (shifted, no leakage)."""
-    return series.shift(1).ewm(span=span, min_periods=1).mean()
+def _ewm_game_mean(series: pd.Series, dates: pd.Series, span: int) -> pd.Series:
+    return _ewm_game_mean_strict_prior_dates(series, dates, span)
 
 
-def _ewm_game_std(series: pd.Series, span: int) -> pd.Series:
-    """EWM std over games (shifted, no leakage)."""
-    return series.shift(1).ewm(span=span, min_periods=1).std()
+def _ewm_game_std(series: pd.Series, dates: pd.Series, span: int) -> pd.Series:
+    return _ewm_game_std_strict_prior_dates(series, dates, span)
+
+
+def _ewm_game_mean_strict_prior_dates(
+    series: pd.Series, dates: pd.Series, span: int
+) -> pd.Series:
+    """EWM mean over games from strictly earlier calendar dates only."""
+    result = pd.Series(np.nan, index=series.index, dtype="float64")
+    date_days = pd.to_datetime(dates, errors="coerce").values.astype("datetime64[D]")
+    ewm_full = (
+        pd.to_numeric(series, errors="coerce")
+        .astype("float64")
+        .ewm(span=span, min_periods=1)
+        .mean()
+    )
+
+    if len(result) == 0:
+        return result
+
+    group_starts = np.flatnonzero(
+        np.r_[True, date_days[1:] != date_days[:-1]]
+    )
+    group_ends = np.r_[group_starts[1:], len(result)]
+
+    for start, end in zip(group_starts, group_ends, strict=True):
+        agg_value = np.nan if start == 0 else float(ewm_full.iloc[start - 1])
+        result.iloc[start:end] = agg_value
+
+    return result
+
+
+def _ewm_game_std_strict_prior_dates(
+    series: pd.Series, dates: pd.Series, span: int
+) -> pd.Series:
+    """EWM std over games from strictly earlier calendar dates only."""
+    result = pd.Series(np.nan, index=series.index, dtype="float64")
+    date_days = pd.to_datetime(dates, errors="coerce").values.astype("datetime64[D]")
+    ewm_full = (
+        pd.to_numeric(series, errors="coerce")
+        .astype("float64")
+        .ewm(span=span, min_periods=1)
+        .std()
+    )
+
+    if len(result) == 0:
+        return result
+
+    group_starts = np.flatnonzero(
+        np.r_[True, date_days[1:] != date_days[:-1]]
+    )
+    group_ends = np.r_[group_starts[1:], len(result)]
+
+    for start, end in zip(group_starts, group_ends, strict=True):
+        agg_value = np.nan if start == 0 else float(ewm_full.iloc[start - 1])
+        result.iloc[start:end] = agg_value
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -236,7 +319,7 @@ def add_global_market_features(df: pd.DataFrame) -> pd.DataFrame:
     # =====================================================================
     for w in GAME_WINDOWS:
         new_cols[_with_before_suffix(f"GLOBAL_MARKET_BIAS_{w}G")] = _rolling_game_agg(
-            market_error, w, "mean"
+            market_error, dates, w, "mean"
         )
     for d in DAY_WINDOWS:
         new_cols[_with_before_suffix(f"GLOBAL_MARKET_BIAS_{d}D")] = _rolling_day_agg(
@@ -244,7 +327,7 @@ def add_global_market_features(df: pd.DataFrame) -> pd.DataFrame:
         )
     for s in EWM_SPANS:
         new_cols[_with_before_suffix(f"GLOBAL_MARKET_BIAS_EWM_{s}G")] = _ewm_game_mean(
-            market_error, s
+            market_error, dates, s
         )
 
     # =====================================================================
@@ -252,7 +335,7 @@ def add_global_market_features(df: pd.DataFrame) -> pd.DataFrame:
     # =====================================================================
     for w in GAME_WINDOWS:
         new_cols[_with_before_suffix(f"GLOBAL_MARKET_MAE_{w}G")] = _rolling_game_agg(
-            market_abs_error, w, "mean"
+            market_abs_error, dates, w, "mean"
         )
     for d in DAY_WINDOWS:
         new_cols[_with_before_suffix(f"GLOBAL_MARKET_MAE_{d}D")] = _rolling_day_agg(
@@ -260,7 +343,7 @@ def add_global_market_features(df: pd.DataFrame) -> pd.DataFrame:
         )
     for s in EWM_SPANS:
         new_cols[_with_before_suffix(f"GLOBAL_MARKET_MAE_EWM_{s}G")] = _ewm_game_mean(
-            market_abs_error, s
+            market_abs_error, dates, s
         )
 
     # =====================================================================
@@ -268,7 +351,7 @@ def add_global_market_features(df: pd.DataFrame) -> pd.DataFrame:
     # =====================================================================
     for w in GAME_WINDOWS:
         new_cols[_with_before_suffix(f"GLOBAL_MARKET_ERROR_STD_{w}G")] = (
-            _rolling_game_agg(market_error, w, "std")
+            _rolling_game_agg(market_error, dates, w, "std")
         )
     for d in DAY_WINDOWS:
         new_cols[_with_before_suffix(f"GLOBAL_MARKET_ERROR_STD_{d}D")] = (
@@ -276,7 +359,7 @@ def add_global_market_features(df: pd.DataFrame) -> pd.DataFrame:
         )
     for s in EWM_SPANS:
         new_cols[_with_before_suffix(f"GLOBAL_MARKET_ERROR_STD_EWM_{s}G")] = (
-            _ewm_game_std(market_error, s)
+            _ewm_game_std(market_error, dates, s)
         )
 
     # =====================================================================
@@ -284,10 +367,10 @@ def add_global_market_features(df: pd.DataFrame) -> pd.DataFrame:
     # =====================================================================
     for w in [15, 30, 75]:
         new_cols[_with_before_suffix(f"GLOBAL_MARKET_MEDIAN_ERROR_{w}G")] = (
-            _rolling_game_agg(market_error, w, "median")
+            _rolling_game_agg(market_error, dates, w, "median")
         )
         new_cols[_with_before_suffix(f"GLOBAL_MARKET_MEDIAN_ABS_ERROR_{w}G")] = (
-            _rolling_game_agg(market_abs_error, w, "median")
+            _rolling_game_agg(market_abs_error, dates, w, "median")
         )
 
     # =====================================================================
@@ -296,7 +379,7 @@ def add_global_market_features(df: pd.DataFrame) -> pd.DataFrame:
     for t in TAIL_THRESHOLDS:
         for w in [15, 30, 75]:
             new_cols[_with_before_suffix(f"GLOBAL_MARKET_TAIL_GT_{t}_{w}G")] = (
-                _rolling_game_agg(tail_flags[t], w, "mean")
+                _rolling_game_agg(tail_flags[t], dates, w, "mean")
             )
 
     # =====================================================================
@@ -304,14 +387,14 @@ def add_global_market_features(df: pd.DataFrame) -> pd.DataFrame:
     # =====================================================================
     for w in [15, 30, 75]:
         new_cols[_with_before_suffix(f"GLOBAL_MARKET_OVER_RATE_{w}G")] = (
-            _rolling_game_agg(market_over_flag, w, "mean")
+            _rolling_game_agg(market_over_flag, dates, w, "mean")
         )
         new_cols[_with_before_suffix(f"GLOBAL_MARKET_UNDER_RATE_{w}G")] = (
-            _rolling_game_agg(market_under_flag, w, "mean")
+            _rolling_game_agg(market_under_flag, dates, w, "mean")
         )
     for w in [30, 75]:
         new_cols[_with_before_suffix(f"GLOBAL_MARKET_PUSH_RATE_{w}G")] = (
-            _rolling_game_agg(market_push_flag, w, "mean")
+            _rolling_game_agg(market_push_flag, dates, w, "mean")
         )
 
     # =====================================================================
@@ -319,7 +402,7 @@ def add_global_market_features(df: pd.DataFrame) -> pd.DataFrame:
     # =====================================================================
     for w in GAME_WINDOWS:
         new_cols[_with_before_suffix(f"GLOBAL_CLOSE_TOTAL_AVG_{w}G")] = (
-            _rolling_game_agg(close_line, w, "mean")
+            _rolling_game_agg(close_line, dates, w, "mean")
         )
     for d in DAY_WINDOWS:
         new_cols[_with_before_suffix(f"GLOBAL_CLOSE_TOTAL_AVG_{d}D")] = (
@@ -331,7 +414,7 @@ def add_global_market_features(df: pd.DataFrame) -> pd.DataFrame:
     # =====================================================================
     for w in GAME_WINDOWS:
         new_cols[_with_before_suffix(f"GLOBAL_ACTUAL_TOTAL_AVG_{w}G")] = (
-            _rolling_game_agg(actual_pts, w, "mean")
+            _rolling_game_agg(actual_pts, dates, w, "mean")
         )
     for d in DAY_WINDOWS:
         new_cols[_with_before_suffix(f"GLOBAL_ACTUAL_TOTAL_AVG_{d}D")] = (
@@ -419,7 +502,7 @@ def add_global_market_features(df: pd.DataFrame) -> pd.DataFrame:
         # Count is trivially the window size once enough games exist,
         # but early in the season it will be < window.  Use rolling count.
         new_cols[_with_before_suffix(f"LEAGUE_GAMES_LAST_{w}G")] = _rolling_game_agg(
-            ones, w, "count"
+            ones, dates, w, "count"
         )
 
     # =====================================================================
@@ -430,7 +513,7 @@ def add_global_market_features(df: pd.DataFrame) -> pd.DataFrame:
         # 7.1  Absolute open-to-close move
         for w in [15, 30, 75]:
             new_cols[_with_before_suffix(f"GLOBAL_ABS_OPEN_TO_CLOSE_MOVE_AVG_{w}G")] = (
-                _rolling_game_agg(abs_open_to_close_move, w, "mean")
+                _rolling_game_agg(abs_open_to_close_move, dates, w, "mean")
             )
         for d in DAY_WINDOWS:
             new_cols[_with_before_suffix(f"GLOBAL_ABS_OPEN_TO_CLOSE_MOVE_{d}D")] = (
@@ -440,27 +523,27 @@ def add_global_market_features(df: pd.DataFrame) -> pd.DataFrame:
         # 7.2  Directional repricing (signed move)
         for w in [15, 30, 75]:
             new_cols[_with_before_suffix(f"GLOBAL_OPEN_TO_CLOSE_MOVE_AVG_{w}G")] = (
-                _rolling_game_agg(open_to_close_move, w, "mean")
+                _rolling_game_agg(open_to_close_move, dates, w, "mean")
             )
 
         # 7.3  Close-better-than-open rate
         for w in [15, 30, 75]:
             new_cols[
                 _with_before_suffix(f"GLOBAL_CLOSE_BETTER_THAN_OPEN_RATE_{w}G")
-            ] = _rolling_game_agg(close_beats_open_flag, w, "mean")
+            ] = _rolling_game_agg(close_beats_open_flag, dates, w, "mean")
 
         # 7.4  Opening-line error features
         open_market_error = actual_pts - open_line
         open_abs_error = open_market_error.abs()
         for w in [15, 30]:
             new_cols[_with_before_suffix(f"GLOBAL_OPEN_MARKET_BIAS_{w}G")] = (
-                _rolling_game_agg(open_market_error, w, "mean")
+                _rolling_game_agg(open_market_error, dates, w, "mean")
             )
             new_cols[_with_before_suffix(f"GLOBAL_OPEN_MARKET_MAE_{w}G")] = (
-                _rolling_game_agg(open_abs_error, w, "mean")
+                _rolling_game_agg(open_abs_error, dates, w, "mean")
             )
             new_cols[_with_before_suffix(f"GLOBAL_OPEN_MARKET_ERROR_STD_{w}G")] = (
-                _rolling_game_agg(open_market_error, w, "std")
+                _rolling_game_agg(open_market_error, dates, w, "std")
             )
 
     # =====================================================================
@@ -477,7 +560,7 @@ def add_global_market_features(df: pd.DataFrame) -> pd.DataFrame:
     if crossbook_std is not None:
         for w in [15, 30, 75]:
             new_cols[_with_before_suffix(f"GLOBAL_CROSSBOOK_TOTAL_STD_AVG_{w}G")] = (
-                _rolling_game_agg(crossbook_std, w, "mean")
+                _rolling_game_agg(crossbook_std, dates, w, "mean")
             )
 
     # =====================================================================
