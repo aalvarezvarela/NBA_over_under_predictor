@@ -62,7 +62,9 @@ def _normalize_referee_slots(refs) -> pd.Series:
     )
 
 
-def compute_referee_features(df_refs_pivot):
+def compute_referee_features(
+    df_refs_pivot: pd.DataFrame, include_ref_trio_features: bool = False
+):
     """
     Compute aggregate referee features for each game based on historical performance.
 
@@ -72,7 +74,7 @@ def compute_referee_features(df_refs_pivot):
     2. Aggregate those per-referee deltas into:
        - mean across current referees
        - standard deviation across current referees
-    3. Compute order-invariant trio features:
+    3. Optionally compute order-invariant trio features:
        - trio delta: mean(metric in games with exact trio) - mean(metric in games without trio)
        - trio std: standard deviation of metric in games with exact trio
 
@@ -86,6 +88,8 @@ def compute_referee_features(df_refs_pivot):
             - PF: Personal fouls called in the game
             - REF_1, REF_2, REF_3: Names of the three referees
             - DIFF_FROM_LINE: TOTAL_POINTS - TOTAL_LINE_<main_book>
+        include_ref_trio_features (bool): Whether to compute exact-referee-trio
+            features. Defaults to False.
 
     Returns:
         pd.DataFrame: Original DataFrame with additional columns:
@@ -93,6 +97,7 @@ def compute_referee_features(df_refs_pivot):
             - REF_STD_<METRIC>_DIFF_BEFORE
             - REF_TRIO_<METRIC>_DIFF_BEFORE
             - REF_TRIO_<METRIC>_STD_BEFORE
+              (only when include_ref_trio_features=True)
     """
 
     def _extract_unique_refs(row):
@@ -109,17 +114,19 @@ def compute_referee_features(df_refs_pivot):
     # Sort by GAME_DATE to ensure chronological order
     df = df.sort_values("GAME_DATE").reset_index(drop=True)
 
-    # Cache order-invariant trio key per game for faster matching
-    df["REF_TRIO_KEY"] = df.apply(
-        lambda row: frozenset(_extract_unique_refs(row)), axis=1
-    )
+    if include_ref_trio_features:
+        # Cache order-invariant trio key per game for faster matching
+        df["REF_TRIO_KEY"] = df.apply(
+            lambda row: frozenset(_extract_unique_refs(row)), axis=1
+        )
 
-    # Initialize aggregate referee and trio features
+    # Initialize aggregate referee features (and trio features when requested)
     for metric in REFEREE_METRICS:
         df[f"REF_AVG_{metric}_DIFF_BEFORE"] = np.nan
         df[f"REF_STD_{metric}_DIFF_BEFORE"] = np.nan
-        df[f"REF_TRIO_{metric}_DIFF_BEFORE"] = np.nan
-        df[f"REF_TRIO_{metric}_STD_BEFORE"] = np.nan
+        if include_ref_trio_features:
+            df[f"REF_TRIO_{metric}_DIFF_BEFORE"] = np.nan
+            df[f"REF_TRIO_{metric}_STD_BEFORE"] = np.nan
 
     def _split_past_games_by_season(
         current_date: pd.Timestamp, current_season: int
@@ -207,7 +214,7 @@ def compute_referee_features(df_refs_pivot):
 
         # Process referee trio (all three referees together, regardless of order)
         # Use a wider lookback (current + 1 prior seasons) since exact trios are rare
-        if len(current_refs) == 3:
+        if include_ref_trio_features and len(current_refs) == 3:
             current_trio_key = frozenset(current_refs)
             trio_past_games = df[
                 (df["GAME_DATE"] < current_date)
@@ -232,12 +239,17 @@ def compute_referee_features(df_refs_pivot):
                     trio_std = games_with_trio[metric].std(ddof=0)
                     df.at[idx, f"REF_TRIO_{metric}_STD_BEFORE"] = trio_std
 
-    df = df.drop(columns=["REF_TRIO_KEY"])
+    if include_ref_trio_features:
+        df = df.drop(columns=["REF_TRIO_KEY"])
     return df
 
 
 def process_referee_data_for_training(
-    seasons, df_merged, df_referees_scheduled=None, extra_game_ids=None
+    seasons,
+    df_merged,
+    df_referees_scheduled=None,
+    extra_game_ids=None,
+    include_ref_trio_features: bool = False,
 ):
     """
     Load referee data from database, transform it, merge with training data,
@@ -355,7 +367,9 @@ def process_referee_data_for_training(
         )
 
         # Compute referee features
-        df_refs_pivot = compute_referee_features(df_refs_pivot)
+        df_refs_pivot = compute_referee_features(
+            df_refs_pivot, include_ref_trio_features=include_ref_trio_features
+        )
 
         return df_refs_pivot
 
@@ -365,7 +379,11 @@ def process_referee_data_for_training(
 
 
 def add_referee_features_to_training_data(
-    seasons, df_merged, df_referees_scheduled=None, extra_game_ids=None
+    seasons,
+    df_merged,
+    df_referees_scheduled=None,
+    extra_game_ids=None,
+    include_ref_trio_features: bool = False,
 ):
     """
     Add referee-specific features to the training DataFrame.
@@ -382,6 +400,7 @@ def add_referee_features_to_training_data(
         df_merged,
         df_referees_scheduled=df_referees_scheduled,
         extra_game_ids=extra_game_ids,
+        include_ref_trio_features=include_ref_trio_features,
     )
 
     # Merge referee features into training data
@@ -389,12 +408,13 @@ def add_referee_features_to_training_data(
         # Dynamically build feature column list based on REFEREE_METRICS
         ref_feature_cols = ["GAME_ID"]
 
-        # Add aggregate referee and trio features
+        # Add aggregate referee features, plus trio features when enabled
         for metric in REFEREE_METRICS:
             ref_feature_cols.append(f"REF_AVG_{metric}_DIFF_BEFORE")
             ref_feature_cols.append(f"REF_STD_{metric}_DIFF_BEFORE")
-            ref_feature_cols.append(f"REF_TRIO_{metric}_DIFF_BEFORE")
-            ref_feature_cols.append(f"REF_TRIO_{metric}_STD_BEFORE")
+            if include_ref_trio_features:
+                ref_feature_cols.append(f"REF_TRIO_{metric}_DIFF_BEFORE")
+                ref_feature_cols.append(f"REF_TRIO_{metric}_STD_BEFORE")
 
         # Select only the feature columns from df_refs_pivot
         df_refs_features = df_refs_pivot[ref_feature_cols].copy()

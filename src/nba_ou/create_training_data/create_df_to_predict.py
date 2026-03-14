@@ -273,6 +273,8 @@ def create_df_to_predict(
             For todays_prediction=False, defaults to all seasons from 2017-18.
         strict_mode (int, optional): Maximum number of columns allowed to have NaN/None values
             when validating scheduled odds. Use a negative value to disable the check. Default is 2.
+        include_ref_trio_features (bool, optional): Whether to compute exact
+            referee-trio features. Defaults to False.
 
     Returns:
         pd.DataFrame: Complete training dataset with all features
@@ -424,6 +426,7 @@ def create_df_to_predict(
         df_merged,
         df_referees_scheduled=df_referees_scheduled if todays_prediction else None,
         extra_game_ids=extra_game_ids,
+        include_ref_trio_features=False,
     )
 
     df_training = select_training_columns(

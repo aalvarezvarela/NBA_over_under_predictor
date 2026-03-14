@@ -55,19 +55,19 @@ def filter_by_seasons_with_extra_game_ids(
     extra_game_ids=None,
 ) -> pd.DataFrame:
     """
-    Filter DataFrame to rows whose season matches the given seasons list,
-    with an optional upper date cap and explicit extra GAME_IDs.
+    Filter DataFrame to rows whose `SEASON_YEAR` matches the given seasons list,
+    with an optional upper date cap and explicit extra `GAME_ID`s.
 
-    Seasons are expressed as "YYYY-YY" strings (e.g., "2024-25").
-    The filter matches against SEASON_YEAR (int) when present, otherwise
-    derives the season year from SEASON_ID (last-4-chars convention).
+    Seasons are expressed as "YYYY-YY" strings (e.g., "2024-25"), and the
+    DataFrame is expected to contain a `SEASON_YEAR` column with the integer
+    season start year (e.g., 2024).
 
     Args:
-        df: DataFrame with SEASON_YEAR or SEASON_ID column.
+        df: DataFrame with a `SEASON_YEAR` column.
         seasons: List of season strings like ["2024-25", "2023-24"].
         recent_limit_to_include: Optional upper date cap (inclusive).  Applied to
-            GAME_DATE when the column is present to exclude unplayed games.
-        extra_game_ids: Explicit GAME_IDs to always include (respects date cap).
+            `GAME_DATE` when the column is present to exclude unplayed games.
+        extra_game_ids: Explicit `GAME_ID`s to always include (respects date cap).
     """
     if df.empty:
         return df
