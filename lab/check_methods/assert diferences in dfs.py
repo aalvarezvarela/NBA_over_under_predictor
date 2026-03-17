@@ -1,13 +1,13 @@
 import pandas as pd
 
 # Paths
-predictions_path = "/home/adrian_alvarez/Projects/NBA_over_under_predictor/df_to_predict_total_12_march.csv"
+predictions_path = "/home/adrian_alvarez/Projects/NBA_over_under_predictor/prediction_data_14_march.csv"
 # predictions_path = "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/train_data/all_odds_training_data_until_20260311_2.csv"
-other_path = "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/train_data/all_odds_training_data_until_20260313.csv"
+other_path = "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/train_data/all_odds_training_data_until_20260315.csv"
 
 # Load data
 df_pred = pd.read_csv(predictions_path)
-df_pred = df_pred[df_pred["GAME_DATE"] == "2026-03-12"]
+df_pred = df_pred[df_pred["GAME_DATE"] == "2026-03-14"]
 df_other = pd.read_csv(other_path)
 
 # Ensure consistent dtype
@@ -22,10 +22,10 @@ df_other_filtered = df_other[df_other["GAME_ID"].isin(df_pred["GAME_ID"])].copy(
 df_pred = df_pred.set_index("GAME_ID").sort_index()
 df_other_filtered = df_other_filtered.set_index("GAME_ID").sort_index()
 
-# Filter to just the first GAME_ID
-first_game_id = df_pred.index[0]
-df_pred = df_pred.loc[[first_game_id]]
-df_other_filtered = df_other_filtered.loc[[first_game_id]]
+# # Filter to just the first GAME_ID
+# first_game_id = df_pred.index[0]
+# df_pred = df_pred.loc[[first_game_id]]
+# df_other_filtered = df_other_filtered.loc[[first_game_id]]
 
 # Keep only common columns
 common_cols = df_pred.columns.intersection(df_other_filtered.columns)

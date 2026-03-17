@@ -2,6 +2,17 @@ import pandas as pd
 from nba_ou.config.constants import TEAM_ID_MAP, TEAM_NAME_STANDARDIZATION
 
 
+def _normalize_scheduled_season_fields(games: pd.DataFrame) -> pd.DataFrame:
+    """Align scheduled-game season keys with the historical team/player tables."""
+    out = games.copy()
+    out["GAME_ID"] = out["GAME_ID"].astype(str)
+    out["SEASON_YEAR"] = pd.to_numeric(
+        out["SEASON"].astype(str).str[:4], errors="coerce"
+    ).astype("Int64")
+    out["SEASON_ID"] = out["GAME_ID"].str[2] + out["SEASON_YEAR"].astype(str)
+    return out
+
+
 def standardize_and_merge_scheduled_games_to_team_data(df, scheduled_games):
     """
     Standardizes the `games` DataFrame to match `df` and merges them.
@@ -25,18 +36,12 @@ def standardize_and_merge_scheduled_games_to_team_data(df, scheduled_games):
             "VISITOR_TEAM_ID": "TEAM_ID_AWAY",  # Temporarily rename to avoid conflict
         }
     )
+    games_renamed = _normalize_scheduled_season_fields(games_renamed)
     # set string to Team_ID of games
     games_renamed["TEAM_ID"] = games_renamed["TEAM_ID"].astype(str)
     games_renamed["TEAM_ID_AWAY"] = games_renamed["TEAM_ID_AWAY"].astype(str)
     games_renamed["TEAM_ID_AWAY"] = games_renamed["TEAM_ID_AWAY"].astype(str)
     games_renamed["GAME_DATE"] = pd.to_datetime(games_renamed["GAME_DATE"])
-    games_renamed["SEASON_YEAR"] = games_renamed["SEASON"].astype(str).str[:4]
-    games_renamed["SEASON_YEAR"] = games_renamed["SEASON_YEAR"].astype(str)
-    # Recreate SEASON_ID using the first digit before the first '00' in GAME_ID and SEASON_YEAR
-    games_renamed["SEASON_PREFIX"] = games_renamed["GAME_ID"].astype(str).str[2]
-    games_renamed["SEASON_ID"] = (
-        games_renamed["SEASON_PREFIX"] + games_renamed["SEASON_YEAR"]
-    )
     games_renamed["SEASON_ID"] = games_renamed["SEASON_ID"].astype(str)
     # Create separate DataFrames for home and away teams
     cols_to_keep = ["GAME_ID", "TEAM_ID", "GAME_DATE", "SEASON_ID"]
@@ -109,13 +114,8 @@ def standardize_and_merge_scheduled_games_to_team_data(df, scheduled_games):
 def standardize_and_merge_scheduled_games_to_players_data(
     games_original, df_players_original
 ):
-    games = games_original.copy()
+    games = _normalize_scheduled_season_fields(games_original)
     df_players = df_players_original.copy()
-    games = games.rename(columns={"SEASON": "SEASON_YEAR"})
-
-    games["SEASON_ID"] = games.apply(
-        lambda x: f"{x['GAME_ID'][3]}{x['SEASON_YEAR']}", axis=1
-    )
     games = games.rename(columns={"GAME_DATE_EST": "GAME_DATE"})
     games["GAME_DATE"] = pd.to_datetime(games["GAME_DATE"])
 
@@ -163,5 +163,9 @@ def standardize_and_merge_scheduled_games_to_players_data(
         return pd.DataFrame(columns=df_last_game.columns)
 
     df_next_game = pd.concat(next_game_parts, ignore_index=True, sort=False)
+    if "SEASON_YEAR" in df_players.columns:
+        df_next_game["SEASON_YEAR"] = df_next_game["SEASON_YEAR"].astype(
+            df_players["SEASON_YEAR"].dtype
+        )
 
     return df_next_game

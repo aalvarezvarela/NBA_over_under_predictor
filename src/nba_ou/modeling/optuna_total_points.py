@@ -59,7 +59,7 @@ def build_xgb_params_total_points(
         "tree_method": "hist",
         "objective": objective,
         "eval_metric": "mae",
-        "max_depth": trial.suggest_int("max_depth", 2, 5),
+        "max_depth": trial.suggest_int("max_depth", 2, 4),
         "min_child_weight": trial.suggest_float(
             "min_child_weight", 5.0, 40.0, log=True
         ),

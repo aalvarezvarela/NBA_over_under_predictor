@@ -124,6 +124,7 @@ def compute_referee_features(
     for metric in REFEREE_METRICS:
         df[f"REF_AVG_{metric}_DIFF_BEFORE"] = np.nan
         df[f"REF_STD_{metric}_DIFF_BEFORE"] = np.nan
+        df[f"REF_SUM_{metric}_DIFF_BEFORE"] = np.nan
         if include_ref_trio_features:
             df[f"REF_TRIO_{metric}_DIFF_BEFORE"] = np.nan
             df[f"REF_TRIO_{metric}_STD_BEFORE"] = np.nan
@@ -211,6 +212,7 @@ def compute_referee_features(
                 df.at[idx, f"REF_STD_{metric}_DIFF_BEFORE"] = per_ref_diffs_series.std(
                     ddof=0
                 )
+                df.at[idx, f"REF_SUM_{metric}_DIFF_BEFORE"] = per_ref_diffs_series.sum()
 
         # Process referee trio (all three referees together, regardless of order)
         # Use a wider lookback (current + 1 prior seasons) since exact trios are rare
@@ -218,11 +220,7 @@ def compute_referee_features(
             current_trio_key = frozenset(current_refs)
             trio_past_games = df[
                 (df["GAME_DATE"] < current_date)
-                & (
-                    df["SEASON_YEAR"].isin(
-                        {current_season, current_season - 1}
-                    )
-                )
+                & (df["SEASON_YEAR"].isin({current_season, current_season - 1}))
             ]
             games_with_trio, games_without_trio = _select_games_for_trio(
                 trio_past_games, current_trio_key
@@ -412,6 +410,7 @@ def add_referee_features_to_training_data(
         for metric in REFEREE_METRICS:
             ref_feature_cols.append(f"REF_AVG_{metric}_DIFF_BEFORE")
             ref_feature_cols.append(f"REF_STD_{metric}_DIFF_BEFORE")
+            ref_feature_cols.append(f"REF_SUM_{metric}_DIFF_BEFORE")
             if include_ref_trio_features:
                 ref_feature_cols.append(f"REF_TRIO_{metric}_DIFF_BEFORE")
                 ref_feature_cols.append(f"REF_TRIO_{metric}_STD_BEFORE")

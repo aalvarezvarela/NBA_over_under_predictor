@@ -1,10 +1,75 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable
+from datetime import UTC, datetime
+from pathlib import Path
 
+import joblib
 import numpy as np
 import pandas as pd
+from pydantic import BaseModel, ConfigDict, Field
+from xgboost import XGBRegressor
+
+# ---------------------------------------------------------------------------
+# Metadata schema
+# ---------------------------------------------------------------------------
+
+
+class ModelInfo(BaseModel):
+    name: str
+    algorithm: str = "xgboost"
+    model_version: str
+    model_type: str
+    prediction_source: str
+    training_code_tag: str
+
+
+class SchemaInfo(BaseModel):
+    feature_names: list[str]
+    n_features: int
+
+
+class TrainingMetrics(BaseModel):
+    best_params: dict
+    mean_best_iteration: int | None = None
+    cv_mae: float
+    cv_rmse: float | None = None
+    cv_ou_acc: float | None = None
+    final_test_mae: float
+    final_test_rmse: float
+    final_test_ou_acc: float
+    train_date_min: datetime
+    train_date_max: datetime
+
+
+class ModelBundleMetadata(BaseModel):
+    """Structured metadata saved alongside a model bundle.
+
+    Fields
+    ------
+    model_info
+        Identifies the model (serialised as ``"model"`` in JSON).
+    schema_info
+        Describes the feature schema (serialised as ``"schema"`` in JSON).
+        Automatically populated by :func:`save_model_bundle` from the
+        ``feature_names`` argument, so callers do not need to fill it in.
+    training_metrics
+        Optuna study results and hold-out evaluation metrics.
+    created_at
+        UTC timestamp set automatically at construction time.
+    """
+
+    model_info: ModelInfo = Field(serialization_alias="model")
+    schema_info: SchemaInfo = Field(
+        default=None,  # type: ignore[assignment]
+        serialization_alias="schema",
+    )
+    training_metrics: TrainingMetrics | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 @dataclass
@@ -722,3 +787,62 @@ def assert_valid_time_splits(
     if not result.is_valid:
         joined = "\n".join(result.errors)
         raise ValueError(f"Invalid time splits:\n{joined}")
+
+
+def save_model_bundle(
+    model: XGBRegressor,
+    feature_names: list[str],
+    out_dir: str | Path,
+    metadata: ModelBundleMetadata,
+) -> tuple[Path, Path]:
+    """Save a model and its metadata to *out_dir*.
+
+    The ``schema_info`` inside *metadata* is always overwritten from
+    *feature_names*, so callers only need to populate ``model_info``.
+
+    Parameters
+    ----------
+    model : XGBRegressor
+        Fitted model to persist.
+    feature_names : list[str]
+        Feature names actually used by the model.
+    out_dir : str | Path
+        Directory to write artefacts into (created if absent).
+    metadata : ModelBundleMetadata
+        Structured metadata.  ``model_info.name`` is used to derive
+        the output file names.
+
+    Returns
+    -------
+    tuple[Path, Path]
+        (model_path, meta_path)
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    name = metadata.model_info.name
+    model_path = out_dir / f"{name}.json"
+    meta_path = out_dir / f"{name}.meta.json"
+
+    model.save_model(model_path)
+
+    # Always derive the schema from the actual feature list used.
+    final_metadata = metadata.model_copy(
+        update={
+            "schema_info": SchemaInfo(
+                feature_names=list(feature_names),
+                n_features=len(feature_names),
+            )
+        }
+    )
+
+    meta_path.write_text(final_metadata.model_dump_json(by_alias=True, indent=2))
+
+    return model_path, meta_path
+
+
+def load_model_bundle(model_path: str | Path, meta_path: str | Path):
+    model = XGBRegressor()
+    model.load_model(model_path)
+    metadata = json.loads(Path(meta_path).read_text())
+    return model, metadata
