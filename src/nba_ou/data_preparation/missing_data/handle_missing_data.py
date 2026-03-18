@@ -15,20 +15,16 @@ Important:
 
 Usage:
     # Training time
-    df_clean, report = apply_missing_policy(df_train, mode="train")
-    train_medians = compute_train_medians(df_clean)
+    df_clean = apply_missing_policy(df_train, mode="train")
 
     # Prediction time
-    df_clean, report = apply_missing_policy(
-        df_predict,
-        train_medians=train_medians,
-        mode="predict",
-    )
+    df_clean = apply_missing_policy(df_predict, mode="predict")
 """
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable, Literal
+from typing import Literal
 
 import pandas as pd
 from nba_ou.config.odds_columns import moneyline_col, spread_col, total_line_col
@@ -233,8 +229,8 @@ def apply_missing_policy(
       1) Drop rows missing required cols (skipped if keep_all_cols=True)
       2) Add __is_missing flags for structural missing columns (if enabled)
       3) Infer rolling features from season averages
-      4) Zero-fill neutral features + add flags
-      5) Final fallback to train medians (excludes market keep-na cols)
+      4) Zero-fill injury/absence features (no flags)
+      Remaining NAs are left as-is.
 
     Args:
         df: Input dataframe to clean
@@ -248,9 +244,6 @@ def apply_missing_policy(
     """
     out = df.copy()
     before_rows = int(len(out))
-
-    # Compute medians from the data
-    train_medians = compute_train_medians(out)
 
     policy = resolve_policy(
         out, current_total_line_col=current_total_line_col, mode=mode
@@ -309,19 +302,6 @@ def apply_missing_policy(
     if zero_cols_numeric:
         out.loc[:, zero_cols_numeric] = out.loc[:, zero_cols_numeric].fillna(0.0)
 
-    # E) FINAL FALLBACK: TRAIN MEDIANS
-    # Do NOT fill market keep-na cols, you want NaN + flag there.
-    if train_medians is not None:
-        common = [
-            c
-            for c in out.columns
-            if c in train_medians.index
-            and is_numeric_dtype(out[c])
-            and c not in keep_na_set
-        ]
-        if common:
-            out.loc[:, common] = out.loc[:, common].fillna(train_medians[common])
-
     # Calculate summary statistics
     rows_dropped = int(before_rows - len(out))
     drop_rate_pct = (
@@ -340,7 +320,8 @@ def apply_missing_policy(
         "infer_pairs_count": int(len(policy.infer_pairs)),
         "infer_cols_applied_count": int(infer_applied),
         "missing_flags_created": int(flags_created),
-        "remaining_na_cells": int(out.isna().sum().sum()),
+        "remaining_na_count": int(out.isna().sum().sum()),
+        "remaining_na_by_col": out.isna().sum()[out.isna().sum() > 0].to_dict(),
         "dropped_reasons": dropped_reasons,
         "drop_cols": policy.drop_cols,
         "keep_na_cols_sample": policy.keep_na_cols[:25],
@@ -356,18 +337,6 @@ def apply_missing_policy(
     print(
         f"  Infer pairs applied: {report['infer_cols_applied_count']}/{report['infer_pairs_count']}"
     )
-    print(f"  Remaining NaN cells: {report['remaining_na_cells']}")
+    print(f"  Remaining NaN cells: {report['remaining_na_count']}")
 
     return out
-
-
-# ------------------------------------------------------------------------------
-# 7) TRAIN MEDIANS UTILS
-# ------------------------------------------------------------------------------
-
-
-def compute_train_medians(df_train: pd.DataFrame) -> pd.Series:
-    """
-    Compute medians from training data (numeric only).
-    """
-    return df_train.median(numeric_only=True)
