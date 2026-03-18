@@ -7,6 +7,10 @@ General utility functions for use across NBA Over/Under Predictor modules.
 from datetime import datetime
 
 
+def _with_before_suffix(name: str) -> str:
+    return name if name.endswith("_BEFORE") else f"{name}_BEFORE"
+
+
 def get_season_year_from_date(date: datetime | str) -> int:
     """
     Given a date, returns the starting year of the NBA season it belongs to.

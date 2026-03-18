@@ -14,10 +14,11 @@ from nba_ou.postgre_db.predictions.create.create_ou_predictions_db import (
     upload_predictions_to_postgre,
 )
 from nba_ou.utils.s3_models import (
-    get_first_joblib_from_prefix,
-    load_joblib_from_bytes,
+    get_latest_model_bundle_from_prefix,
+    read_s3_json_object,
     read_s3_object_bytes,
 )
+from xgboost import XGBRegressor
 
 PredictionTarget = Literal["PRED_LINE_ERROR", "TOTAL_POINTS"]
 
@@ -244,12 +245,49 @@ def top_shap_reasons(
     return ",".join(f"{feature}:{value:+.3f}" for feature, value in selected.items())
 
 
+def _nested_metadata_value(metadata: dict, *path: str) -> object | None:
+    current: object = metadata
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _infer_prediction_target_from_metadata(metadata: dict) -> PredictionTarget:
+    model_type = str(_nested_metadata_value(metadata, "model", "model_type") or "")
+    prediction_source = str(
+        _nested_metadata_value(metadata, "model", "prediction_source") or ""
+    )
+    model_name = str(_nested_metadata_value(metadata, "model", "name") or "")
+    signature = " ".join([model_type.lower(), prediction_source.lower(), model_name.lower()])
+
+    if "total_points" in signature:
+        return PREDICTION_TARGET_TOTAL_POINTS
+
+    return PREDICTION_TARGET_LINE_ERROR
+
+
+def _resolve_feature_names_from_metadata(metadata: dict) -> list[str] | None:
+    schema_feature_names = _nested_metadata_value(metadata, "schema", "feature_names")
+    if isinstance(schema_feature_names, list) and schema_feature_names:
+        return [str(feat) for feat in schema_feature_names]
+
+    return None
+
+
 def load_and_predict_model_for_nba_games(
     df: pd.DataFrame,
     regressor,
     model_name: str,
     model_type: str,
     model_version: str,
+    *,
+    required_features: list[str] | None = None,
+    prediction_source: str | None = None,
+    training_code_tag: str | None = None,
+    train_date_min: str | None = None,
+    train_date_max: str | None = None,
     prediction_datetime: datetime | None = None,
     prediction_target: PredictionTarget = PREDICTION_TARGET_LINE_ERROR,
     total_points_pick_line_col: str | None = None,
@@ -305,8 +343,11 @@ def load_and_predict_model_for_nba_games(
     model = regressor
 
     # Extract required features from model
-    required_features_raw = model.feature_names_in_
-    required_features = [str(feat) for feat in required_features_raw]
+    if required_features is None:
+        required_features_raw = model.feature_names_in_
+        required_features = [str(feat) for feat in required_features_raw]
+    else:
+        required_features = [str(feat) for feat in required_features]
 
     # Handle IS_TRAINING_DATA if it's missing - create it with all False values
     if (
@@ -490,6 +531,10 @@ def load_and_predict_model_for_nba_games(
     df_summary["MODEL_NAME"] = model_name
     df_summary["MODEL_TYPE"] = model_type
     df_summary["MODEL_VERSION"] = model_version
+    df_summary["PREDICTION_SOURCE"] = prediction_source
+    df_summary["TRAINING_CODE_TAG"] = training_code_tag
+    df_summary["TRAIN_DATE_MIN"] = train_date_min
+    df_summary["TRAIN_DATE_MAX"] = train_date_max
 
     shap_df, shap_base_value = compute_shap_values(model, X)
     df_summary["SHAP_BASE_VALUE"] = shap_base_value
@@ -540,19 +585,12 @@ def load_s3_model_and_predict(
     bucket: str,
     prefix: str,
     df: pd.DataFrame,
-    model_id: str,
     prediction_datetime: datetime | None = None,
-    prediction_target: PredictionTarget = PREDICTION_TARGET_LINE_ERROR,
     total_points_pick_line_col: str | None = None,
     shap_top_n: int = 20,
 ) -> pd.DataFrame:
     """
-    Load the first .joblib model from an S3 prefix and generate predictions.
-
-    This helper function reduces code duplication by combining:
-    1. Finding the first .joblib file in an S3 prefix
-    2. Loading the model from S3
-    3. Generating predictions
+    Discover a model bundle from an S3 prefix and generate predictions.
 
     Args:
         s3_client: Boto3 S3 client
@@ -560,7 +598,6 @@ def load_s3_model_and_predict(
         prefix: S3 prefix to search for model
         df: DataFrame containing game data to predict
         prediction_datetime: Timestamp for predictions (defaults to now in Europe/Madrid)
-        prediction_target: Which target this model predicts.
         total_points_pick_line_col: Line column used for PRED_PICK when
             prediction_target is TOTAL_POINTS. Defaults to main sportsbook from config.
         shap_top_n: Number of top positive/negative SHAP contributors to store.
@@ -569,36 +606,53 @@ def load_s3_model_and_predict(
         DataFrame containing predictions
 
     Raises:
-        FileNotFoundError: If no .joblib file is found in the prefix
+        FileNotFoundError: If no valid model bundle is found in the prefix
     """
-    # Find the first .joblib file in the prefix
-    model_key = get_first_joblib_from_prefix(
+    bundle = get_latest_model_bundle_from_prefix(
         s3_client=s3_client,
         bucket=bucket,
         prefix=prefix,
     )
 
-    if not model_key:
-        raise FileNotFoundError(f"No .joblib file found in S3 prefix: {prefix}")
+    if bundle is None:
+        raise FileNotFoundError(f"No model bundle found in S3 prefix: {prefix}")
 
-    # Load the model from S3
+    metadata = read_s3_json_object(
+        s3_client=s3_client,
+        bucket=bucket,
+        key=bundle.meta_key,
+    )
+    model_info = metadata.get("model")
+    training_metrics = metadata.get("training_metrics")
+    if not isinstance(model_info, dict):
+        raise ValueError(f"Metadata file {bundle.meta_key} is missing model metadata")
+    if training_metrics is None:
+        training_metrics = {}
+    if not isinstance(training_metrics, dict):
+        raise ValueError(
+            f"Metadata file {bundle.meta_key} has invalid training_metrics metadata"
+        )
+
     model_bytes = read_s3_object_bytes(
         s3_client=s3_client,
         bucket=bucket,
-        key=model_key,
+        key=bundle.model_key,
     )
-    regressor = load_joblib_from_bytes(model_bytes)
+    regressor = XGBRegressor()
+    regressor.load_model(bytearray(model_bytes))
 
-    # Extract model metadata from the S3 key
-    model_name = Path(model_key).stem
-    model_type = model_id
-    # Extract version from model name (assumes format like: model_name_DD_MM_YY)
-    # e.g., "recent_data_xgb_line_error_14_02_26" -> "14_02_26"
-    name_parts = model_name.split("_")
-    if len(name_parts) >= 3 and all(part.isdigit() for part in name_parts[-3:]):
-        model_version = "_".join(name_parts[-3:])  # Last 3 parts as date
-    else:
-        model_version = "1.0"  # Fallback if no date pattern found
+    model_name = str(model_info.get("name") or Path(bundle.model_key).stem)
+    model_type = str(model_info.get("model_type") or "unknown")
+    model_version = str(model_info.get("model_version") or "unknown")
+    prediction_source = str(model_info.get("prediction_source") or model_type)
+    training_code_tag = str(model_info.get("training_code_tag") or "")
+    required_features = _resolve_feature_names_from_metadata(metadata)
+    if not required_features:
+        raise ValueError(
+            f"Metadata file {bundle.meta_key} is missing feature names metadata"
+        )
+
+    prediction_target = _infer_prediction_target_from_metadata(metadata)
 
     # Generate predictions
     return load_and_predict_model_for_nba_games(
@@ -607,6 +661,11 @@ def load_s3_model_and_predict(
         model_name=model_name,
         model_type=model_type,
         model_version=model_version,
+        required_features=[str(feat) for feat in required_features],
+        prediction_source=prediction_source,
+        training_code_tag=training_code_tag or None,
+        train_date_min=training_metrics.get("train_date_min"),
+        train_date_max=training_metrics.get("train_date_max"),
         prediction_datetime=prediction_datetime,
         prediction_target=prediction_target,
         total_points_pick_line_col=total_points_pick_line_col,

@@ -85,6 +85,7 @@ def get_historical_game_ids_for_home_away_matchups(
     home_away_pairs: list[tuple[str, str]],
     exclude_game_ids=None,
     max_game_date=None,
+    min_season_year: int | None = None,
 ) -> list[str]:
     """
     Fetch historical GAME_IDs for the exact same home/away matchup orientation.
@@ -93,6 +94,8 @@ def get_historical_game_ids_for_home_away_matchups(
         home_away_pairs: list of (home_team_id, away_team_id) tuples.
         exclude_game_ids: optional GAME_IDs to exclude from results.
         max_game_date: optional max game date (inclusive) to cap returned games.
+        min_season_year: optional lower bound on season_year. If None, uses
+            the full history available in the games table.
 
     Returns:
         list[str]: Historical game IDs ordered by most recent game date first.
@@ -129,6 +132,7 @@ def get_historical_game_ids_for_home_away_matchups(
         values_sql = sql.SQL(", ").join([sql.SQL("(%s, %s)") for _ in normalized_pairs])
         where_exclude = sql.SQL("")
         where_date_cap = sql.SQL("")
+        where_min_season = sql.SQL("")
         query_params = []
 
         for home_team_id, away_team_id in normalized_pairs:
@@ -141,6 +145,10 @@ def get_historical_game_ids_for_home_away_matchups(
         if max_game_date is not None:
             where_date_cap = sql.SQL(" AND g_home.game_date <= %s")
             query_params.append(pd.to_datetime(max_game_date).date())
+
+        if min_season_year is not None:
+            where_min_season = sql.SQL(" AND g_home.season_year >= %s")
+            query_params.append(int(min_season_year))
 
         query_obj = sql.SQL("""
             WITH requested_matchups(home_team_id, away_team_id) AS (
@@ -157,7 +165,7 @@ def get_historical_game_ids_for_home_away_matchups(
                 AND g_away.home = FALSE
                 AND COALESCE(g_home.season_type, '') NOT IN ('All Star', 'Preseason')
                 AND COALESCE(g_away.season_type, '') NOT IN ('All Star', 'Preseason')
-                AND g_home.season_year >= 2020
+                {}
                 {}
                 {}
             GROUP BY g_home.game_id
@@ -170,6 +178,7 @@ def get_historical_game_ids_for_home_away_matchups(
             sql.Identifier(table),
             where_exclude,
             where_date_cap,
+            where_min_season,
         )
 
         query = query_obj.as_string(conn)

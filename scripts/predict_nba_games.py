@@ -11,8 +11,6 @@ from nba_ou.create_training_data.get_all_info_for_scheduled_games import (
 )
 from nba_ou.postgre_db.update_all.update_all_databases import update_all_databases
 from nba_ou.prediction.prediction import (
-    PREDICTION_TARGET_LINE_ERROR,
-    PREDICTION_TARGET_TOTAL_POINTS,
     load_s3_model_and_predict,
 )
 from nba_ou.prediction.prediction_tabpfn_client import (
@@ -66,13 +64,15 @@ def predict_nba_games(run_tabpfn_client: bool = False) -> None:
 
     # Print welcome banner
     print_banner(date_to_predict)
-    print(
-        "  S3 Models:\n"
-        f"    - Full Dataset (Line Error): {SETTINGS.s3_regressor_full_dataset_prefix}\n"
-        f"    - Full Dataset (Total Points): {SETTINGS.s3_regressor_full_dataset_total_points_prefix}\n"
-        f"    - Recent Games (Line Error): {SETTINGS.s3_regressor_recent_games_prefix}\n"
-        f"    - Recent Games (Total Points): {SETTINGS.s3_regressor_recent_games_total_points_prefix}\n"
-    )
+    configured_prefixes = SETTINGS.prediction_model_prefixes
+    if not configured_prefixes:
+        raise ValueError(
+            "No prediction model prefixes configured in [PredictionModels] "
+            "S3_MODEL_PREFIXES."
+        )
+    print("  Configured S3 model folders:")
+    for prefix in configured_prefixes:
+        print(f"    - {prefix}")
 
     # Step 1: Update the database
     print_step_header(1, "Updating All Databases")
@@ -83,6 +83,7 @@ def predict_nba_games(run_tabpfn_client: bool = False) -> None:
             end_season_year=int(season_to_update),
             only_new_games=True,
             headless=SETTINGS.headless,
+            exclude_game_date=date_to_predict,
         )
         print_status("Databases updated")
 
@@ -115,7 +116,6 @@ def predict_nba_games(run_tabpfn_client: bool = False) -> None:
         df_to_predict_total = create_df_to_predict(
             todays_prediction=True,
             scheduled_data=scheduled_data,
-            recent_limit_to_include=date_to_predict,
             strict_mode=2,
         )
         df_to_predict = df_to_predict_total[
@@ -137,55 +137,21 @@ def predict_nba_games(run_tabpfn_client: bool = False) -> None:
     s3 = make_s3_client(profile=SETTINGS.s3_aws_profile, region=SETTINGS.s3_aws_region)
     prediction_time = datetime.now(ZoneInfo("Europe/Madrid"))
 
-    model_runs = [
-        (
-            "Full Dataset Model (Total Points)",
-            SETTINGS.s3_regressor_full_dataset_total_points_prefix,
-            "full_dataset_total_points",
-            PREDICTION_TARGET_TOTAL_POINTS,
-        ),
-        (
-            "Recent Games Model (Total Points)",
-            SETTINGS.s3_regressor_recent_games_total_points_prefix,
-            "recent_games_total_points",
-            PREDICTION_TARGET_TOTAL_POINTS,
-        ),
-        (
-            "Full Dataset Model (Line Error)",
-            SETTINGS.s3_regressor_full_dataset_prefix,
-            "full_dataset",
-            PREDICTION_TARGET_LINE_ERROR,
-        ),
-        (
-            "Recent Games Model (Line Error)",
-            SETTINGS.s3_regressor_recent_games_prefix,
-            "recent_games",
-            PREDICTION_TARGET_LINE_ERROR,
-        ),
-    ]
-
     step_number = 4
-    for step_title, prefix, model_id, prediction_target in model_runs:
-        print_step_header(step_number, f"Generating Predictions ({step_title})")
+    for prefix in configured_prefixes:
+        print_step_header(step_number, f"Generating Predictions ({prefix})")
         step_number += 1
         try:
-            if not prefix:
-                raise ValueError(
-                    f"S3 prefix missing in config for model run '{step_title}'"
-                )
-
             _ = load_s3_model_and_predict(
                 s3_client=s3,
                 bucket=SETTINGS.s3_bucket,
                 prefix=prefix,
                 df=df_to_predict,
-                model_id=model_id,
                 prediction_datetime=prediction_time,
-                prediction_target=prediction_target,
             )
-            print_status(f"{step_title} predictions generated")
+            print_status(f"Predictions generated for {prefix}")
         except Exception as e:
-            print_status(f"Failed to generate {step_title} predictions: {e}", ok=False)
+            print_status(f"Failed to generate predictions for {prefix}: {e}", ok=False)
             raise
 
     if not run_tabpfn_client:

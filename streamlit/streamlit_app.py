@@ -256,6 +256,7 @@ def format_madrid_datetime(series: pd.Series, fmt: str) -> pd.Series:
 def build_game_level_predictions(
     df: pd.DataFrame,
     prediction_cutoff: pd.Timestamp | None = None,
+    model_version_filter: str | None = "1.0",
 ) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame()
@@ -263,9 +264,18 @@ def build_game_level_predictions(
     work = df.copy()
     if "model_type" not in work.columns:
         return pd.DataFrame()
+    if "model_version" not in work.columns:
+        work["model_version"] = np.nan
 
     work["model_type"] = work["model_type"].apply(normalize_model_type)
     work = work[work["model_type"].isin(MODEL_ORDER)].copy()
+
+    if model_version_filter:
+        normalized_version = str(model_version_filter).strip()
+        work = work[
+            work["model_version"].fillna("").astype(str).str.strip()
+            == normalized_version
+        ].copy()
 
     if work.empty:
         return pd.DataFrame()
@@ -1110,7 +1120,7 @@ def compute_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(out_rows).sort_values(["game_date", "model_type"])
 
 
-def show_upcoming_predictions() -> None:
+def show_upcoming_predictions(model_version_filter: str | None) -> None:
     st.markdown("### 🔄 Update Predictions")
     st.caption(
         "Run the prediction model to generate fresh predictions for today's games."
@@ -1135,7 +1145,10 @@ def show_upcoming_predictions() -> None:
 
     with st.spinner("Loading upcoming predictions..."):
         raw = get_games_with_total_scored_points(only_null=True)
-        games = build_game_level_predictions(raw)
+        games = build_game_level_predictions(
+            raw,
+            model_version_filter=model_version_filter,
+        )
 
     if games.empty:
         st.info("No upcoming predictions found.")
@@ -1206,7 +1219,7 @@ def show_upcoming_predictions() -> None:
         )
 
 
-def show_past_games_results() -> None:
+def show_past_games_results(model_version_filter: str | None) -> None:
     st.markdown("## Past Games Results")
     st.caption("Compare predictions vs actual totals for a selected date.")
     st.markdown("")
@@ -1264,7 +1277,11 @@ def show_past_games_results() -> None:
     )
 
     selected_cutoff = mapping[selected_label]
-    games = build_game_level_predictions(raw, prediction_cutoff=selected_cutoff)
+    games = build_game_level_predictions(
+        raw,
+        prediction_cutoff=selected_cutoff,
+        model_version_filter=model_version_filter,
+    )
 
     if games.empty:
         st.warning("No games available at the selected prediction time.")
@@ -1326,7 +1343,7 @@ def show_past_games_results() -> None:
         )
 
 
-def show_historical_performance() -> None:
+def show_historical_performance(model_version_filter: str | None) -> None:
     st.markdown("## Historical Betting Performance")
     st.caption("Analyze model accuracy and prediction error over time.")
     st.markdown("")
@@ -1348,7 +1365,10 @@ def show_historical_performance() -> None:
             start_date=start_date.strftime("%Y-%m-%d") if start_date else None,
             end_date=end_date.strftime("%Y-%m-%d") if end_date else None,
         )
-        games = build_game_level_predictions(raw)
+        games = build_game_level_predictions(
+            raw,
+            model_version_filter=model_version_filter,
+        )
 
     if games.empty:
         st.warning("No historical rows found for the selected range.")
@@ -1507,16 +1527,21 @@ def main() -> None:
             ],
             index=0,
         )
+        model_version_filter = st.text_input(
+            "Model Version",
+            value="1.0",
+            help="Exact model_version to display. Leave blank to include all versions.",
+        ).strip()
         st.markdown("---")
 
     render_header()
 
     if view_option == "Upcoming Predictions":
-        show_upcoming_predictions()
+        show_upcoming_predictions(model_version_filter or None)
     elif view_option == "Past Games Results":
-        show_past_games_results()
+        show_past_games_results(model_version_filter or None)
     else:
-        show_historical_performance()
+        show_historical_performance(model_version_filter or None)
 
 
 if __name__ == "__main__":

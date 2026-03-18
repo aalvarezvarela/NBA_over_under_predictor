@@ -1,8 +1,10 @@
 import html
 import os
+import re
 import sys
 import time
 import warnings
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -37,34 +39,151 @@ from nba_ou.utils.streamlit_utils import get_team_logo_url  # noqa: E402
 
 warnings.filterwarnings("ignore", message="pandas only supports SQLAlchemy connectable")
 
-MODEL_ORDER = [
-    "full_dataset",
-    "full_dataset_total_points",
-    "recent_games",
-    "recent_games_total_points",
-    "TabPFNRegressor",
-]
-MODEL_LABELS = {
-    "full_dataset": "Full (Diff)",
-    "full_dataset_total_points": "Full (Total)",
-    "recent_games": "Recent (Diff)",
-    "recent_games_total_points": "Recent (Total)",
-    "TabPFNRegressor": "TabPFN",
-}
-MODEL_PREFIXES = {
-    "full_dataset": "full_diff",
-    "full_dataset_total_points": "full_total",
-    "recent_games": "recent_diff",
-    "recent_games_total_points": "recent_total",
-    "TabPFNRegressor": "tabpfn",
-}
 
-TOTAL_POINTS_MODELS = [
-    "full_dataset_total_points",
-    "recent_games_total_points",
-    "TabPFNRegressor",
-]
-DIFF_FROM_LINE_MODELS = ["full_dataset", "recent_games"]
+@dataclass(frozen=True)
+class PredictionModelDefinition:
+    key: str
+    label: str
+    column_prefix: str
+    is_total_points: bool = True
+
+
+@dataclass(frozen=True)
+class ModelCatalog:
+    definitions: tuple[PredictionModelDefinition, ...] = ()
+
+    @property
+    def order(self) -> list[str]:
+        return [model.key for model in self.definitions]
+
+    @property
+    def labels(self) -> dict[str, str]:
+        return {model.key: model.label for model in self.definitions}
+
+    @property
+    def prefixes(self) -> dict[str, str]:
+        return {model.key: model.column_prefix for model in self.definitions}
+
+    @property
+    def total_points_models(self) -> list[str]:
+        return [model.key for model in self.definitions if model.is_total_points]
+
+    @property
+    def diff_from_line_models(self) -> list[str]:
+        return [model.key for model in self.definitions if not model.is_total_points]
+
+
+def _empty_text_series(index: pd.Index) -> pd.Series:
+    return pd.Series(pd.NA, index=index, dtype="string")
+
+
+def _normalized_text_series(df: pd.DataFrame, column: str) -> pd.Series:
+    if column not in df.columns:
+        return _empty_text_series(df.index)
+
+    series = df[column].astype("string").str.strip()
+    return series.mask(series.eq(""))
+
+
+def _slugify_model_key(value: object) -> str | None:
+    if pd.isna(value):
+        return None
+
+    text = str(value).strip().lower()
+    if not text:
+        return None
+
+    slug = re.sub(r"[^a-z0-9]+", "_", text).strip("_")
+    return slug or None
+
+
+def _is_total_points_model(*values: object) -> bool:
+    text = " ".join(str(value).lower() for value in values if pd.notna(value))
+    if not text:
+        return True
+    if "total_points" in text or "tabpfn" in text:
+        return True
+    if "line_error" in text or "diff_from_line" in text:
+        return False
+    return True
+
+
+def extract_model_catalog(df: pd.DataFrame) -> ModelCatalog:
+    if df.empty:
+        return ModelCatalog()
+
+    work = df.copy()
+    model_type = _normalized_text_series(work, "model_type")
+    model_name = _normalized_text_series(work, "model_name")
+    prediction_source = _normalized_text_series(work, "prediction_source")
+
+    work["_model_key"] = (
+        model_type.fillna(prediction_source).fillna(model_name).apply(_slugify_model_key)
+    )
+    work["_model_label"] = (
+        model_name.fillna(model_type).fillna(prediction_source).fillna("Unknown Model")
+    )
+    work["_is_total_points"] = [
+        _is_total_points_model(mt, mn, ps)
+        for mt, mn, ps in zip(model_type, model_name, prediction_source, strict=False)
+    ]
+
+    if "prediction_datetime" in work.columns:
+        prediction_dt = pd.to_datetime(
+            work["prediction_datetime"], errors="coerce", utc=True
+        )
+    else:
+        prediction_dt = pd.Series(pd.NaT, index=work.index, dtype="datetime64[ns, UTC]")
+
+    if "prediction_date" in work.columns:
+        prediction_date = pd.to_datetime(
+            work["prediction_date"], errors="coerce", utc=True
+        )
+    else:
+        prediction_date = pd.Series(
+            pd.NaT, index=work.index, dtype="datetime64[ns, UTC]"
+        )
+    work["_model_sort_ts"] = prediction_dt.fillna(prediction_date)
+    work = work[work["_model_key"].notna()].copy()
+
+    if work.empty:
+        return ModelCatalog()
+
+    latest_per_model = (
+        work.sort_values(["_model_sort_ts", "_model_label"], na_position="last")
+        .groupby("_model_key", as_index=False)
+        .tail(1)
+        .copy()
+    )
+    latest_per_model["_sort_group"] = latest_per_model["_model_label"].str.contains(
+        "tabpfn", case=False, na=False
+    )
+    latest_per_model = latest_per_model.sort_values(
+        ["_sort_group", "_model_label"],
+        kind="stable",
+    )
+
+    definitions = tuple(
+        PredictionModelDefinition(
+            key=str(row["_model_key"]),
+            label=str(row["_model_label"]),
+            column_prefix=str(row["_model_key"]),
+            is_total_points=bool(row["_is_total_points"]),
+        )
+        for row in latest_per_model.to_dict("records")
+    )
+    return ModelCatalog(definitions=definitions)
+
+
+def get_model_catalog(df: pd.DataFrame | None) -> ModelCatalog:
+    if df is None:
+        return ModelCatalog()
+
+    catalog = df.attrs.get("model_catalog")
+    if isinstance(catalog, ModelCatalog):
+        return catalog
+
+    return extract_model_catalog(df)
 
 
 def set_runtime_env_from_secrets() -> None:
@@ -201,9 +320,22 @@ def inject_global_css() -> None:
     )
 
 
-def render_header() -> None:
+def render_header(catalog: ModelCatalog | None = None) -> None:
+    model_labels = []
+    if catalog is not None:
+        model_labels = [catalog.labels[model_type] for model_type in catalog.order]
+
+    chip_html = "".join(
+        f'<span class="chip">📊 {html.escape(model_label)}</span>'
+        for model_label in model_labels
+    )
+    if chip_html:
+        chip_html += '<span class="chip">🕐 Madrid (CEST)</span>'
+    else:
+        chip_html = '<span class="chip">🕐 Madrid (CEST)</span>'
+
     st.markdown(
-        """
+        f"""
         <div class="app-hero">
           <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:12px;">
             <div style="flex: 1;">
@@ -217,12 +349,7 @@ def render_header() -> None:
                 Predictions, results, and historical performance in one place.
               </div>
               <div class="chip-row">
-                <span class="chip">📊 Full (Total)</span>
-                <span class="chip">📊 Recent (Total)</span>
-                <span class="chip">📊 TabPFN</span>
-                <span class="chip">📏 Full (Diff)</span>
-                <span class="chip">📏 Recent (Diff)</span>
-                <span class="chip">🕐 Madrid (CEST)</span>
+                {chip_html}
               </div>
             </div>
           </div>
@@ -230,30 +357,6 @@ def render_header() -> None:
         """,
         unsafe_allow_html=True,
     )
-
-
-def normalize_model_type(value: object) -> str | None:
-    if pd.isna(value):
-        return None
-
-    text = str(value).strip()
-    if text in MODEL_ORDER:
-        return text
-
-    lowered = text.lower()
-    # Check longer prefixes first to avoid premature match
-    if lowered.startswith("full_dataset_total_points"):
-        return "full_dataset_total_points"
-    if lowered.startswith("full_dataset"):
-        return "full_dataset"
-    if lowered.startswith("recent_games_total_points"):
-        return "recent_games_total_points"
-    if lowered.startswith("recent_games"):
-        return "recent_games"
-    if lowered in {"tabpfnregressor", "tabpfn"} or lowered.startswith("tabpfn"):
-        return "TabPFNRegressor"
-
-    return None
 
 
 def normalize_pick(value: object) -> str | float:
@@ -279,6 +382,7 @@ def format_madrid_datetime(series: pd.Series, fmt: str) -> pd.Series:
 def build_game_level_predictions(
     df: pd.DataFrame,
     prediction_cutoff: pd.Timestamp | None = None,
+    training_code_tag_filter: str | None = "1.0",
 ) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame()
@@ -291,16 +395,25 @@ def build_game_level_predictions(
     if "prediction_source" not in work.columns:
         work["prediction_source"] = np.nan
 
-    model_source = (
-        work["model_type"]
-        .where(work["model_type"].notna(), work["model_name"])
-        .where(
-            work["model_type"].notna() | work["model_name"].notna(),
-            work["prediction_source"],
-        )
+    model_type_source = _normalized_text_series(work, "model_type")
+    model_name_source = _normalized_text_series(work, "model_name")
+    prediction_source = _normalized_text_series(work, "prediction_source")
+    work["_model_key"] = (
+        model_type_source.fillna(prediction_source)
+        .fillna(model_name_source)
+        .apply(_slugify_model_key)
     )
-    work["model_type"] = model_source.apply(normalize_model_type)
-    work = work[work["model_type"].isin(MODEL_ORDER)].copy()
+    work = work[work["_model_key"].notna()].copy()
+
+    if "training_code_tag" not in work.columns:
+        work["training_code_tag"] = np.nan
+
+    if training_code_tag_filter:
+        normalized_tag = str(training_code_tag_filter).strip()
+        work = work[
+            work["training_code_tag"].fillna("").astype(str).str.strip()
+            == normalized_tag
+        ].copy()
 
     if work.empty:
         return pd.DataFrame()
@@ -327,6 +440,12 @@ def build_game_level_predictions(
         work = work[work["prediction_datetime_utc"] <= cutoff].copy()
 
     if work.empty:
+        return pd.DataFrame()
+
+    catalog = extract_model_catalog(work)
+    model_order = catalog.order
+    model_prefixes = catalog.prefixes
+    if not model_order:
         return pd.DataFrame()
 
     if "game_time" in work.columns:
@@ -387,9 +506,9 @@ def build_game_level_predictions(
         columns={"prediction_datetime_utc": "latest_prediction_datetime"}
     )
 
-    for model_type in MODEL_ORDER:
-        prefix = MODEL_PREFIXES[model_type]
-        per_model = work[work["model_type"] == model_type].copy()
+    for model_type in model_order:
+        prefix = model_prefixes[model_type]
+        per_model = work[work["_model_key"] == model_type].copy()
         if per_model.empty:
             continue
 
@@ -457,8 +576,8 @@ def build_game_level_predictions(
 
     model_pick_cols: list[str] = []
     model_total_cols: list[str] = []
-    for model_type in MODEL_ORDER:
-        prefix = MODEL_PREFIXES[model_type]
+    for model_type in model_order:
+        prefix = model_prefixes[model_type]
         pick_col = f"pick_{prefix}"
         pred_total_col = f"pred_total_{prefix}"
         line_diff_col = f"line_diff_{prefix}"
@@ -486,7 +605,7 @@ def build_game_level_predictions(
         model_total_cols.append(pred_total_col)
 
     # Simple consensus: average of all available line diffs across models
-    model_diff_cols = [f"line_diff_{MODEL_PREFIXES[m]}" for m in MODEL_ORDER]
+    model_diff_cols = [f"line_diff_{model_prefixes[m]}" for m in model_order]
     base["consensus_line_diff"] = base[model_diff_cols].mean(axis=1, skipna=True)
     base["consensus_pred_total"] = line + base["consensus_line_diff"]
     base["consensus_pick"] = pick_from_diff(base["consensus_line_diff"])
@@ -497,11 +616,16 @@ def build_game_level_predictions(
 
     # Consensus without TabPFN (average of non-TabPFN model diffs)
     no_tabpfn_diff_cols = [
-        f"line_diff_{MODEL_PREFIXES[m]}" for m in MODEL_ORDER if m != "TabPFNRegressor"
+        f"line_diff_{model_prefixes[m]}"
+        for m in model_order
+        if "tabpfn" not in m.lower()
     ]
-    base["consensus_no_tabpfn_line_diff"] = base[no_tabpfn_diff_cols].mean(
-        axis=1, skipna=True
-    )
+    if no_tabpfn_diff_cols:
+        base["consensus_no_tabpfn_line_diff"] = base[no_tabpfn_diff_cols].mean(
+            axis=1, skipna=True
+        )
+    else:
+        base["consensus_no_tabpfn_line_diff"] = np.nan
     base["consensus_no_tabpfn_pred_total"] = (
         line + base["consensus_no_tabpfn_line_diff"]
     )
@@ -524,12 +648,19 @@ def build_game_level_predictions(
     if "game_time_utc" in base.columns:
         base = base.sort_values("game_time_utc")
 
-    return base.reset_index(drop=True)
+    base = base.reset_index(drop=True)
+    base.attrs["model_catalog"] = catalog
+    return base
 
 
 def build_upcoming_display(
     df: pd.DataFrame, show_pred_times: bool = False
 ) -> pd.DataFrame:
+    catalog = get_model_catalog(df)
+    model_order = catalog.order
+    model_labels = catalog.labels
+    model_prefixes = catalog.prefixes
+
     display = pd.DataFrame()
     display["Matchup"] = df["team_name_team_home"] + " vs " + df["team_name_team_away"]
     display["Game Time (Madrid)"] = format_madrid_datetime(
@@ -539,9 +670,9 @@ def build_upcoming_display(
         df["total_over_under_line"], errors="coerce"
     ).round(1)
 
-    for model_type in MODEL_ORDER:
-        prefix = MODEL_PREFIXES[model_type]
-        label = MODEL_LABELS[model_type]
+    for model_type in model_order:
+        prefix = model_prefixes[model_type]
+        label = model_labels[model_type]
         display[f"{label} Total"] = pd.to_numeric(
             df[f"pred_total_{prefix}"], errors="coerce"
         ).round(1)
@@ -583,6 +714,11 @@ def build_upcoming_display(
 
 
 def build_past_display(df: pd.DataFrame) -> pd.DataFrame:
+    catalog = get_model_catalog(df)
+    model_order = catalog.order
+    model_labels = catalog.labels
+    model_prefixes = catalog.prefixes
+
     display = pd.DataFrame()
     display["Matchup"] = df["team_name_team_home"] + " vs " + df["team_name_team_away"]
     display["Game Time (Madrid)"] = format_madrid_datetime(df["game_time_utc"], "%H:%M")
@@ -594,9 +730,9 @@ def build_past_display(df: pd.DataFrame) -> pd.DataFrame:
     ).round(1)
     display["Actual Side"] = df["actual_side"]
 
-    for model_type in MODEL_ORDER:
-        prefix = MODEL_PREFIXES[model_type]
-        label = MODEL_LABELS[model_type]
+    for model_type in model_order:
+        prefix = model_prefixes[model_type]
+        label = model_labels[model_type]
         display[f"{label} Total"] = pd.to_numeric(
             df[f"pred_total_{prefix}"], errors="coerce"
         ).round(1)
@@ -656,8 +792,10 @@ def get_pick_icon(pick_label: str) -> str:
     return "⚪"
 
 
-def _has_model_prediction(row: pd.Series, model_type: str) -> bool:
-    prefix = MODEL_PREFIXES[model_type]
+def _has_model_prediction(
+    row: pd.Series, model_type: str, catalog: ModelCatalog
+) -> bool:
+    prefix = catalog.prefixes[model_type]
     return any(
         pd.notna(row.get(col))
         for col in (
@@ -725,20 +863,26 @@ def _render_shap_reason_block(
     )
 
 
-def _render_model_reasoning_tab(row: pd.Series, model_type: str) -> None:
-    prefix = MODEL_PREFIXES[model_type]
+def _render_model_reasoning_tab(
+    row: pd.Series,
+    model_type: str,
+    catalog: ModelCatalog,
+) -> None:
+    prefix = catalog.prefixes[model_type]
     pick = format_pick_label(row.get(f"pick_{prefix}"))
     pred_total = pd.to_numeric(row.get(f"pred_total_{prefix}"), errors="coerce")
     line_diff = pd.to_numeric(row.get(f"line_diff_{prefix}"), errors="coerce")
     shap_base = pd.to_numeric(row.get(f"shap_base_{prefix}"), errors="coerce")
 
     base_label = (
-        "SHAP Base Total" if model_type in TOTAL_POINTS_MODELS else "SHAP Base Margin"
+        "SHAP Base Total"
+        if model_type in catalog.total_points_models
+        else "SHAP Base Margin"
     )
     explanation_text = (
         "Positive SHAP values push the predicted total points higher. "
         "Negative values pull it lower."
-        if model_type in TOTAL_POINTS_MODELS
+        if model_type in catalog.total_points_models
         else "Positive SHAP values push the predicted margin above the line "
         "(toward OVER). Negative values pull it below the line (toward UNDER)."
     )
@@ -788,8 +932,12 @@ def _render_model_reasoning_tab(row: pd.Series, model_type: str) -> None:
         )
 
 
-def _render_game_reasoning_content(row: pd.Series) -> None:
-    available_models = [m for m in MODEL_ORDER if _has_model_prediction(row, m)]
+def _render_game_reasoning_content(row: pd.Series, catalog: ModelCatalog) -> None:
+    available_models = [
+        model_type
+        for model_type in catalog.order
+        if _has_model_prediction(row, model_type, catalog)
+    ]
     if not available_models:
         st.info("No model details available for this game.")
         return
@@ -797,10 +945,10 @@ def _render_game_reasoning_content(row: pd.Series) -> None:
     st.caption(
         "Open a model tab to inspect the main SHAP features that pushed the prediction higher or lower."
     )
-    tabs = st.tabs([MODEL_LABELS[model_type] for model_type in available_models])
+    tabs = st.tabs([catalog.labels[model_type] for model_type in available_models])
     for tab, model_type in zip(tabs, available_models, strict=False):
         with tab:
-            _render_model_reasoning_tab(row, model_type)
+            _render_model_reasoning_tab(row, model_type, catalog)
 
 
 def _format_reasoning_game_option(row: pd.Series) -> str:
@@ -820,6 +968,7 @@ def render_prediction_reasoning_selector(df: pd.DataFrame, *, key_prefix: str) -
     if df.empty:
         return
 
+    catalog = get_model_catalog(df)
     st.markdown("### Model Reasoning")
     with st.expander("Inspect SHAP drivers for a game", expanded=False):
         options = list(df.index)
@@ -829,18 +978,19 @@ def render_prediction_reasoning_selector(df: pd.DataFrame, *, key_prefix: str) -
             format_func=lambda idx: _format_reasoning_game_option(df.loc[idx]),
             key=f"{key_prefix}_game_reasoning_selector",
         )
-        _render_game_reasoning_content(df.loc[selected_idx])
+        _render_game_reasoning_content(df.loc[selected_idx], catalog)
 
 
 def _build_model_cell_html(
     row: pd.Series,
     model_type: str,
+    catalog: ModelCatalog,
     *,
     show_pred_total: bool = True,
 ) -> str:
     """Build HTML for a single model prediction cell."""
-    prefix = MODEL_PREFIXES[model_type]
-    label = MODEL_LABELS[model_type]
+    prefix = catalog.prefixes[model_type]
+    label = catalog.labels[model_type]
     diff = pd.to_numeric(row.get(f"line_diff_{prefix}"), errors="coerce")
     pick = row.get(f"pick_{prefix}")
     diff_text = f"{diff:+.1f}" if pd.notna(diff) else "—"
@@ -862,11 +1012,12 @@ def _build_model_cell_html(
         )
 
     return (
-        f'<div style="flex:1;text-align:center;padding:10px 4px;'
+        f'<div style="min-width:0;text-align:center;padding:10px 6px;'
         f"background:rgba(128,128,128,0.06);border-radius:8px;"
         f'border:1px solid rgba(128,128,128,0.1);">'
-        f'<div style="font-size:0.8rem;font-weight:700;color:#888;'
-        f'text-transform:uppercase;letter-spacing:0.04em;margin-bottom:3px;">'
+        f'<div style="font-size:0.72rem;font-weight:700;color:#888;'
+        f'text-transform:uppercase;letter-spacing:0.04em;margin-bottom:4px;'
+        f'line-height:1.25;word-break:break-word;overflow-wrap:anywhere;">'
         f"{label}</div>"
         f"{pred_html}"
         f'<div style="font-size:1.05rem;font-weight:700;color:{clr};">{diff_text}</div>'
@@ -876,7 +1027,11 @@ def _build_model_cell_html(
     )
 
 
-def _render_game_card(row: pd.Series, include_actual: bool) -> None:
+def _render_game_card(
+    row: pd.Series,
+    include_actual: bool,
+    catalog: ModelCatalog,
+) -> None:
     """Render a single game prediction card as self-contained HTML."""
     home_team = row["team_name_team_home"]
     away_team = row["team_name_team_away"]
@@ -914,8 +1069,8 @@ def _render_game_card(row: pd.Series, include_actual: bool) -> None:
 
     # Model agreement
     picks_list: list[str] = []
-    for m in MODEL_ORDER:
-        p = MODEL_PREFIXES[m]
+    for model_type in catalog.order:
+        p = catalog.prefixes[model_type]
         pk = row.get(f"pick_{p}")
         if pd.notna(pk) and pk in ("OVER", "UNDER"):
             picks_list.append(str(pk))
@@ -929,13 +1084,29 @@ def _render_game_card(row: pd.Series, include_actual: bool) -> None:
 
     # Build model cells
     tp_cells = "".join(
-        _build_model_cell_html(row, m, show_pred_total=True)
-        for m in TOTAL_POINTS_MODELS
+        _build_model_cell_html(row, model_type, catalog, show_pred_total=True)
+        for model_type in catalog.total_points_models
     )
     dl_cells = "".join(
-        _build_model_cell_html(row, m, show_pred_total=False)
-        for m in DIFF_FROM_LINE_MODELS
+        _build_model_cell_html(row, model_type, catalog, show_pred_total=False)
+        for model_type in catalog.diff_from_line_models
     )
+    total_points_grid_style = (
+        "display:grid;grid-template-columns:repeat(2,minmax(0,1fr));"
+        "gap:8px;margin-bottom:12px;"
+    )
+    diff_grid_style = (
+        "display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;"
+    )
+    diff_section_html = ""
+    if dl_cells:
+        diff_section_html = (
+            '<div style="font-size:0.75rem;font-weight:700;color:#999;'
+            'text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;">'
+            "📏 Diff from Line Predictions"
+            "</div>"
+            f'<div style="{diff_grid_style}">{dl_cells}</div>'
+        )
 
     # Get team scores for past games
     home_pts = pd.to_numeric(row.get("home_pts"), errors="coerce")
@@ -1018,9 +1189,9 @@ def _render_game_card(row: pd.Series, include_actual: bool) -> None:
     model_results_html = ""
     if include_actual:
         result_cells = ""
-        for m in MODEL_ORDER:
-            p = MODEL_PREFIXES[m]
-            lbl = MODEL_LABELS[m]
+        for model_type in catalog.order:
+            p = catalog.prefixes[model_type]
+            lbl = catalog.labels[model_type]
             flag = row.get(f"correct_{p}")
             r_icon = (
                 "✅" if pd.notna(flag) and flag else "❌" if pd.notna(flag) else "—"
@@ -1103,25 +1274,25 @@ def _render_game_card(row: pd.Series, include_actual: bool) -> None:
                     letter-spacing:0.06em;margin-bottom:6px;">
           📊 Total Points Predictions
         </div>
-        <div style="display:flex;gap:6px;margin-bottom:12px;">
+        <div style="{total_points_grid_style}">
           {tp_cells}
         </div>
-        <div style="font-size:0.75rem;font-weight:700;color:#999;text-transform:uppercase;
-                    letter-spacing:0.06em;margin-bottom:6px;">
-          📏 Diff from Line Predictions
-        </div>
-        <div style="display:flex;gap:6px;">
-          {dl_cells}
-        </div>
+        {diff_section_html}
       </div>
       {model_results_html}
     </div>
     """
-    card_height = 570 if not include_actual else 680
+    model_section_height = 210 if len(catalog.total_points_models) > 2 else 150
+    if catalog.diff_from_line_models:
+        model_section_height += 110
+    if include_actual:
+        model_section_height += 80
+    card_height = 320 + model_section_height
     st.components.v1.html(card_html, height=card_height)
 
 
 def render_prediction_cards(df: pd.DataFrame, include_actual: bool = False) -> None:
+    catalog = get_model_catalog(df)
     df = df.sort_values("game_time_utc").reset_index(drop=True)
     cols_per_row = 2
 
@@ -1134,16 +1305,17 @@ def render_prediction_cards(df: pd.DataFrame, include_actual: bool = False) -> N
             row = df.iloc[row_idx]
             with col:
                 with st.expander("🧠 Model Reasoning & SHAP Analysis", expanded=False):
-                    _render_game_reasoning_content(row)
-                _render_game_card(row, include_actual)
+                    _render_game_reasoning_content(row, catalog)
+                _render_game_card(row, include_actual, catalog)
 
 
 def summarize_model_performance(df: pd.DataFrame) -> pd.DataFrame:
+    catalog = get_model_catalog(df)
     resolved_mask = df["actual_side"].isin(["OVER", "UNDER"])
     rows = []
 
-    for model_type in MODEL_ORDER:
-        prefix = MODEL_PREFIXES[model_type]
+    for model_type in catalog.order:
+        prefix = catalog.prefixes[model_type]
         picks = df[f"pick_{prefix}"]
         valid_mask = resolved_mask & picks.isin(["OVER", "UNDER"])
 
@@ -1167,7 +1339,7 @@ def summarize_model_performance(df: pd.DataFrame) -> pd.DataFrame:
 
         rows.append(
             {
-                "Model": MODEL_LABELS[model_type],
+                "Model": catalog.labels[model_type],
                 "Games": n_games,
                 "Accuracy (%)": None if pd.isna(accuracy) else round(accuracy * 100, 2),
                 "Mean Error": None if pd.isna(mean_error) else round(mean_error, 2),
@@ -1288,8 +1460,9 @@ def compute_threshold_accuracy_table(
     *,
     model_thresholds: dict[str, tuple[float, ...]] | None = None,
 ) -> pd.DataFrame:
+    catalog = get_model_catalog(df)
     if model_thresholds is None:
-        model_thresholds = {m: (0.0, 0.5, 1.0, 1.5, 2.0) for m in MODEL_ORDER}
+        model_thresholds = {m: (0.0, 0.5, 1.0, 1.5, 2.0) for m in catalog.order}
         model_thresholds["consensus"] = (0.0, 0.5, 1.0, 1.5, 2.0)
         model_thresholds["consensus_no_tabpfn"] = (0.0, 0.5, 1.0, 1.5, 2.0)
 
@@ -1308,11 +1481,11 @@ def compute_threshold_accuracy_table(
             line_diff_col = "consensus_no_tabpfn_line_diff"
             model_label = "Consensus (No TabPFN)"
         else:
-            prefix = MODEL_PREFIXES[model_type]
+            prefix = catalog.prefixes[model_type]
             pick_col = f"pick_{prefix}"
             correct_col = f"correct_{prefix}"
             line_diff_col = f"line_diff_{prefix}"
-            model_label = MODEL_LABELS[model_type]
+            model_label = catalog.labels[model_type]
 
         for threshold in thresholds:
             mask = (
@@ -1341,6 +1514,7 @@ def compute_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame()
 
+    catalog = get_model_catalog(df)
     out_rows = []
     temp = df.copy()
     temp["game_date_dt"] = pd.to_datetime(temp["game_date"], errors="coerce")
@@ -1349,8 +1523,8 @@ def compute_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
     for game_date, group in temp.groupby(temp["game_date_dt"].dt.date):
         resolved = group[group["actual_side"].isin(["OVER", "UNDER"])]
 
-        for model_type in MODEL_ORDER:
-            prefix = MODEL_PREFIXES[model_type]
+        for model_type in catalog.order:
+            prefix = catalog.prefixes[model_type]
             valid = resolved[resolved[f"pick_{prefix}"].isin(["OVER", "UNDER"])]
             n_games = len(valid)
 
@@ -1358,7 +1532,7 @@ def compute_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
                 {
                     "game_date": pd.to_datetime(game_date),
                     "model_type": model_type,
-                    "model_label": MODEL_LABELS[model_type],
+                    "model_label": catalog.labels[model_type],
                     "n_games": n_games,
                     "accuracy": valid[f"correct_{prefix}"].mean()
                     if n_games
@@ -1414,7 +1588,7 @@ def compute_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(out_rows).sort_values(["game_date", "model_type"])
 
 
-def show_upcoming_predictions() -> None:
+def show_upcoming_predictions(training_code_tag_filter: str | None) -> None:
     st.markdown("### 🔄 Update Predictions")
     st.caption(
         "Run the prediction model to generate fresh predictions for today's games."
@@ -1491,7 +1665,13 @@ def show_upcoming_predictions() -> None:
 
     # Build predictions with optional cutoff
     with st.spinner("Building predictions..."):
-        games = build_game_level_predictions(raw, prediction_cutoff=prediction_cutoff)
+        games = build_game_level_predictions(
+            raw,
+            prediction_cutoff=prediction_cutoff,
+            training_code_tag_filter=training_code_tag_filter,
+        )
+
+    render_header(get_model_catalog(games))
 
     if games.empty:
         st.info("No upcoming predictions found for the selected time.")
@@ -1553,15 +1733,35 @@ def show_upcoming_predictions() -> None:
     st.markdown("---")
     st.markdown("")
     with st.expander("ℹ️ **How to Read the Predictions**", expanded=False):
+        catalog = get_model_catalog(games)
+        total_point_labels = [
+            catalog.labels[model_type]
+            for model_type in catalog.total_points_models
+            if "tabpfn" not in model_type.lower()
+        ]
+        diff_labels = [
+            catalog.labels[model_type]
+            for model_type in catalog.diff_from_line_models
+        ]
+        configured_total_labels = ", ".join(total_point_labels) or "Configured models"
+        diff_model_text = ""
+        if diff_labels:
+            diff_model_text = (
+                "- **📏 Diff from Line Models**: "
+                + ", ".join(diff_labels)
+                + " — predict the difference from the line\n"
+            )
+        tabpfn_present = any("tabpfn" in model_type.lower() for model_type in catalog.order)
+        total_points_suffix = ", TabPFN" if tabpfn_present else ""
         st.markdown(
-            """
+            f"""
         ### 📊 Understanding the Predictions
 
         - **🏀 Matchup**: Home team vs Away team with logos
         - **⏰ Game Time**: When the game starts (Madrid timezone)
         - **📏 O/U Line**: The bookmaker's over/under betting line
-        - **📊 Total Points Models**: Full (Total), Recent (Total), TabPFN — predict total points directly
-        - **📏 Diff from Line Models**: Full (Diff), Recent (Diff) — predict the difference from the line
+        - **📊 Total Points Models**: {configured_total_labels}{total_points_suffix} — predict total points directly
+        {diff_model_text}
         - **🎯 Consensus**: Average of all model margins to decide OVER/UNDER
         - **Margin**: How far the consensus prediction is from the line (positive = OVER)
         - **🧠 Model Reasoning**: Open "Inspect model reasoning" to see SHAP drivers for each model
@@ -1578,7 +1778,7 @@ def show_upcoming_predictions() -> None:
         )
 
 
-def show_past_games_results() -> None:
+def show_past_games_results(training_code_tag_filter: str | None) -> None:
     st.markdown("## Past Games Results")
     st.caption("Compare predictions vs actual totals for a selected date.")
     st.markdown("")
@@ -1636,7 +1836,13 @@ def show_past_games_results() -> None:
     )
 
     selected_cutoff = mapping[selected_label]
-    games = build_game_level_predictions(raw, prediction_cutoff=selected_cutoff)
+    games = build_game_level_predictions(
+        raw,
+        prediction_cutoff=selected_cutoff,
+        training_code_tag_filter=training_code_tag_filter,
+    )
+
+    render_header(get_model_catalog(games))
 
     if games.empty:
         st.warning("No games available at the selected prediction time.")
@@ -1667,10 +1873,11 @@ def show_past_games_results() -> None:
         )
 
     st.markdown("")
-    model_metric_cols = st.columns(len(MODEL_ORDER))
-    for idx, model_type in enumerate(MODEL_ORDER):
-        prefix = MODEL_PREFIXES[model_type]
-        label = MODEL_LABELS[model_type]
+    catalog = get_model_catalog(games)
+    model_metric_cols = st.columns(max(len(catalog.order), 1))
+    for idx, model_type in enumerate(catalog.order):
+        prefix = catalog.prefixes[model_type]
+        label = catalog.labels[model_type]
         model_mask = resolved_mask & games[f"pick_{prefix}"].isin(["OVER", "UNDER"])
         correct = int(games.loc[model_mask, f"correct_{prefix}"].sum())
         total = int(model_mask.sum())
@@ -1691,7 +1898,7 @@ def show_past_games_results() -> None:
         render_prediction_reasoning_selector(games, key_prefix="past")
 
 
-def show_historical_performance() -> None:
+def show_historical_performance(training_code_tag_filter: str | None) -> None:
     st.markdown("## Historical Betting Performance")
     st.caption("Analyze model accuracy and prediction error over time.")
     st.markdown("")
@@ -1713,7 +1920,12 @@ def show_historical_performance() -> None:
             start_date=start_date.strftime("%Y-%m-%d") if start_date else None,
             end_date=end_date.strftime("%Y-%m-%d") if end_date else None,
         )
-        games = build_game_level_predictions(raw)
+        games = build_game_level_predictions(
+            raw,
+            training_code_tag_filter=training_code_tag_filter,
+        )
+
+    render_header(get_model_catalog(games))
 
     if games.empty:
         st.warning("No historical rows found for the selected range.")
@@ -1890,16 +2102,19 @@ def main() -> None:
             ],
             index=0,
         )
+        training_code_tag_filter = st.text_input(
+            "Training Code Tag",
+            value="1.0",
+            help="Exact training_code_tag to display. Leave blank to include all tags.",
+        ).strip()
         st.markdown("---")
 
-    render_header()
-
     if view_option == "Upcoming Predictions":
-        show_upcoming_predictions()
+        show_upcoming_predictions(training_code_tag_filter or None)
     elif view_option == "Past Games Results":
-        show_past_games_results()
+        show_past_games_results(training_code_tag_filter or None)
     else:
-        show_historical_performance()
+        show_historical_performance(training_code_tag_filter or None)
 
 
 if __name__ == "__main__":

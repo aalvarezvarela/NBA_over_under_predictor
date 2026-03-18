@@ -28,7 +28,7 @@ from nba_ou.data_preparation.merged_home_away_data.select_train_columns import (
     select_training_columns,
 )
 from nba_ou.data_preparation.past_injuries.injury_effects import (
-    add_top3_absence_effect_features_for_columns,
+    add_top3_availability_effect_features_for_columns,
 )
 from nba_ou.data_preparation.players.attach_player_features import (
     add_player_history_features,
@@ -188,7 +188,7 @@ def create_df_to_predict(
     # Set default recent_limit_to_include to yesterday if not provided
     if recent_limit_to_include is None:
         recent_limit_to_include = pd.Timestamp.now(
-            tz=ZoneInfo("US/Eastern")
+            tz=ZoneInfo("US/Pacific")
         ) - pd.Timedelta(days=1)
 
     recent_limit_to_include = pd.to_datetime(recent_limit_to_include, format="%Y-%m-%d")
@@ -196,7 +196,7 @@ def create_df_to_predict(
     # Determine older_limit_to_include based on todays_prediction flag
     if todays_prediction:
         recent_limit_to_include = pd.Timestamp.now(
-            tz=ZoneInfo("US/Eastern")
+            tz=ZoneInfo("US/Pacific")
         ) - pd.Timedelta(days=1)
         recent_limit_to_include = pd.to_datetime(
             recent_limit_to_include, format="%Y-%m-%d"
@@ -204,7 +204,7 @@ def create_df_to_predict(
 
         # If predicting today, go back two years from today
         older_limit_to_include = pd.Timestamp.now(
-            tz=ZoneInfo("US/Eastern")
+            tz=ZoneInfo("US/Pacific")
         ) - pd.Timedelta(days=365 * 2)
     elif older_limit_to_include is None:
         # Default to 2006 (start of 2006-07 season)
@@ -263,7 +263,7 @@ def create_df_to_predict(
     df_training = select_training_columns(df_merged, original_columns)
     df_training = add_derived_features_after_computed_stats(df_training)
 
-    df_training = add_top3_absence_effect_features_for_columns(
+    df_training = add_top3_availability_effect_features_for_columns(
         df_training,
         injured_dict,
         home_player_cols=(
@@ -280,10 +280,10 @@ def create_df_to_predict(
             "TOP1_PLAYER_ID_MIN_BEFORE_TEAM_AWAY",
             "TOP2_PLAYER_ID_MIN_BEFORE_TEAM_AWAY",
         ),
-        out_prefix="TOP3_ABSENCE_EFFECT",
+        out_prefix="TOP3_AVAILABILITY_EFFECT",
     )
 
-    df_training = add_top3_absence_effect_features_for_columns(
+    df_training = add_top3_availability_effect_features_for_columns(
         df_training,
         injured_dict,
         home_player_cols=(
@@ -300,7 +300,7 @@ def create_df_to_predict(
             "TOP1_INJURED_PLAYER_ID_MIN_BEFORE_TEAM_AWAY",
             "TOP2_INJURED_PLAYER_ID_MIN_BEFORE_TEAM_AWAY",
         ),
-        out_prefix="TOP3_INJURED_ABSENCE_EFFECT",
+        out_prefix="TOP3_INJURED_AVAILABILITY_EFFECT",
     )
 
     df_training = compute_travel_features(df_training, log_scale=True)
@@ -328,7 +328,7 @@ if __name__ == "__main__":
     older_limit_to_include = "2023-12-01"  # Optional: specify start date
 
     # Get all info for scheduled games
-    date_to_predict = pd.Timestamp.now(tz=ZoneInfo("US/Eastern")).strftime("%Y-%m-%d")
+    date_to_predict = pd.Timestamp.now(tz=ZoneInfo("US/Pacific")).strftime("%Y-%m-%d")
     scheduled_games, df_referees_scheduled, injury_dict_scheduled, df_odds_scheduled = (
         get_all_info_for_scheduled_games(
             date_to_predict=date_to_predict,

@@ -74,7 +74,7 @@ def _get_recent_history_df(
     return df_hist.loc[mask]
 
 
-def _compute_player_presence_effect(
+def _compute_player_availability_effect(
     df_team_hist: pd.DataFrame,
     injured_games_for_player: set,
 ) -> tuple[float, float, int, int, int]:
@@ -143,7 +143,7 @@ def _shrink_effect(
     return float(raw_effect * (n_eff / (n_eff + k)))
 
 
-def add_top3_absence_effect_features_for_columns(
+def add_top3_availability_effect_features_for_columns(
     df_games: pd.DataFrame,
     injured_dict: dict[str, dict[str, list[Any]]],
     *,
@@ -162,7 +162,7 @@ def add_top3_absence_effect_features_for_columns(
     include_per_player_columns: bool = False,
 ) -> pd.DataFrame:
     """
-    Compute player absence impact features from past games only (< current game date).
+    Compute player availability impact features from past games only (< current game date).
 
     Changes vs previous version:
       - DIFF_FROM_LINE is always computed against TOTAL_LINE_<main book> selected by
@@ -264,7 +264,7 @@ def add_top3_absence_effect_features_for_columns(
             before_date=before_date,
         )
         injured_games_for_player = injured_index.get(team_id, {}).get(player_id, set())
-        return _compute_player_presence_effect(df_team_hist, injured_games_for_player)
+        return _compute_player_availability_effect(df_team_hist, injured_games_for_player)
 
     def _out_col(side: str, i: int, metric: str) -> str:
         return f"{out_prefix}_{side}_P{i}_{metric}"
@@ -287,7 +287,7 @@ def add_top3_absence_effect_features_for_columns(
     # itertuples is faster than apply for 25k rows
     for i, row in enumerate(
         tqdm(
-            df.itertuples(index=False), total=len(df), desc="Computing absence effects"
+            df.itertuples(index=False), total=len(df), desc="Computing availability effects"
         )
     ):
         date = getattr(row, game_date_col)

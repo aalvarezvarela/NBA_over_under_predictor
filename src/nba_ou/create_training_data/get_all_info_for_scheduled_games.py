@@ -212,7 +212,7 @@ def get_all_info_for_scheduled_games(
             - df_odds_sportsbook_scheduled (pd.DataFrame): Sportsbook odds data
     """
     if not date_to_predict:
-        date_to_predict = pd.Timestamp.now(tz=ZoneInfo("US/Eastern")).strftime(
+        date_to_predict = pd.Timestamp.now(tz=ZoneInfo("US/Pacific")).strftime(
             "%Y-%m-%d"
         )
     if headless is None:

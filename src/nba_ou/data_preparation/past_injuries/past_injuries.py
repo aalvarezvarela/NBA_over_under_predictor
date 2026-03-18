@@ -5,8 +5,8 @@ import numpy as np
 import pandas as pd
 
 # Constants for top player statistics
-N_TOP_PLAYERS_NON_INJURED = 8
-N_TOP_PLAYERS_INJURED = 6
+N_TOP_PLAYERS_NON_INJURED = 6
+N_TOP_PLAYERS_INJURED = 4
 
 
 def get_injured_players_dict(df_injuries, df_players=None):
@@ -100,8 +100,18 @@ def create_player_lookup(df_players, injured_dict=None):
     df_players = df_players.copy()
     df_players["GAME_DATE"] = pd.to_datetime(df_players["GAME_DATE"], errors="coerce")
 
-    # df_valid is for RETURNING data (MIN > 0 and non-null PTS)
-    df_valid = df_players[(df_players["MIN"] > 0) & (df_players["PTS"].notna())].copy()
+    # df_valid is for RETURNING data.
+    # Include actual played games (MIN > 0, PTS not null) AND synthetic scheduled-game
+    # placeholder rows created by standardize_and_merge_scheduled_games_to_players_data
+    # (which have MIN=None).  After clear_player_statistics all real rows have MIN >= 0
+    # (never null), so MIN.isna() reliably identifies placeholder rows only.
+    # Including placeholders ensures that for scheduled game queries,
+    # get_top_n_averages_with_names finds a same-day row whose _CUM_AVG already
+    # incorporates the last played game, instead of falling back to a prior-game row
+    # whose _CUM_AVG is one game stale.
+    played_mask = (df_players["MIN"] > 0) & (df_players["PTS"].notna())
+    placeholder_mask = df_players["MIN"].isna()
+    df_valid = df_players[played_mask | placeholder_mask].copy()
 
     # Sort for season_team_groups indexing
     df_valid.sort_values(
@@ -165,7 +175,9 @@ def create_player_lookup(df_players, injured_dict=None):
         date_np = np.datetime64(date_to_filter)
         team_key = str(team_id)
         game_injury_map = (
-            injured_team_by_game_player.get(str(game_id)) if game_id is not None else None
+            injured_team_by_game_player.get(str(game_id))
+            if game_id is not None
+            else None
         )
 
         # Find players whose last game before date_to_filter was with this team

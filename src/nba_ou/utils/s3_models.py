@@ -1,8 +1,8 @@
 import io
+import json
 from dataclasses import dataclass
 
 import boto3
-import joblib
 import pandas as pd
 
 
@@ -10,6 +10,13 @@ import pandas as pd
 class S3ModelLocation:
     bucket: str
     key: str
+
+
+@dataclass(frozen=True)
+class S3ModelBundleLocation:
+    bucket: str
+    model_key: str
+    meta_key: str
 
 
 def make_s3_client(*, profile: str | None, region: str):
@@ -23,6 +30,10 @@ def make_s3_client(*, profile: str | None, region: str):
 def read_s3_object_bytes(*, s3_client, bucket: str, key: str) -> bytes:
     resp = s3_client.get_object(Bucket=bucket, Key=key)
     return resp["Body"].read()
+
+
+def read_s3_json_object(*, s3_client, bucket: str, key: str) -> dict:
+    return json.loads(read_s3_object_bytes(s3_client=s3_client, bucket=bucket, key=key))
 
 
 def upload_file_to_s3(*, s3_client, bucket: str, key: str, file_path: str) -> None:
@@ -49,10 +60,6 @@ def upload_bytes_to_s3(*, s3_client, bucket: str, key: str, data: bytes) -> None
     s3_client.put_object(Bucket=bucket, Key=key, Body=data)
 
 
-def load_joblib_from_bytes(b: bytes):
-    return joblib.load(io.BytesIO(b))
-
-
 def list_s3_objects(*, s3_client, bucket: str, prefix: str) -> list[dict]:
     """
     List objects under an S3 prefix.
@@ -74,25 +81,51 @@ def load_parquet_from_bytes(b: bytes) -> pd.DataFrame:
     return pd.read_parquet(io.BytesIO(b))
 
 
-def get_first_joblib_from_prefix(*, s3_client, bucket: str, prefix: str) -> str | None:
+def get_latest_model_bundle_from_prefix(
+    *,
+    s3_client,
+    bucket: str,
+    prefix: str,
+) -> S3ModelBundleLocation | None:
     """
-    Find the first .joblib file under an S3 prefix.
+    Discover the newest model bundle under an S3 prefix.
 
-    Args:
-        s3_client: Boto3 S3 client
-        bucket: S3 bucket name
-        prefix: S3 prefix to search under
-
-    Returns:
-        Full S3 key of the first .joblib file found, or None if none exist
+    A valid bundle is:
+    - a model file ending in `.json`
+    - an adjacent metadata file ending in `.meta.json`
     """
     objects = list_s3_objects(s3_client=s3_client, bucket=bucket, prefix=prefix)
-
-    # Filter for .joblib files and sort by key name
-    joblib_files = [obj["Key"] for obj in objects if obj["Key"].endswith(".joblib")]
-
-    if not joblib_files:
+    if not objects:
         return None
 
-    # Return the first one (sorted alphabetically)
-    return sorted(joblib_files)[0]
+    object_map = {obj["Key"]: obj for obj in objects}
+    candidates: list[tuple[tuple, S3ModelBundleLocation]] = []
+
+    for obj in objects:
+        key = obj["Key"]
+        if key.endswith(".meta.json"):
+            continue
+        if not key.endswith(".json"):
+            continue
+
+        meta_key = f"{key[:-len('.json')]}.meta.json"
+        if meta_key not in object_map:
+            continue
+
+        sort_key = (obj.get("LastModified"), key)
+        candidates.append(
+            (
+                sort_key,
+                S3ModelBundleLocation(
+                    bucket=bucket,
+                    model_key=key,
+                    meta_key=meta_key,
+                ),
+            )
+        )
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
