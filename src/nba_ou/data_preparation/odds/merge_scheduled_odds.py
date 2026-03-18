@@ -50,15 +50,27 @@ def merge_and_validate_scheduled_odds(
 
     # Strict mode: check for NaN or None values
     if strict_mode >= 0:
-        null_counts = df_odds_predict.isnull().sum()
-        cols_with_nulls = null_counts[null_counts > 0]
-        num_cols_with_nulls = len(cols_with_nulls)
+           # Count NaNs per row
+        nan_counts_per_row = df_odds_predict.isnull().sum(axis=1)
 
-        if num_cols_with_nulls > strict_mode:
-            raise ValueError(
-                f"Strict mode: Found {num_cols_with_nulls} columns with NaN/None values, but only {strict_mode} allowed:\n{cols_with_nulls}"
+        # Rows exceeding strict mode threshold
+        rows_exceeding = nan_counts_per_row > strict_mode
+        num_rows_exceeding = rows_exceeding.sum()
+
+        if num_rows_exceeding > 0:
+        
+            print(
+                f"\nStrict mode: Found {num_rows_exceeding} rows with NaNs in more than {strict_mode} columns"
             )
 
+            # Drop rows
+            df_odds_predict = df_odds_predict.loc[~rows_exceeding].copy()
+
+            # If all rows removed, raise error
+            if df_odds_predict.empty:
+                raise ValueError(
+                    f"Strict mode removed all rows. Every row had more than {strict_mode} NaN columns."
+                )
     # Concatenate and sort
     df_odds_combined = pd.concat([df_odds, df_odds_predict], ignore_index=True)
     df_odds_combined.sort_values(by="game_date", inplace=True, ascending=False)
