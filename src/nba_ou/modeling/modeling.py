@@ -40,6 +40,8 @@ class TrainingMetrics(BaseModel):
     final_test_mae: float
     final_test_rmse: float
     final_test_ou_acc: float
+    nan_threshold: float
+    max_na_per_row: int
     train_date_min: datetime
     train_date_max: datetime
 

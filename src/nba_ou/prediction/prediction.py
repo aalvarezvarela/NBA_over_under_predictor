@@ -490,6 +490,9 @@ def load_and_predict_model_for_nba_games(
     df_summary["MODEL_NAME"] = model_name
     df_summary["MODEL_TYPE"] = model_type
     df_summary["MODEL_VERSION"] = model_version
+    df_summary["TRAINING_CODE_TAG"] = "0.0"
+    df_summary["TRAIN_DATE_MIN"] = None
+    df_summary["TRAIN_DATE_MAX"] = None
 
     shap_df, shap_base_value = compute_shap_values(model, X)
     df_summary["SHAP_BASE_VALUE"] = shap_base_value

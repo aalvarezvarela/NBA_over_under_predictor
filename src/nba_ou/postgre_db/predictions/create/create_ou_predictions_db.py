@@ -132,6 +132,9 @@ def _create_predictions_table_base(
                     total_scored_points NUMERIC,
                     home_pts NUMERIC,
                     away_pts NUMERIC,
+                    training_code_tag TEXT NOT NULL DEFAULT '0.0',
+                    train_date_min DATE,
+                    train_date_max DATE,
                     CONSTRAINT chk_prediction_value_type
                         CHECK (
                             prediction_value_type IN ('TOTAL_POINTS', 'DIFF_FROM_LINE')
@@ -299,6 +302,9 @@ def upload_predictions_to_postgre(df: "pd.DataFrame"):
                 "SOURCE_RUN_ID": "source_run_id",
                 "HOME_PTS": "home_pts",
                 "AWAY_PTS": "away_pts",
+                "TRAINING_CODE_TAG": "training_code_tag",
+                "TRAIN_DATE_MIN": "train_date_min",
+                "TRAIN_DATE_MAX": "train_date_max",
             }
         )
 
@@ -331,6 +337,9 @@ def upload_predictions_to_postgre(df: "pd.DataFrame"):
             "total_scored_points",
             "home_pts",
             "away_pts",
+            "training_code_tag",
+            "train_date_min",
+            "train_date_max",
         ):
             if col not in df.columns:
                 df[col] = None
@@ -354,6 +363,7 @@ def upload_predictions_to_postgre(df: "pd.DataFrame"):
             + df["prediction_value_type"].astype(str).fillna("unknown")
         )
         df["source_run_id"] = df["source_run_id"].fillna(source_run_id_fallback)
+        df["training_code_tag"] = df["training_code_tag"].fillna("0.0")
 
         # Keep only DB columns (excluding id which is SERIAL)
         columns = [
@@ -389,6 +399,9 @@ def upload_predictions_to_postgre(df: "pd.DataFrame"):
             "total_scored_points",
             "home_pts",
             "away_pts",
+            "training_code_tag",
+            "train_date_min",
+            "train_date_max",
         ]
 
         missing_columns = [col for col in columns if col not in df.columns]
@@ -454,6 +467,38 @@ def upload_predictions_to_postgre(df: "pd.DataFrame"):
             cur.executemany(insert_query, values)
         conn.commit()
 
+    finally:
+        conn.close()
+
+
+def add_training_metadata_columns() -> None:
+    """
+    Idempotently add training_code_tag, train_date_min, and train_date_max to an
+    existing predictions table without losing data.
+
+    Run this once to upgrade a table created before these columns existed.
+    Existing rows will receive '0.0' for training_code_tag and NULL for the date columns.
+    """
+    schema, table = get_predictions_schema_and_table()
+    conn = connect_nba_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL(
+                    "ALTER TABLE {}.{} "
+                    "ADD COLUMN IF NOT EXISTS training_code_tag TEXT NOT NULL DEFAULT '0.0', "
+                    "ADD COLUMN IF NOT EXISTS train_date_min DATE, "
+                    "ADD COLUMN IF NOT EXISTS train_date_max DATE"
+                ).format(sql.Identifier(schema), sql.Identifier(table))
+            )
+        conn.commit()
+        print(
+            f"Columns training_code_tag, train_date_min, train_date_max "
+            f"added (or already present) on '{schema}.{table}'."
+        )
+    except Exception as e:
+        print(f"Error adding training metadata columns: {e}")
+        raise
     finally:
         conn.close()
 
@@ -563,12 +608,19 @@ if __name__ == "__main__":
         action="store_true",
         help="Migrate existing table: backup rows, recreate schema, restore data",
     )
+    parser.add_argument(
+        "--add-columns",
+        action="store_true",
+        help="Idempotently add training_code_tag, train_date_min, train_date_max to an existing table",
+    )
     args = parser.parse_args()
 
     if args.migrate:
         migrate_predictions_table()
     elif args.recreate:
         recreate_predictions_table()
+    elif args.add_columns:
+        add_training_metadata_columns()
     else:
         create_predictions_table(False)
 
