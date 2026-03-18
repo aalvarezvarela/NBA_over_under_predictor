@@ -1,13 +1,13 @@
 import pandas as pd
 
 # Paths
-predictions_path = "/home/adrian_alvarez/Projects/NBA_over_under_predictor/prediction_data_14_march.csv"
+predictions_path = "/home/adrian_alvarez/Projects/NBA_over_under_predictor/prediction_data_17_march.csv"
 # predictions_path = "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/train_data/all_odds_training_data_until_20260311_2.csv"
-other_path = "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/train_data/all_odds_training_data_until_20260315.csv"
+other_path = "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/train_data/all_odds_training_data_until_20260317.csv"
 
 # Load data
 df_pred = pd.read_csv(predictions_path)
-df_pred = df_pred[df_pred["GAME_DATE"] == "2026-03-14"]
+df_pred = df_pred[df_pred["GAME_DATE"] == "2026-03-17"]
 df_other = pd.read_csv(other_path)
 
 # Ensure consistent dtype

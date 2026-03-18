@@ -35,7 +35,7 @@ def main() -> None:
     df_train = create_df_to_predict(
         todays_prediction=False,
         recent_limit_to_include=limit_date,
-        n_seasons_to_include=None,  # Uses default (all from 2017-18)
+        older_season_limit=None,  # Uses default (all from 2017-18)
     )
 
     print(f"Training data created. Shape: {df_train.shape}")

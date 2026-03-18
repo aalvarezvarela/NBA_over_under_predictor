@@ -13,6 +13,7 @@ from nba_ou.data_preparation.missing_data.clean_df_for_training import (
 from nba_ou.postgre_db.predictions.create.create_ou_predictions_db import (
     upload_predictions_to_postgre,
 )
+from nba_ou.utils.general_utils import get_season_year_from_date
 from nba_ou.utils.s3_models import (
     list_s3_objects,
     load_parquet_from_bytes,
@@ -109,7 +110,7 @@ def load_and_predict_tabpfn_client_for_nba_games(
     historical_train_s3_key: str | None = None,
     historical_train_prefix: str = "train_data/",
     model_name: str = "tabpfn_client_regressor",
-    model_version: str = "2.5",
+    model_version: str = "1.0",
     total_points_pick_line_col: str | None = None,
 ) -> pd.DataFrame:
     """
@@ -254,12 +255,31 @@ def load_and_predict_tabpfn_client_for_nba_games(
     if df_train.empty:
         raise ValueError("No training rows available for TabPFN fit after cleaning")
 
+    prediction_season_year = get_season_year_from_date(str(prediction_day))
+    min_train_season_year = prediction_season_year - 3
+
+    if "SEASON_YEAR" not in df_train.columns:
+        raise ValueError(
+            "SEASON_YEAR is required to limit TabPFN training to 4 seasons"
+        )
+
+    df_train["SEASON_YEAR"] = pd.to_numeric(df_train["SEASON_YEAR"], errors="coerce")
+    season_mask = df_train["SEASON_YEAR"].between(
+        min_train_season_year, prediction_season_year
+    )
+    df_train = df_train[season_mask].copy()
+    if df_train.empty:
+        raise ValueError(
+            "No training rows available for TabPFN after limiting to the last 4 seasons"
+        )
+
     drop_feature_cols = {
         "TOTAL_POINTS",
         "GAME_ID",
         "GAME_DATE",
         "GAME_TIME",
         "SEASON_TYPE",
+        "SEASON_YEAR",
         "TEAM_NAME_TEAM_HOME",
         "TEAM_NAME_TEAM_AWAY",
         "MATCHUP",
@@ -388,7 +408,9 @@ def load_and_predict_tabpfn_client_for_nba_games(
 
     df_summary = df_predictable[summary_columns].copy()
     df_summary["PREDICTION_DATETIME"] = prediction_datetime
-    df_summary["PREDICTION_DATE"] = pd.to_datetime(prediction_datetime).date()
+    df_summary["PREDICTION_DATE"] = prediction_datetime.strftime("%Y-%m-%d %H:%M:%S")
+    df_summary["HOME_PTS"] = None
+    df_summary["AWAY_PTS"] = None
 
     def ensure_timezone_aware(dt_value):
         if pd.isna(dt_value):
@@ -419,7 +441,15 @@ def load_and_predict_tabpfn_client_for_nba_games(
 
     df_summary["MODEL_NAME"] = model_name
     df_summary["MODEL_TYPE"] = "TabPFNRegressor"
-    df_summary["MODEL_VERSION"] = f"{model_version}|train={selected_key}"
+    df_summary["MODEL_VERSION"] = model_version
+    df_summary["PREDICTION_SOURCE"] = model_name
+    df_summary["TRAINING_CODE_TAG"] = "1.0"
+    df_summary["TRAIN_DATE_MIN"] = pd.to_datetime(
+        df_train["GAME_DATE"], errors="coerce"
+    ).dt.date.min()
+    df_summary["TRAIN_DATE_MAX"] = pd.to_datetime(
+        df_train["GAME_DATE"], errors="coerce"
+    ).dt.date.max()
 
     df_summary_clean = df_summary.dropna(subset=["PRED_TOTAL_POINTS"])
     upload_predictions_to_postgre(df_summary_clean)

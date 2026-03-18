@@ -88,30 +88,6 @@ CONFIG_SCHEMA = {
     "s3_aws_region": ("S3", "AWS_REGION", str, None),
     "s3_bucket": ("S3", "BUCKET", str, None),
     "s3_models_prefix": ("S3", "MODELS_PREFIX", str, None),
-    "s3_regressor_full_dataset_prefix": (
-        "S3",
-        "REGRESSOR_FULL_DATASET_PREFIX",
-        str,
-        None,
-    ),
-    "s3_regressor_recent_games_prefix": (
-        "S3",
-        "REGRESSOR_RECENT_GAMES_PREFIX",
-        str,
-        None,
-    ),
-    "s3_regressor_full_dataset_total_points_prefix": (
-        "S3",
-        "REGRESSOR_FULL_DATASET_TOTAL_POINTS_PREFIX",
-        str,
-        None,
-    ),
-    "s3_regressor_recent_games_total_points_prefix": (
-        "S3",
-        "REGRESSOR_RECENT_GAMES_TOTAL_POINTS_PREFIX",
-        str,
-        None,
-    ),
     "s3_local_model_cache_dir": ("S3", "LOCAL_MODEL_CACHE_DIR", str, None),
 }
 
@@ -221,6 +197,21 @@ class Settings:
 
         return ""
 
+    def _get_multiline_list(
+        self,
+        section: str,
+        key: str,
+        *,
+        fallback: list[str] | None = None,
+    ) -> list[str]:
+        raw_value = self.config.get(section, key, fallback="")
+        items = [
+            line.strip()
+            for line in raw_value.replace(",", "\n").splitlines()
+            if line.strip()
+        ]
+        return items or list(fallback or [])
+
     # -------------------------------------------------------------------------
     # Special properties with custom logic
     # -------------------------------------------------------------------------
@@ -248,6 +239,16 @@ class Settings:
 
         profile = profile.strip()
         return profile or None
+
+    @property
+    def prediction_model_prefixes(self) -> list[str]:
+        """Ordered S3 model prefixes enabled for prediction runs."""
+        if "prediction_model_prefixes" in self._cache:
+            return self._cache["prediction_model_prefixes"]
+
+        prefixes = self._get_multiline_list("PredictionModels", "S3_MODEL_PREFIXES")
+        self._cache["prediction_model_prefixes"] = prefixes
+        return prefixes
 
     # =========================================================================
     # HELPER METHODS
