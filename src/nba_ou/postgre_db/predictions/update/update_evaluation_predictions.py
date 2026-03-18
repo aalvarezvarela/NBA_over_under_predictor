@@ -7,6 +7,41 @@ from nba_ou.postgre_db.config.db_config import (
 from psycopg import sql
 
 
+def get_available_training_code_tags() -> list[str]:
+    """
+    Return distinct non-empty training_code_tag values stored in the predictions table.
+    """
+    schema = get_schema_name_predictions()
+    table = schema
+
+    conn = connect_nba_db()
+    try:
+        query_obj = sql.SQL("""
+            SELECT DISTINCT training_code_tag
+            FROM {}.{}
+            WHERE training_code_tag IS NOT NULL
+              AND btrim(training_code_tag) <> ''
+        """).format(sql.Identifier(schema), sql.Identifier(table))
+        query = query_obj.as_string(conn)
+        df = pd.read_sql_query(query, conn)
+    finally:
+        conn.close()
+
+    if df.empty or "training_code_tag" not in df.columns:
+        return []
+
+    tags = (
+        df["training_code_tag"]
+        .astype(str)
+        .str.strip()
+        .replace("", np.nan)
+        .dropna()
+        .drop_duplicates()
+        .tolist()
+    )
+    return sorted(tags)
+
+
 def get_games_with_total_scored_points(
     date: str = None,
     start_date: str = None,

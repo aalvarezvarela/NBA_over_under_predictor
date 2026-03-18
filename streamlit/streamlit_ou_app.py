@@ -33,6 +33,7 @@ from nba_ou.postgre_db.predictions.shap_utils import (  # noqa: E402
     parse_serialized_shap_contributions,
 )
 from nba_ou.postgre_db.predictions.update.update_evaluation_predictions import (  # noqa: E402
+    get_available_training_code_tags,
     get_games_with_total_scored_points,
 )
 from nba_ou.utils.streamlit_utils import get_team_logo_url  # noqa: E402
@@ -201,6 +202,11 @@ def set_runtime_env_from_secrets() -> None:
         os.environ["ODDS_API_KEY"] = st.secrets["Odds"]["ODDS_API_KEY"]
     except Exception:
         pass
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_available_training_code_tags() -> list[str]:
+    return get_available_training_code_tags()
 
 
 def inject_global_css() -> None:
@@ -2102,19 +2108,31 @@ def main() -> None:
             ],
             index=0,
         )
-        training_code_tag_filter = st.text_input(
+        available_training_code_tags = load_available_training_code_tags()
+        training_code_tag_options = ["All available", *available_training_code_tags]
+        default_training_code_tag = (
+            "1.0"
+            if "1.0" in available_training_code_tags
+            else training_code_tag_options[0]
+        )
+        training_code_tag_filter = st.selectbox(
             "Training Code Tag",
-            value="1.0",
-            help="Exact training_code_tag to display. Leave blank to include all tags.",
+            options=training_code_tag_options,
+            index=training_code_tag_options.index(default_training_code_tag),
+            help="Filter predictions by training_code_tag.",
         ).strip()
         st.markdown("---")
 
+    selected_training_code_tag = (
+        None if training_code_tag_filter == "All available" else training_code_tag_filter
+    )
+
     if view_option == "Upcoming Predictions":
-        show_upcoming_predictions(training_code_tag_filter or None)
+        show_upcoming_predictions(selected_training_code_tag)
     elif view_option == "Past Games Results":
-        show_past_games_results(training_code_tag_filter or None)
+        show_past_games_results(selected_training_code_tag)
     else:
-        show_historical_performance(training_code_tag_filter or None)
+        show_historical_performance(selected_training_code_tag)
 
 
 if __name__ == "__main__":
