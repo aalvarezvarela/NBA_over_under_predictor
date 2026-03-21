@@ -5,7 +5,10 @@ from dataclasses import dataclass
 import numpy as np
 import optuna
 import pandas as pd
-from nba_ou.modeling.scorers import over_under_betting_accuracy_total_points
+from nba_ou.modeling.scorers import (
+    over_under_betting_accuracy_total_points,
+    over_under_betting_accuracy_total_points_with_min_edge,
+)
 from optuna.pruners import MedianPruner
 from optuna.samplers import TPESampler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
@@ -19,6 +22,9 @@ class FoldMetrics:
     rmse: float
     r2: float
     ou_accuracy: float
+    ou_accuracy_edge_2: float
+    ou_accuracy_edge_3: float
+    ou_accuracy_edge_4: float
     best_iteration: int
     n_train: int
     n_valid: int
@@ -105,6 +111,24 @@ def evaluate_fold_total_points(
             betting_line=betting_line,
         )
     )
+    ou_acc_edge_2 = over_under_betting_accuracy_total_points_with_min_edge(
+        y_true=y_true,
+        y_pred=y_pred,
+        betting_line=betting_line,
+        min_edge=2,
+    )
+    ou_acc_edge_3 = over_under_betting_accuracy_total_points_with_min_edge(
+        y_true=y_true,
+        y_pred=y_pred,
+        betting_line=betting_line,
+        min_edge=3,
+    )
+    ou_acc_edge_4 = over_under_betting_accuracy_total_points_with_min_edge(
+        y_true=y_true,
+        y_pred=y_pred,
+        betting_line=betting_line,
+        min_edge=4,
+    )
 
     best_iteration = getattr(model, "best_iteration", None)
     if best_iteration is None:
@@ -116,6 +140,15 @@ def evaluate_fold_total_points(
         rmse=rmse,
         r2=r2,
         ou_accuracy=ou_acc,
+        ou_accuracy_edge_2=(
+            float(ou_acc_edge_2) if np.isfinite(ou_acc_edge_2) else 0.0
+        ),
+        ou_accuracy_edge_3=(
+            float(ou_acc_edge_3) if np.isfinite(ou_acc_edge_3) else 0.0
+        ),
+        ou_accuracy_edge_4=(
+            float(ou_acc_edge_4) if np.isfinite(ou_acc_edge_4) else 0.0
+        ),
         best_iteration=int(best_iteration) + 1,
         n_train=int(n_train),
         n_valid=int(len(X_valid)),
@@ -180,13 +213,21 @@ def objective_total_points_mae(
     mean_rmse = float(np.mean([m.rmse for m in fold_metrics]))
     mean_r2 = float(np.mean([m.r2 for m in fold_metrics]))
     mean_ou_acc = float(np.mean([m.ou_accuracy for m in fold_metrics]))
+    mean_ou_acc_edge_2 = float(np.mean([m.ou_accuracy_edge_2 for m in fold_metrics]))
+    mean_ou_acc_edge_3 = float(np.mean([m.ou_accuracy_edge_3 for m in fold_metrics]))
+    mean_ou_acc_edge_4 = float(np.mean([m.ou_accuracy_edge_4 for m in fold_metrics]))
     mean_best_iteration = int(round(np.mean([m.best_iteration for m in fold_metrics])))
+    median_best_iteration = int(np.median([m.best_iteration for m in fold_metrics]))
 
     trial.set_user_attr("mean_mae", mean_mae)
     trial.set_user_attr("mean_rmse", mean_rmse)
     trial.set_user_attr("mean_r2", mean_r2)
     trial.set_user_attr("mean_ou_acc", mean_ou_acc)
+    trial.set_user_attr("mean_ou_acc_edge_2", mean_ou_acc_edge_2)
+    trial.set_user_attr("mean_ou_acc_edge_3", mean_ou_acc_edge_3)
+    trial.set_user_attr("mean_ou_acc_edge_4", mean_ou_acc_edge_4)
     trial.set_user_attr("mean_best_iteration", mean_best_iteration)
+    trial.set_user_attr("median_best_iteration", median_best_iteration)
     trial.set_user_attr(
         "fold_metrics",
         [
@@ -196,6 +237,9 @@ def objective_total_points_mae(
                 "rmse": m.rmse,
                 "r2": m.r2,
                 "ou_accuracy": m.ou_accuracy,
+                "ou_accuracy_edge_2": m.ou_accuracy_edge_2,
+                "ou_accuracy_edge_3": m.ou_accuracy_edge_3,
+                "ou_accuracy_edge_4": m.ou_accuracy_edge_4,
                 "best_iteration": m.best_iteration,
                 "n_train": m.n_train,
                 "n_valid": m.n_valid,
@@ -263,7 +307,11 @@ def summarize_optuna_trials(study: optuna.Study) -> pd.DataFrame:
                 "mean_rmse": trial.user_attrs.get("mean_rmse"),
                 "mean_r2": trial.user_attrs.get("mean_r2"),
                 "mean_ou_acc": trial.user_attrs.get("mean_ou_acc"),
+                "mean_ou_acc_edge_2": trial.user_attrs.get("mean_ou_acc_edge_2"),
+                "mean_ou_acc_edge_3": trial.user_attrs.get("mean_ou_acc_edge_3"),
+                "mean_ou_acc_edge_4": trial.user_attrs.get("mean_ou_acc_edge_4"),
                 "mean_best_iteration": trial.user_attrs.get("mean_best_iteration"),
+                "median_best_iteration": trial.user_attrs.get("median_best_iteration"),
                 **trial.params,
             }
         )
@@ -271,30 +319,179 @@ def summarize_optuna_trials(study: optuna.Study) -> pd.DataFrame:
     return (
         pd.DataFrame(rows)
         .sort_values(
-            ["value_mae", "mean_rmse"],
-            ascending=[True, True],
+            ["value_mae", "mean_ou_acc", "mean_rmse"],
+            ascending=[True, False, True],
         )
         .reset_index(drop=True)
     )
+
+
+def _get_completed_trials(study: optuna.Study) -> list[optuna.trial.FrozenTrial]:
+    completed_trials = [
+        trial
+        for trial in study.trials
+        if trial.state == optuna.trial.TrialState.COMPLETE and trial.value is not None
+    ]
+
+    if not completed_trials:
+        raise ValueError("No completed Optuna trials found.")
+
+    return completed_trials
+
+
+def _resolve_mae_cutoff(
+    *,
+    best_mae: float,
+    mae_tolerance_abs: float | None,
+    mae_tolerance_pct: float | None,
+) -> float:
+    if mae_tolerance_abs is not None and mae_tolerance_pct is not None:
+        raise ValueError("Provide only one of mae_tolerance_abs or mae_tolerance_pct.")
+
+    if mae_tolerance_abs is not None:
+        return float(best_mae + mae_tolerance_abs)
+
+    if mae_tolerance_pct is not None:
+        return float(best_mae * (1.0 + mae_tolerance_pct))
+
+    return float(best_mae)
+
+
+def select_best_trial_lexicographic(
+    study: optuna.Study,
+    *,
+    mae_tolerance_abs: float | None = 0.10,
+    mae_tolerance_pct: float | None = None,
+) -> optuna.trial.FrozenTrial:
+    """
+    Select the final trial by:
+    1. Keeping trials within a small MAE tolerance of the best MAE
+    2. Maximizing OU accuracy inside that candidate set
+    3. Using RMSE, then MAE, as tie-breakers
+    """
+    completed_trials = _get_completed_trials(study)
+    best_mae = min(float(trial.value) for trial in completed_trials)
+    mae_cutoff = _resolve_mae_cutoff(
+        best_mae=best_mae,
+        mae_tolerance_abs=mae_tolerance_abs,
+        mae_tolerance_pct=mae_tolerance_pct,
+    )
+
+    candidate_trials = [
+        trial
+        for trial in completed_trials
+        if float(trial.user_attrs.get("mean_mae", trial.value)) <= mae_cutoff
+    ]
+
+    if not candidate_trials:
+        raise ValueError("No candidate trials found within the MAE tolerance.")
+
+    return min(
+        candidate_trials,
+        key=lambda trial: (
+            -float(trial.user_attrs.get("mean_ou_acc", float("-inf"))),
+            float(trial.user_attrs.get("mean_rmse", float("inf"))),
+            float(trial.user_attrs.get("mean_mae", trial.value)),
+            trial.number,
+        ),
+    )
+
+
+def summarize_lexicographic_candidates(
+    study: optuna.Study,
+    *,
+    mae_tolerance_abs: float | None = 0.10,
+    mae_tolerance_pct: float | None = None,
+) -> pd.DataFrame:
+    """
+    Summarize the final-trial candidate pool after the MAE tolerance filter.
+    """
+    completed_trials = _get_completed_trials(study)
+    best_mae = min(float(trial.value) for trial in completed_trials)
+    mae_cutoff = _resolve_mae_cutoff(
+        best_mae=best_mae,
+        mae_tolerance_abs=mae_tolerance_abs,
+        mae_tolerance_pct=mae_tolerance_pct,
+    )
+
+    rows = []
+    for trial in completed_trials:
+        mean_mae = float(trial.user_attrs.get("mean_mae", trial.value))
+        if mean_mae > mae_cutoff:
+            continue
+
+        rows.append(
+            {
+                "trial": trial.number,
+                "value_mae": float(trial.value),
+                "mean_mae": mean_mae,
+                "mean_rmse": trial.user_attrs.get("mean_rmse"),
+                "mean_r2": trial.user_attrs.get("mean_r2"),
+                "mean_ou_acc": trial.user_attrs.get("mean_ou_acc"),
+                "mean_ou_acc_edge_2": trial.user_attrs.get("mean_ou_acc_edge_2"),
+                "mean_ou_acc_edge_3": trial.user_attrs.get("mean_ou_acc_edge_3"),
+                "mean_ou_acc_edge_4": trial.user_attrs.get("mean_ou_acc_edge_4"),
+                "mean_best_iteration": trial.user_attrs.get("mean_best_iteration"),
+                "median_best_iteration": trial.user_attrs.get(
+                    "median_best_iteration"
+                ),
+                "mae_cutoff": mae_cutoff,
+                **trial.params,
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame()
+
+    return (
+        pd.DataFrame(rows)
+        .sort_values(
+            ["mean_ou_acc", "mean_rmse", "mean_mae", "trial"],
+            ascending=[False, True, True, True],
+        )
+        .reset_index(drop=True)
+    )
+
+
+def get_trial_n_estimators(trial: optuna.trial.FrozenTrial) -> int:
+    """
+    Final boosting rounds to use for the selected trial.
+
+    The median of fold-level best iterations is more robust than the mean for
+    noisy time-series folds.
+    """
+    final_n_estimators = trial.user_attrs.get("median_best_iteration")
+
+    if final_n_estimators is None:
+        final_n_estimators = trial.user_attrs.get("mean_best_iteration")
+
+    if final_n_estimators is None:
+        final_n_estimators = trial.params.get("n_estimators", 75)
+
+    return max(50, int(round(float(final_n_estimators))))
 
 
 def fit_best_xgb_total_points(
     *,
     X_dev: pd.DataFrame,
     y_dev: pd.Series,
-    study: optuna.Study,
+    study: optuna.Study | None = None,
+    trial: optuna.trial.FrozenTrial | None = None,
     objective_name: str = "reg:squarederror",
 ) -> XGBRegressor:
     """
-    Refit best params on all development data.
+    Refit the selected params on all development data.
 
-    Uses the average best_iteration from CV folds as the final n_estimators.
-    This avoids carving out another validation chunk after tuning.
+    Pass either a study or an explicit trial. When a study is provided, the
+    Optuna best-by-MAE trial is used. The final n_estimators comes from the
+    median CV best iteration when available.
     """
-    best_params = study.best_trial.params.copy()
-    final_n_estimators = int(
-        study.best_trial.user_attrs.get("mean_best_iteration") + 1
-    )
+    if (study is None) == (trial is None):
+        raise ValueError("Provide exactly one of study or trial.")
+
+    selected_trial = trial if trial is not None else study.best_trial
+    best_params = selected_trial.params.copy()
+    final_n_estimators = get_trial_n_estimators(selected_trial)
 
     final_params = {
         "booster": "gbtree",
@@ -304,7 +501,7 @@ def fit_best_xgb_total_points(
         "random_state": 16,
         "n_jobs": -1,
         "verbosity": 0,
-        "n_estimators": max(50, final_n_estimators),
+        "n_estimators": final_n_estimators,
         **best_params,
     }
 

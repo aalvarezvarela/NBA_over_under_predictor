@@ -32,7 +32,9 @@ class SchemaInfo(BaseModel):
 
 class TrainingMetrics(BaseModel):
     best_params: dict
+    selected_trial_number: int | None = None
     mean_best_iteration: int | None = None
+    median_best_iteration: int | None = None
     cv_mae: float
     cv_rmse: float | None = None
     cv_ou_acc: float | None = None
