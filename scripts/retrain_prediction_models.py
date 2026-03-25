@@ -1,7 +1,4 @@
-#!/usr/bin/env python3
-
-from __future__ import annotations
-
+import os
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -50,7 +47,30 @@ def _create_training_dataframe_for_today(limit_date: str) -> tuple[pd.DataFrame,
     return df_train, output_path
 
 
+def configure_tqdm_for_environment() -> None:
+    """
+    Keep local tqdm behavior intact while avoiding noisy GitHub Actions logs.
+
+    tqdm reads `TQDM_*` environment variables when progress bars are created, so
+    setting `TQDM_DISABLE=1` here disables downstream bars in CI without
+    touching their call sites.
+
+    Set `NBA_OU_GITHUB_ACTIONS_TQDM=keep` to preserve normal tqdm output inside
+    GitHub Actions for a specific workflow run.
+    """
+    github_actions_tqdm_mode = os.getenv(
+        "NBA_OU_GITHUB_ACTIONS_TQDM", "disable"
+    ).strip().lower()
+
+    if (
+        os.getenv("GITHUB_ACTIONS", "").lower() == "true"
+        and github_actions_tqdm_mode != "keep"
+    ):
+        os.environ.setdefault("TQDM_DISABLE", "1")
+
+
 def main() -> None:
+    configure_tqdm_for_environment()
     limit_date = _today_limit_date()
     configured_prefixes = SETTINGS.prediction_model_prefixes
     if not configured_prefixes:
