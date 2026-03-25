@@ -25,14 +25,13 @@ def derive_staging_prefix(production_prefix: str) -> str:
     return production_prefix.replace(marker, "/staging/", 1)
 
 
-def derive_temp_prefix(production_prefix: str) -> str:
+def derive_archive_prefix(production_prefix: str) -> str:
     marker = "/production/"
     if marker not in production_prefix:
         raise ValueError(
             f"Configured production prefix must contain '{marker}': {production_prefix}"
         )
-    suffix = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%SZ")
-    return production_prefix.replace(marker, f"/_promotion_tmp/{suffix}/", 1)
+    return production_prefix.replace(marker, "/archive/", 1)
 
 
 def _prefix_objects(*, s3_client, bucket: str, prefix: str) -> list[dict]:
@@ -71,7 +70,7 @@ def extract_single_bundle(
 
     model_key = model_keys[0]
     meta_key = meta_keys[0]
-    expected_meta = f"{model_key[:-len('.json')]}.meta.json"
+    expected_meta = f"{model_key[: -len('.json')]}.meta.json"
     if meta_key != expected_meta:
         raise ValueError(
             f"Metadata/model mismatch under {prefix}: model={model_key}, meta={meta_key}"
@@ -141,7 +140,6 @@ def promote_prediction_models(*, dry_run: bool = True) -> None:
 
     for production_prefix in prefixes:
         staging_prefix = derive_staging_prefix(production_prefix)
-        temp_prefix = derive_temp_prefix(production_prefix)
 
         print(f"\nModel family: {production_prefix}")
         print(f"  staging: {staging_prefix}")
@@ -167,34 +165,27 @@ def promote_prediction_models(*, dry_run: bool = True) -> None:
         else:
             print(f"  Production bundle: {production_bundle.filenames}")
 
-        temp_bundle = None
         if production_bundle is not None:
-            print(f"  Moving current production bundle to temp: {temp_prefix}")
-            temp_bundle = move_bundle(
+            archive_prefix = derive_archive_prefix(production_prefix)
+            if _prefix_objects(s3_client=s3, bucket=bucket, prefix=archive_prefix):
+                suffix = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%SZ")
+                archive_prefix = f"{archive_prefix.rstrip('/')}/{suffix}/"
+            print(f"  Archiving current production bundle to: {archive_prefix}")
+            move_bundle(
                 s3_client=s3,
                 bucket=bucket,
                 bundle=production_bundle,
-                destination_prefix=temp_prefix,
+                destination_prefix=archive_prefix,
                 dry_run=dry_run,
             )
 
         print("  Promoting staging bundle to production")
-        _ = move_bundle(
+        move_bundle(
             s3_client=s3,
             bucket=bucket,
             bundle=staging_bundle,
             destination_prefix=production_prefix,
             dry_run=dry_run,
         )
-
-        if temp_bundle is not None:
-            print("  Moving previous production bundle to staging")
-            _ = move_bundle(
-                s3_client=s3,
-                bucket=bucket,
-                bundle=temp_bundle,
-                destination_prefix=staging_prefix,
-                dry_run=dry_run,
-            )
 
     print("\nPromotion flow completed.")

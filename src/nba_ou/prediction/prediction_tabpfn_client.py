@@ -189,6 +189,7 @@ def load_and_predict_tabpfn_client_for_nba_games(
         [historical_df, incoming_df_historical], ignore_index=True, sort=False
     )
     merged_df = merged_df.drop_duplicates(subset=["GAME_ID"], keep="first")
+    exclude_cols_containing = ["fanatics_sportsbook"]
     df_to_predict_today = clean_dataframe_for_training(
         df_to_predict_today,
         nan_threshold=100,
@@ -201,6 +202,7 @@ def load_and_predict_tabpfn_client_for_nba_games(
             "TEAM_NAME_TEAM_AWAY",
             "MATCHUP_TEAM_HOME",
         ],
+        exclude_cols_containing=exclude_cols_containing,
         keep_all_cols=True,
         verbose=1,
     )
@@ -209,7 +211,7 @@ def load_and_predict_tabpfn_client_for_nba_games(
         merged_df,
         corr_threshold=0.98,
         nan_threshold=50,
-        max_na_per_row=10,
+        max_na_per_row=80,
         keep_columns=[
             "GAME_ID",
             "SEASON_TYPE",
@@ -219,6 +221,7 @@ def load_and_predict_tabpfn_client_for_nba_games(
             "TEAM_NAME_TEAM_AWAY",
             "MATCHUP_TEAM_HOME",
         ],
+        exclude_cols_containing=exclude_cols_containing,
         verbose=1,
     )
 

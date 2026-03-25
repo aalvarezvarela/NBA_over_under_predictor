@@ -12,6 +12,18 @@ import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from nba_ou.postgre_db.predictions.shap_utils import (
+    ShapFeatureContribution,
+    parse_serialized_shap_contributions,
+)
+from nba_ou.postgre_db.predictions.update.update_evaluation_predictions import (
+    get_available_training_code_tags,
+    get_games_with_total_scored_points,
+)
+from nba_ou.postgre_db.predictions.update.update_total_points_predictions import (
+    update_total_points_predictions as run_update_finished_matches,
+)
+from nba_ou.utils.streamlit_utils import get_team_logo_url
 
 import streamlit as st
 
@@ -23,19 +35,8 @@ for path in (PROJECT_ROOT, SRC_DIR):
     if path_str not in sys.path:
         sys.path.insert(0, path_str)
 
-try:
-    from scripts.predict_nba_games import predict_nba_games as run_nba_predictor
-except Exception:
-    run_nba_predictor = None
 
-from nba_ou.postgre_db.predictions.shap_utils import (  # noqa: E402
-    ShapFeatureContribution,
-    parse_serialized_shap_contributions,
-)
-from nba_ou.postgre_db.predictions.update.update_evaluation_predictions import (  # noqa: E402
-    get_games_with_total_scored_points,
-)
-from nba_ou.utils.streamlit_utils import get_team_logo_url  # noqa: E402
+from scripts.predict_nba_games import predict_nba_games as run_nba_predictor
 
 warnings.filterwarnings("ignore", message="pandas only supports SQLAlchemy connectable")
 
@@ -118,7 +119,9 @@ def extract_model_catalog(df: pd.DataFrame) -> ModelCatalog:
     prediction_source = _normalized_text_series(work, "prediction_source")
 
     work["_model_key"] = (
-        model_type.fillna(prediction_source).fillna(model_name).apply(_slugify_model_key)
+        model_type.fillna(prediction_source)
+        .fillna(model_name)
+        .apply(_slugify_model_key)
     )
     work["_model_label"] = (
         model_name.fillna(model_type).fillna(prediction_source).fillna("Unknown Model")
@@ -201,6 +204,11 @@ def set_runtime_env_from_secrets() -> None:
         os.environ["ODDS_API_KEY"] = st.secrets["Odds"]["ODDS_API_KEY"]
     except Exception:
         pass
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_available_training_code_tags() -> list[str]:
+    return get_available_training_code_tags()
 
 
 def inject_global_css() -> None:
@@ -639,6 +647,49 @@ def build_game_level_predictions(
         base["consensus_no_tabpfn_pick"] == base["actual_side"]
     ) & base["actual_side"].isin(["OVER", "UNDER"])
 
+    # Majority vote consensus: direction decided by raw vote count across all models
+    _vote_matrix = base[model_pick_cols]
+    base["consensus_vote_n_over"] = (_vote_matrix == "OVER").sum(axis=1)
+    base["consensus_vote_n_under"] = (_vote_matrix == "UNDER").sum(axis=1)
+    _vote_pick = pd.Series(index=base.index, dtype="object")
+    _vote_pick.loc[base["consensus_vote_n_over"] > base["consensus_vote_n_under"]] = (
+        "OVER"
+    )
+    _vote_pick.loc[base["consensus_vote_n_under"] > base["consensus_vote_n_over"]] = (
+        "UNDER"
+    )
+    base["consensus_vote_pick"] = _vote_pick
+    base["consensus_vote_correct"] = (
+        base["consensus_vote_pick"] == base["actual_side"]
+    ) & base["actual_side"].isin(["OVER", "UNDER"])
+
+    # Bold Contrarian: prediction from the model with the highest absolute line diff
+    if model_diff_cols:
+        abs_diffs = base[model_diff_cols].abs()
+        # idxmax gives the column name (per-row) with the largest absolute diff
+        _bc_col_idx = abs_diffs.idxmax(axis=1)
+        base["consensus_bold_contrarian_line_diff"] = pd.Series(
+            [
+                base.loc[idx, col] if pd.notna(col) else np.nan
+                for idx, col in zip(base.index, _bc_col_idx)
+            ],
+            index=base.index,
+        )
+    else:
+        base["consensus_bold_contrarian_line_diff"] = np.nan
+    base["consensus_bold_contrarian_pred_total"] = (
+        line + base["consensus_bold_contrarian_line_diff"]
+    )
+    base["consensus_bold_contrarian_pick"] = pick_from_diff(
+        base["consensus_bold_contrarian_line_diff"]
+    )
+    base["consensus_bold_contrarian_error"] = (
+        base["consensus_bold_contrarian_pred_total"] - actual_total
+    )
+    base["consensus_bold_contrarian_correct"] = (
+        base["consensus_bold_contrarian_pick"] == base["actual_side"]
+    ) & base["actual_side"].isin(["OVER", "UNDER"])
+
     base["all_models_available"] = base[model_total_cols].notna().all(axis=1)
     base["all_models_agree"] = (
         base[model_pick_cols].nunique(axis=1, dropna=True).eq(1)
@@ -703,6 +754,22 @@ def build_upcoming_display(
     ).round(2)
     display["Consensus (No TabPFN) Pick"] = df["consensus_no_tabpfn_pick"]
 
+    display["Vote Pick"] = df["consensus_vote_pick"]
+    display["Over Votes"] = pd.to_numeric(
+        df["consensus_vote_n_over"], errors="coerce"
+    ).astype("Int64")
+    display["Under Votes"] = pd.to_numeric(
+        df["consensus_vote_n_under"], errors="coerce"
+    ).astype("Int64")
+
+    display["Bold Contrarian Total"] = pd.to_numeric(
+        df["consensus_bold_contrarian_pred_total"], errors="coerce"
+    ).round(1)
+    display["Bold Contrarian Diff"] = pd.to_numeric(
+        df["consensus_bold_contrarian_line_diff"], errors="coerce"
+    ).round(2)
+    display["Bold Contrarian Pick"] = df["consensus_bold_contrarian_pick"]
+
     if "time_to_match_minutes" in df.columns:
         display["Time to Game (min)"] = (
             pd.to_numeric(df["time_to_match_minutes"], errors="coerce")
@@ -763,6 +830,28 @@ def build_past_display(df: pd.DataFrame) -> pd.DataFrame:
     ).round(2)
     display["Consensus (No TabPFN) Pick"] = df["consensus_no_tabpfn_pick"]
     display["Consensus (No TabPFN) Correct"] = df["consensus_no_tabpfn_correct"].map(
+        {True: "✅", False: "❌"}
+    )
+
+    display["Vote Pick"] = df["consensus_vote_pick"]
+    display["Vote Correct"] = df["consensus_vote_correct"].map(
+        {True: "✅", False: "❌"}
+    )
+    display["Over Votes"] = pd.to_numeric(
+        df["consensus_vote_n_over"], errors="coerce"
+    ).astype("Int64")
+    display["Under Votes"] = pd.to_numeric(
+        df["consensus_vote_n_under"], errors="coerce"
+    ).astype("Int64")
+
+    display["Bold Contrarian Total"] = pd.to_numeric(
+        df["consensus_bold_contrarian_pred_total"], errors="coerce"
+    ).round(1)
+    display["Bold Contrarian Diff"] = pd.to_numeric(
+        df["consensus_bold_contrarian_line_diff"], errors="coerce"
+    ).round(2)
+    display["Bold Contrarian Pick"] = df["consensus_bold_contrarian_pick"]
+    display["Bold Contrarian Correct"] = df["consensus_bold_contrarian_correct"].map(
         {True: "✅", False: "❌"}
     )
 
@@ -1016,7 +1105,7 @@ def _build_model_cell_html(
         f"background:rgba(128,128,128,0.06);border-radius:8px;"
         f'border:1px solid rgba(128,128,128,0.1);">'
         f'<div style="font-size:0.72rem;font-weight:700;color:#888;'
-        f'text-transform:uppercase;letter-spacing:0.04em;margin-bottom:4px;'
+        f"text-transform:uppercase;letter-spacing:0.04em;margin-bottom:4px;"
         f'line-height:1.25;word-break:break-word;overflow-wrap:anywhere;">'
         f"{label}</div>"
         f"{pred_html}"
@@ -1067,20 +1156,16 @@ def _render_game_card(
     margin_text = f"{consensus_diff:+.1f}" if pd.notna(consensus_diff) else "—"
     cons_total_text = f"{consensus_total:.1f}" if pd.notna(consensus_total) else "—"
 
-    # Model agreement
-    picks_list: list[str] = []
-    for model_type in catalog.order:
-        p = catalog.prefixes[model_type]
-        pk = row.get(f"pick_{p}")
-        if pd.notna(pk) and pk in ("OVER", "UNDER"):
-            picks_list.append(str(pk))
-    n_avail = len(picks_list)
-    if picks_list:
-        dominant = max(set(picks_list), key=picks_list.count)
-        n_agree = picks_list.count(dominant)
+    # Model agreement / majority vote
+    n_over_votes = int(row.get("consensus_vote_n_over") or 0)
+    n_under_votes = int(row.get("consensus_vote_n_under") or 0)
+    vote_pick = row.get("consensus_vote_pick")
+    n_avail = n_over_votes + n_under_votes
+    if n_avail:
+        vote_label = str(vote_pick) if pd.notna(vote_pick) else "TIE"
+        vote_text = f"🗳️ Vote: {vote_label} ({n_over_votes}↑ / {n_under_votes}↓)"
     else:
-        n_agree = 0
-    agree_text = f"{n_agree}/{n_avail} agree" if n_avail else "No models"
+        vote_text = "No model votes"
 
     # Build model cells
     tp_cells = "".join(
@@ -1247,7 +1332,7 @@ def _render_game_card(
           <div>
             <div style="font-size:1.6rem;font-weight:900;color:{accent};
                         letter-spacing:-0.01em;">{bet_label}</div>
-            <div style="font-size:0.8rem;color:#888;margin-top:1px;">{agree_text}</div>
+            <div style="font-size:0.8rem;color:#888;margin-top:1px;">{vote_text}</div>
           </div>
           <div style="text-align:center;">
             <div style="font-size:0.7rem;font-weight:600;color:#aaa;
@@ -1452,6 +1537,67 @@ def summarize_model_performance(df: pd.DataFrame) -> pd.DataFrame:
         }
     )
 
+    # Add majority vote consensus row
+    vote_picks = df["consensus_vote_pick"]
+    vote_valid_mask = resolved_mask & vote_picks.isin(["OVER", "UNDER"])
+    n_vote_games = int(vote_valid_mask.sum())
+    vote_accuracy = (
+        float(df.loc[vote_valid_mask, "consensus_vote_correct"].mean())
+        if n_vote_games
+        else np.nan
+    )
+    rows.append(
+        {
+            "Model": "Consensus (Majority Vote)",
+            "Games": n_vote_games,
+            "Accuracy (%)": None
+            if pd.isna(vote_accuracy)
+            else round(vote_accuracy * 100, 2),
+            "Mean Error": None,
+            "MAE": None,
+            "Avg |Diff vs Line|": None,
+        }
+    )
+
+    # Add Bold Contrarian consensus row
+    bc_picks = df["consensus_bold_contrarian_pick"]
+    bc_valid_mask = resolved_mask & bc_picks.isin(["OVER", "UNDER"])
+    n_bc_games = int(bc_valid_mask.sum())
+    bc_accuracy = (
+        float(df.loc[bc_valid_mask, "consensus_bold_contrarian_correct"].mean())
+        if n_bc_games
+        else np.nan
+    )
+    bc_mean_error = (
+        float(df.loc[bc_valid_mask, "consensus_bold_contrarian_error"].mean())
+        if n_bc_games
+        else np.nan
+    )
+    bc_mae = (
+        float(df.loc[bc_valid_mask, "consensus_bold_contrarian_error"].abs().mean())
+        if n_bc_games
+        else np.nan
+    )
+    bc_mean_abs_line_diff = (
+        float(df.loc[bc_valid_mask, "consensus_bold_contrarian_line_diff"].abs().mean())
+        if n_bc_games
+        else np.nan
+    )
+    rows.append(
+        {
+            "Model": "Bold Contrarian",
+            "Games": n_bc_games,
+            "Accuracy (%)": None
+            if pd.isna(bc_accuracy)
+            else round(bc_accuracy * 100, 2),
+            "Mean Error": None if pd.isna(bc_mean_error) else round(bc_mean_error, 2),
+            "MAE": None if pd.isna(bc_mae) else round(bc_mae, 2),
+            "Avg |Diff vs Line|": None
+            if pd.isna(bc_mean_abs_line_diff)
+            else round(bc_mean_abs_line_diff, 2),
+        }
+    )
+
     return pd.DataFrame(rows)
 
 
@@ -1465,6 +1611,7 @@ def compute_threshold_accuracy_table(
         model_thresholds = {m: (0.0, 0.5, 1.0, 1.5, 2.0) for m in catalog.order}
         model_thresholds["consensus"] = (0.0, 0.5, 1.0, 1.5, 2.0)
         model_thresholds["consensus_no_tabpfn"] = (0.0, 0.5, 1.0, 1.5, 2.0)
+        model_thresholds["consensus_bold_contrarian"] = (0.0, 0.5, 1.0, 1.5, 2.0)
 
     resolved_mask = df["actual_side"].isin(["OVER", "UNDER"])
     rows: list[dict] = []
@@ -1480,6 +1627,11 @@ def compute_threshold_accuracy_table(
             correct_col = "consensus_no_tabpfn_correct"
             line_diff_col = "consensus_no_tabpfn_line_diff"
             model_label = "Consensus (No TabPFN)"
+        elif model_type == "consensus_bold_contrarian":
+            pick_col = "consensus_bold_contrarian_pick"
+            correct_col = "consensus_bold_contrarian_correct"
+            line_diff_col = "consensus_bold_contrarian_line_diff"
+            model_label = "Bold Contrarian"
         else:
             prefix = catalog.prefixes[model_type]
             pick_col = f"pick_{prefix}"
@@ -1581,6 +1733,27 @@ def compute_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
                 .abs()
                 .mean()
                 if n_consensus_no_tabpfn_games
+                else np.nan,
+            }
+        )
+
+        # Add Bold Contrarian metrics for this date
+        bc_valid = resolved[
+            resolved["consensus_bold_contrarian_pick"].isin(["OVER", "UNDER"])
+        ]
+        n_bc_games_daily = len(bc_valid)
+
+        out_rows.append(
+            {
+                "game_date": pd.to_datetime(game_date),
+                "model_type": "consensus_bold_contrarian",
+                "model_label": "Bold Contrarian",
+                "n_games": n_bc_games_daily,
+                "accuracy": bc_valid["consensus_bold_contrarian_correct"].mean()
+                if n_bc_games_daily
+                else np.nan,
+                "mae": bc_valid["consensus_bold_contrarian_error"].abs().mean()
+                if n_bc_games_daily
                 else np.nan,
             }
         )
@@ -1740,8 +1913,7 @@ def show_upcoming_predictions(training_code_tag_filter: str | None) -> None:
             if "tabpfn" not in model_type.lower()
         ]
         diff_labels = [
-            catalog.labels[model_type]
-            for model_type in catalog.diff_from_line_models
+            catalog.labels[model_type] for model_type in catalog.diff_from_line_models
         ]
         configured_total_labels = ", ".join(total_point_labels) or "Configured models"
         diff_model_text = ""
@@ -1751,7 +1923,9 @@ def show_upcoming_predictions(training_code_tag_filter: str | None) -> None:
                 + ", ".join(diff_labels)
                 + " — predict the difference from the line\n"
             )
-        tabpfn_present = any("tabpfn" in model_type.lower() for model_type in catalog.order)
+        tabpfn_present = any(
+            "tabpfn" in model_type.lower() for model_type in catalog.order
+        )
         total_points_suffix = ", TabPFN" if tabpfn_present else ""
         st.markdown(
             f"""
@@ -1851,7 +2025,7 @@ def show_past_games_results(training_code_tag_filter: str | None) -> None:
     resolved_mask = games["actual_side"].isin(["OVER", "UNDER"])
     n_resolved = int(resolved_mask.sum())
 
-    metrics_cols = st.columns(3)
+    metrics_cols = st.columns(4)
     with metrics_cols[0]:
         st.metric("🎮 Games Played", n_resolved)
     with metrics_cols[1]:
@@ -1871,6 +2045,11 @@ def show_past_games_results(training_code_tag_filter: str | None) -> None:
             "📊 No TabPFN",
             f"{consensus_no_tabpfn_correct}/{consensus_no_tabpfn_total}",
         )
+    with metrics_cols[3]:
+        vote_mask = resolved_mask & games["consensus_vote_pick"].isin(["OVER", "UNDER"])
+        vote_correct = int(games.loc[vote_mask, "consensus_vote_correct"].sum())
+        vote_total = int(vote_mask.sum())
+        st.metric("🗳️ Vote", f"{vote_correct}/{vote_total}")
 
     st.markdown("")
     catalog = get_model_catalog(games)
@@ -2102,19 +2281,53 @@ def main() -> None:
             ],
             index=0,
         )
-        training_code_tag_filter = st.text_input(
+        available_training_code_tags = load_available_training_code_tags()
+        training_code_tag_options = ["All available", *available_training_code_tags]
+        default_training_code_tag = (
+            "1.0"
+            if "1.0" in available_training_code_tags
+            else training_code_tag_options[0]
+        )
+        training_code_tag_filter = st.selectbox(
             "Training Code Tag",
-            value="1.0",
-            help="Exact training_code_tag to display. Leave blank to include all tags.",
+            options=training_code_tag_options,
+            index=training_code_tag_options.index(default_training_code_tag),
+            help="Filter predictions by training_code_tag.",
         ).strip()
         st.markdown("---")
+        st.markdown("### 🔄 Update Finished Matches")
+        st.caption(
+            "Fetch final scores for completed games and save them to the database."
+        )
+        st.markdown("")
+        if run_update_finished_matches is None:
+            st.warning("Update module could not be imported in this environment.")
+        elif st.button(
+            "Update Finished Matches", type="secondary", use_container_width=True
+        ):
+            try:
+                with st.spinner("Updating finished matches. This may take a moment..."):
+                    run_update_finished_matches()
+                st.success("Finished matches updated successfully.")
+                time.sleep(1.5)
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Error updating finished matches: {exc}")
+                st.exception(exc)
+        st.markdown("---")
+
+    selected_training_code_tag = (
+        None
+        if training_code_tag_filter == "All available"
+        else training_code_tag_filter
+    )
 
     if view_option == "Upcoming Predictions":
-        show_upcoming_predictions(training_code_tag_filter or None)
+        show_upcoming_predictions(selected_training_code_tag)
     elif view_option == "Past Games Results":
-        show_past_games_results(training_code_tag_filter or None)
+        show_past_games_results(selected_training_code_tag)
     else:
-        show_historical_performance(training_code_tag_filter or None)
+        show_historical_performance(selected_training_code_tag)
 
 
 if __name__ == "__main__":
