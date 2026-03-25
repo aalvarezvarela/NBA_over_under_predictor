@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -35,6 +33,7 @@ class TrainingMetrics(BaseModel):
     selected_trial_number: int | None = None
     mean_best_iteration: int | None = None
     median_best_iteration: int | None = None
+    train_games: int | None = None
     cv_mae: float
     cv_rmse: float | None = None
     cv_ou_acc: float | None = None

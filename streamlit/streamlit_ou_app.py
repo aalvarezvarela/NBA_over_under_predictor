@@ -12,6 +12,18 @@ import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from nba_ou.postgre_db.predictions.shap_utils import (
+    ShapFeatureContribution,
+    parse_serialized_shap_contributions,
+)
+from nba_ou.postgre_db.predictions.update.update_evaluation_predictions import (
+    get_available_training_code_tags,
+    get_games_with_total_scored_points,
+)
+from nba_ou.postgre_db.predictions.update.update_total_points_predictions import (
+    update_total_points_predictions as run_update_finished_matches,
+)
+from nba_ou.utils.streamlit_utils import get_team_logo_url
 
 import streamlit as st
 
@@ -23,20 +35,8 @@ for path in (PROJECT_ROOT, SRC_DIR):
     if path_str not in sys.path:
         sys.path.insert(0, path_str)
 
-try:
-    from scripts.predict_nba_games import predict_nba_games as run_nba_predictor
-except Exception:
-    run_nba_predictor = None
 
-from nba_ou.postgre_db.predictions.shap_utils import (  # noqa: E402
-    ShapFeatureContribution,
-    parse_serialized_shap_contributions,
-)
-from nba_ou.postgre_db.predictions.update.update_evaluation_predictions import (  # noqa: E402
-    get_available_training_code_tags,
-    get_games_with_total_scored_points,
-)
-from nba_ou.utils.streamlit_utils import get_team_logo_url  # noqa: E402
+from scripts.predict_nba_games import predict_nba_games as run_nba_predictor
 
 warnings.filterwarnings("ignore", message="pandas only supports SQLAlchemy connectable")
 
@@ -2294,6 +2294,26 @@ def main() -> None:
             index=training_code_tag_options.index(default_training_code_tag),
             help="Filter predictions by training_code_tag.",
         ).strip()
+        st.markdown("---")
+        st.markdown("### 🔄 Update Finished Matches")
+        st.caption(
+            "Fetch final scores for completed games and save them to the database."
+        )
+        st.markdown("")
+        if run_update_finished_matches is None:
+            st.warning("Update module could not be imported in this environment.")
+        elif st.button(
+            "Update Finished Matches", type="secondary", use_container_width=True
+        ):
+            try:
+                with st.spinner("Updating finished matches. This may take a moment..."):
+                    run_update_finished_matches()
+                st.success("Finished matches updated successfully.")
+                time.sleep(1.5)
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Error updating finished matches: {exc}")
+                st.exception(exc)
         st.markdown("---")
 
     selected_training_code_tag = (
