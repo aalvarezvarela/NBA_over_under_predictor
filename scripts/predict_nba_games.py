@@ -1,4 +1,5 @@
 import argparse
+import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -47,6 +48,28 @@ def print_status(message: str, ok: bool = True) -> None:
     print(f"  {symbol} {message}")
 
 
+def configure_tqdm_for_environment() -> None:
+    """
+    Keep local tqdm behavior intact while avoiding noisy GitHub Actions logs.
+
+    tqdm reads `TQDM_*` environment variables when progress bars are created, so
+    setting `TQDM_DISABLE=1` here disables downstream bars in CI without
+    touching their call sites.
+
+    Set `NBA_OU_GITHUB_ACTIONS_TQDM=keep` to preserve normal tqdm output inside
+    GitHub Actions for a specific workflow run.
+    """
+    github_actions_tqdm_mode = os.getenv(
+        "NBA_OU_GITHUB_ACTIONS_TQDM", "disable"
+    ).strip().lower()
+
+    if (
+        os.getenv("GITHUB_ACTIONS", "").lower() == "true"
+        and github_actions_tqdm_mode != "keep"
+    ):
+        os.environ.setdefault("TQDM_DISABLE", "1")
+
+
 def predict_nba_games(run_tabpfn_client: bool = False) -> None:
     """
     Main execution function for the NBA prediction pipeline.
@@ -59,6 +82,7 @@ def predict_nba_games(run_tabpfn_client: bool = False) -> None:
     5. Generates predictions
     6. Saves results to Excel
     """
+    configure_tqdm_for_environment()
 
     date_to_predict = (datetime.now(ZoneInfo("US/Pacific"))).strftime("%Y-%m-%d")
 
