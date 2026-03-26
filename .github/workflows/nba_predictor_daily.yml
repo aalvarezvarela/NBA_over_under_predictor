@@ -5,14 +5,10 @@ on:
     schedule:
         # Every day at midnight UTC
         - cron: "01 0 * * *"
-        # Every day during peak hours
-        - cron: "01 19 * * *"
+        # Weekdays during peak hours
+        - cron: "01 19 * * 1-5"
         - cron: "01 20 * * *"
-        - cron: "01 21 * * *"
         - cron: "01 22 * * *"
-        - cron: "01 23 * * *"
-        # Saturdays at 18:00 UTC
-        - cron: "01 18 * * 6"
         # Sundays at 16:30 and 18:00 UTC
         - cron: "27 16 * * 0"
         - cron: "01 18 * * 0"
