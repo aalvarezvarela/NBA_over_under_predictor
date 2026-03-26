@@ -12,6 +12,15 @@ import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SRC_DIR = PROJECT_ROOT / "src"
+
+for path in (PROJECT_ROOT, SRC_DIR):
+    path_str = str(path)
+    if path_str not in sys.path:
+        sys.path.insert(0, path_str)
+
 from nba_ou.postgre_db.predictions.shap_utils import (
     ShapFeatureContribution,
     parse_serialized_shap_contributions,
@@ -26,15 +35,6 @@ from nba_ou.postgre_db.predictions.update.update_total_points_predictions import
 from nba_ou.utils.streamlit_utils import get_team_logo_url
 
 import streamlit as st
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SRC_DIR = PROJECT_ROOT / "src"
-
-for path in (PROJECT_ROOT, SRC_DIR):
-    path_str = str(path)
-    if path_str not in sys.path:
-        sys.path.insert(0, path_str)
-
 
 from scripts.predict_nba_games import predict_nba_games as run_nba_predictor
 
