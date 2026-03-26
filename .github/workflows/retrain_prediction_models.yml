@@ -75,6 +75,9 @@ jobs:
       - name: Retrain configured prediction models
         run: python scripts/retrain_prediction_models.py
 
+      - name: Wait before promoting prediction models
+        run: sleep 30
+
       - name: Promote configured prediction models
         if: ${{ success() }}
         run: python scripts/promote_prediction_models.py --execute
