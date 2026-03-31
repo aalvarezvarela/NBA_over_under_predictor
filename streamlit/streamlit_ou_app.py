@@ -98,15 +98,80 @@ def _slugify_model_key(value: object) -> str | None:
     return slug or None
 
 
+def _first_non_empty_text(*values: object) -> str | None:
+    for value in values:
+        if pd.isna(value):
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return None
+
+
+def _pretty_model_label(value: object) -> str:
+    text = _first_non_empty_text(value)
+    if text is None:
+        return "Unknown Model"
+
+    slug = _slugify_model_key(text) or ""
+    if "tabpfn" in slug and "line_error" in slug:
+        return "TabPFN Line Error"
+    if "tabpfn" in slug:
+        return "TabPFN"
+
+    if "_" in text:
+        return text.replace("_", " ").strip().title()
+    return text
+
+
 def _is_total_points_model(*values: object) -> bool:
     text = " ".join(str(value).lower() for value in values if pd.notna(value))
     if not text:
         return True
-    if "total_points" in text or "tabpfn" in text:
-        return True
     if "line_error" in text or "diff_from_line" in text:
         return False
+    if "total_points" in text or "tabpfn" in text:
+        return True
     return True
+
+
+def _build_model_metadata(
+    *,
+    model_type: object,
+    model_name: object,
+    prediction_source: object,
+    prediction_value_type: object,
+) -> tuple[str | None, str, bool]:
+    canonical_text = _first_non_empty_text(model_name, prediction_source, model_type)
+    key = _slugify_model_key(canonical_text)
+
+    prediction_value_slug = _slugify_model_key(prediction_value_type)
+    if key is None:
+        key = prediction_value_slug
+    elif prediction_value_slug and prediction_value_slug not in key:
+        generic_keys = {
+            "tabpfnregressor",
+            "tabpfn_regressor",
+            "xgbregressor",
+            "xgb_regressor",
+            "regressor",
+        }
+        if key in generic_keys:
+            key = f"{key}_{prediction_value_slug}"
+
+    label = _pretty_model_label(canonical_text)
+    if prediction_value_slug == "diff_from_line" and "line error" not in label.lower():
+        label = f"{label} Line Error"
+
+    is_total_points = (
+        str(prediction_value_type).strip().upper() == "TOTAL_POINTS"
+        if pd.notna(prediction_value_type)
+        else _is_total_points_model(
+            prediction_value_type, model_type, model_name, prediction_source
+        )
+    )
+
+    return key, label, is_total_points
 
 
 def extract_model_catalog(df: pd.DataFrame) -> ModelCatalog:
@@ -117,19 +182,26 @@ def extract_model_catalog(df: pd.DataFrame) -> ModelCatalog:
     model_type = _normalized_text_series(work, "model_type")
     model_name = _normalized_text_series(work, "model_name")
     prediction_source = _normalized_text_series(work, "prediction_source")
+    prediction_value_type = _normalized_text_series(work, "prediction_value_type")
 
-    work["_model_key"] = (
-        model_type.fillna(prediction_source)
-        .fillna(model_name)
-        .apply(_slugify_model_key)
-    )
-    work["_model_label"] = (
-        model_name.fillna(model_type).fillna(prediction_source).fillna("Unknown Model")
-    )
-    work["_is_total_points"] = [
-        _is_total_points_model(mt, mn, ps)
-        for mt, mn, ps in zip(model_type, model_name, prediction_source, strict=False)
+    metadata = [
+        _build_model_metadata(
+            model_type=mt,
+            model_name=mn,
+            prediction_source=ps,
+            prediction_value_type=pvt,
+        )
+        for mt, mn, ps, pvt in zip(
+            model_type,
+            model_name,
+            prediction_source,
+            prediction_value_type,
+            strict=False,
+        )
     ]
+    work["_model_key"] = [item[0] for item in metadata]
+    work["_model_label"] = [item[1] for item in metadata]
+    work["_is_total_points"] = [item[2] for item in metadata]
 
     if "prediction_datetime" in work.columns:
         prediction_dt = pd.to_datetime(
@@ -402,15 +474,32 @@ def build_game_level_predictions(
         work["model_name"] = np.nan
     if "prediction_source" not in work.columns:
         work["prediction_source"] = np.nan
+    if "prediction_value_type" not in work.columns:
+        work["prediction_value_type"] = np.nan
 
     model_type_source = _normalized_text_series(work, "model_type")
     model_name_source = _normalized_text_series(work, "model_name")
     prediction_source = _normalized_text_series(work, "prediction_source")
-    work["_model_key"] = (
-        model_type_source.fillna(prediction_source)
-        .fillna(model_name_source)
-        .apply(_slugify_model_key)
-    )
+    prediction_value_type = _normalized_text_series(work, "prediction_value_type")
+
+    metadata = [
+        _build_model_metadata(
+            model_type=mt,
+            model_name=mn,
+            prediction_source=ps,
+            prediction_value_type=pvt,
+        )
+        for mt, mn, ps, pvt in zip(
+            model_type_source,
+            model_name_source,
+            prediction_source,
+            prediction_value_type,
+            strict=False,
+        )
+    ]
+    work["_model_key"] = [item[0] for item in metadata]
+    work["_model_label"] = [item[1] for item in metadata]
+    work["_is_total_points"] = [item[2] for item in metadata]
     work = work[work["_model_key"].notna()].copy()
 
     if "training_code_tag" not in work.columns:
@@ -895,6 +984,25 @@ def _has_model_prediction(
     )
 
 
+def _available_models_for_row(
+    row: pd.Series,
+    catalog: ModelCatalog,
+    *,
+    total_points_only: bool | None = None,
+) -> list[str]:
+    models = catalog.order
+    if total_points_only is True:
+        models = catalog.total_points_models
+    elif total_points_only is False:
+        models = catalog.diff_from_line_models
+
+    return [
+        model_type
+        for model_type in models
+        if _has_model_prediction(row, model_type, catalog)
+    ]
+
+
 def _format_prediction_timestamp(value: object) -> str:
     pred_dt = pd.to_datetime(value, errors="coerce", utc=True)
     if pd.isna(pred_dt):
@@ -1167,30 +1275,63 @@ def _render_game_card(
     else:
         vote_text = "No model votes"
 
-    # Build model cells
+    # Build model cells using only models that actually have data for this game.
+    available_total_models = _available_models_for_row(
+        row, catalog, total_points_only=True
+    )
+    available_diff_models = _available_models_for_row(
+        row, catalog, total_points_only=False
+    )
+
     tp_cells = "".join(
         _build_model_cell_html(row, model_type, catalog, show_pred_total=True)
-        for model_type in catalog.total_points_models
+        for model_type in available_total_models
     )
     dl_cells = "".join(
         _build_model_cell_html(row, model_type, catalog, show_pred_total=False)
-        for model_type in catalog.diff_from_line_models
+        for model_type in available_diff_models
     )
+
+    total_grid_cols = 2 if len(available_total_models) > 1 else 1
+    diff_grid_cols = 2 if len(available_diff_models) > 1 else 1
     total_points_grid_style = (
-        "display:grid;grid-template-columns:repeat(2,minmax(0,1fr));"
+        f"display:grid;grid-template-columns:repeat({total_grid_cols},minmax(0,1fr));"
         "gap:8px;margin-bottom:12px;"
     )
     diff_grid_style = (
-        "display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;"
+        f"display:grid;grid-template-columns:repeat({diff_grid_cols},minmax(0,1fr));"
+        "gap:8px;"
     )
-    diff_section_html = ""
-    if dl_cells:
-        diff_section_html = (
-            '<div style="font-size:0.75rem;font-weight:700;color:#999;'
-            'text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;">'
-            "📏 Diff from Line Predictions"
+    total_section_html = (
+        '<div style="font-size:0.75rem;font-weight:700;color:#999;text-transform:uppercase;'
+        'letter-spacing:0.06em;margin-bottom:6px;">'
+        "📊 Total Points Predictions"
+        "</div>"
+    )
+    if tp_cells:
+        total_section_html += f'<div style="{total_points_grid_style}">{tp_cells}</div>'
+    else:
+        total_section_html += (
+            '<div style="padding:12px;border:1px dashed rgba(128,128,128,0.24);'
+            'border-radius:10px;color:#888;font-size:0.9rem;margin-bottom:12px;">'
+            "No total-points model output available for this game."
             "</div>"
-            f'<div style="{diff_grid_style}">{dl_cells}</div>'
+        )
+
+    diff_section_html = (
+        '<div style="font-size:0.75rem;font-weight:700;color:#999;'
+        'text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;">'
+        "📏 Diff from Line Predictions"
+        "</div>"
+    )
+    if dl_cells:
+        diff_section_html += f'<div style="{diff_grid_style}">{dl_cells}</div>'
+    else:
+        diff_section_html += (
+            '<div style="padding:12px;border:1px dashed rgba(128,128,128,0.24);'
+            'border-radius:10px;color:#888;font-size:0.9rem;">'
+            "No line-error model output available for this game."
+            "</div>"
         )
 
     # Get team scores for past games
@@ -1274,7 +1415,7 @@ def _render_game_card(
     model_results_html = ""
     if include_actual:
         result_cells = ""
-        for model_type in catalog.order:
+        for model_type in _available_models_for_row(row, catalog):
             p = catalog.prefixes[model_type]
             lbl = catalog.labels[model_type]
             flag = row.get(f"correct_{p}")
@@ -1355,24 +1496,32 @@ def _render_game_card(
       </div>
       <!-- Models -->
       <div style="padding:12px 14px;">
-        <div style="font-size:0.75rem;font-weight:700;color:#999;text-transform:uppercase;
-                    letter-spacing:0.06em;margin-bottom:6px;">
-          📊 Total Points Predictions
-        </div>
-        <div style="{total_points_grid_style}">
-          {tp_cells}
-        </div>
+        {total_section_html}
         {diff_section_html}
       </div>
       {model_results_html}
     </div>
     """
-    model_section_height = 210 if len(catalog.total_points_models) > 2 else 150
-    if catalog.diff_from_line_models:
-        model_section_height += 110
+    def _grid_block_height(n_items: int, cols: int) -> int:
+        if n_items <= 0:
+            return 88
+        rows = int(np.ceil(n_items / max(cols, 1)))
+        return 42 + (rows * 116) + max(rows - 1, 0) * 8
+
+    model_section_height = _grid_block_height(
+        len(available_total_models), total_grid_cols
+    )
+    model_section_height += _grid_block_height(
+        len(available_diff_models), diff_grid_cols
+    )
     if include_actual:
         model_section_height += 80
-    card_height = 320 + model_section_height
+    actual_banner_height = 48 if include_actual else 0
+    header_height = 170
+    consensus_height = 112
+    card_height = header_height + actual_banner_height + consensus_height
+    card_height += model_section_height + 40
+    card_height = max(card_height, 520 if include_actual else 440)
     st.components.v1.html(card_html, height=card_height)
 
 

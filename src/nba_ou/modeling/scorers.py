@@ -230,6 +230,44 @@ def over_under_betting_accuracy_error_line(y_true_error, y_pred_error) -> float:
     return float(np.mean(true_side[non_push] == pred_side[non_push]))
 
 
+def over_under_betting_accuracy_error_line_with_min_edge(
+    y_true_error,
+    y_pred_error,
+    min_edge: float = 1.0,
+) -> float:
+    """
+    Directional accuracy using only predictions with absolute predicted error
+    above a minimum edge threshold.
+
+    Returns np.nan if no qualifying non-push cases remain.
+    """
+    y_true_error = np.asarray(y_true_error, dtype=float)
+    y_pred_error = np.asarray(y_pred_error, dtype=float)
+
+    valid = np.isfinite(y_true_error) & np.isfinite(y_pred_error)
+    if not np.any(valid):
+        return np.nan
+
+    y_true_error = y_true_error[valid]
+    y_pred_error = y_pred_error[valid]
+
+    take_bet = np.abs(y_pred_error) > min_edge
+    if not np.any(take_bet):
+        return np.nan
+
+    y_true_error = y_true_error[take_bet]
+    y_pred_error = y_pred_error[take_bet]
+
+    true_side = np.sign(y_true_error)
+    pred_side = np.where(y_pred_error > 0, 1, -1)
+
+    non_push = true_side != 0
+    if not np.any(non_push):
+        return np.nan
+
+    return float(np.mean(true_side[non_push] == pred_side[non_push]))
+
+
 
 def evaluate_error_thresholds(
     model,
@@ -280,3 +318,22 @@ class OverUnderScorerLineError:
             y_true_error=np.asarray(y_true, dtype=float),
             y_pred_error=np.asarray(y_pred, dtype=float),
         )
+
+
+class OverUnderScorerLineErrorMinEdge:
+    """
+    sklearn-compatible scorer for direct line-error models that only scores
+    predictions with |predicted_error| > min_edge.
+    """
+
+    def __init__(self, min_edge: float = 1.0):
+        self.min_edge = min_edge
+
+    def __call__(self, estimator, X, y_true):
+        y_pred = estimator.predict(X)
+        score = over_under_betting_accuracy_error_line_with_min_edge(
+            y_true_error=np.asarray(y_true, dtype=float),
+            y_pred_error=np.asarray(y_pred, dtype=float),
+            min_edge=self.min_edge,
+        )
+        return score if np.isfinite(score) else 0.0
