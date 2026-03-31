@@ -287,6 +287,31 @@ def inject_global_css() -> None:
     st.markdown(
         """
         <style>
+          :root {
+            --bg-main: #fcfaf7;
+            --bg-elevated: #fff7ef;
+            --bg-panel: #ffffff;
+            --bg-panel-2: #f8f1ff;
+            --text-main: #1b1422;
+            --text-muted: #5f4f73;
+            --text-soft: #7c6b91;
+            --border-main: rgba(155, 107, 255, 0.18);
+            --border-strong: rgba(255, 151, 43, 0.30);
+            --accent-orange: #ff9a2f;
+            --accent-orange-2: #ff7a18;
+            --accent-purple: #9b6bff;
+            --accent-purple-2: #6f42ff;
+            --success-glow: #ffd08a;
+          }
+
+          html, body, [data-testid="stAppViewContainer"], .stApp {
+            background:
+              radial-gradient(circle at top left, rgba(255, 122, 24, 0.10), transparent 24%),
+              radial-gradient(circle at top right, rgba(111, 66, 255, 0.12), transparent 28%),
+              linear-gradient(180deg, #fffdfa 0%, #fcfaf7 100%);
+            color: var(--text-main);
+          }
+
           /* Page container */
           .main .block-container {
             padding-top: 1.6rem;
@@ -294,9 +319,23 @@ def inject_global_css() -> None:
             max-width: 1400px;
           }
 
+          .main .block-container,
+          .main .block-container p,
+          .main .block-container li,
+          .main .block-container label,
+          .main .block-container div,
+          .main .block-container span {
+            color: var(--text-main);
+          }
+
           /* Sidebar polish */
           section[data-testid="stSidebar"] {
-            border-right: 1px solid rgba(49, 51, 63, 0.15);
+            border-right: 1px solid var(--border-main);
+            background:
+              linear-gradient(180deg, rgba(250, 243, 255, 0.98), rgba(255, 248, 239, 0.98));
+          }
+          section[data-testid="stSidebar"] > div {
+            background: transparent;
           }
           section[data-testid="stSidebar"] .block-container {
             padding-top: 1.25rem;
@@ -316,11 +355,27 @@ def inject_global_css() -> None:
           }
           section[data-testid="stSidebar"] .stCaption {
             font-size: 1.15rem !important;
+            color: var(--text-soft) !important;
+          }
+
+          section[data-testid="stSidebar"] .stSelectbox > div > div,
+          section[data-testid="stSidebar"] .stDateInput > div > div,
+          section[data-testid="stSidebar"] .stRadio > div,
+          section[data-testid="stSidebar"] button {
+            background: rgba(255, 255, 255, 0.94) !important;
+            border-color: var(--border-main) !important;
+            color: var(--text-main) !important;
+          }
+
+          section[data-testid="stSidebar"] .stButton button:hover {
+            border-color: var(--border-strong) !important;
+            box-shadow: 0 0 0 1px rgba(255, 154, 47, 0.22);
           }
 
           /* Typography */
           h1, h2, h3 {
             letter-spacing: -0.02em;
+            color: var(--text-main) !important;
           }
           h1 {
             font-size: 2.4rem !important;
@@ -340,34 +395,60 @@ def inject_global_css() -> None:
           .stMetric label {
             font-size: 1.05rem !important;
             font-weight: 650 !important;
+            color: var(--text-soft) !important;
           }
           .stMetric [data-testid="stMetricValue"] {
             font-size: 1.85rem !important;
             font-weight: 800 !important;
+            color: var(--text-main) !important;
+          }
+          [data-testid="stMetric"] {
+            background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(252, 246, 255, 0.98));
+            border: 1px solid var(--border-main);
+            border-radius: 16px;
+            padding: 0.8rem 1rem;
+            box-shadow: 0 14px 30px rgba(76, 45, 120, 0.08);
           }
 
           /* DataFrame readability */
+          div[data-testid="stDataFrame"] {
+            border: 1px solid var(--border-main);
+            border-radius: 16px;
+            overflow: hidden;
+          }
+          div[data-testid="stDataFrame"] [data-testid="stDataFrameResizable"] {
+            background: rgba(255, 255, 255, 0.98);
+          }
           div[data-testid="stDataFrame"] div[role="gridcell"] {
             padding: 0.65rem !important;
+            background: rgba(255, 255, 255, 0.99) !important;
+            color: var(--text-main) !important;
           }
           div[data-testid="stDataFrame"] div[role="columnheader"] {
             font-weight: 750 !important;
             padding: 0.85rem !important;
+            background: linear-gradient(90deg, rgba(111, 66, 255, 0.24), rgba(255, 122, 24, 0.18)) !important;
+            color: var(--text-main) !important;
           }
 
           /* "Hero" header container */
           .app-hero {
-            border: 1px solid rgba(49, 51, 63, 0.12);
+            border: 1px solid var(--border-main);
             border-radius: 16px;
             padding: 18px 18px;
-            background: linear-gradient(135deg,
-              rgba(102, 126, 234, 0.15) 0%,
-              rgba(118, 75, 162, 0.12) 100%);
+            background:
+              radial-gradient(circle at top right, rgba(255, 154, 47, 0.16), transparent 28%),
+              linear-gradient(135deg,
+                rgba(255, 255, 255, 0.98) 0%,
+                rgba(247, 238, 255, 0.98) 52%,
+                rgba(255, 243, 228, 0.98) 100%);
             margin-bottom: 16px;
+            color: var(--text-main);
+            box-shadow: 0 16px 36px rgba(93, 64, 145, 0.10);
           }
           .app-subtitle {
             font-size: 1.05rem;
-            opacity: 0.85;
+            color: var(--text-muted);
             margin-top: 2px;
             margin-bottom: 10px;
           }
@@ -383,16 +464,64 @@ def inject_global_css() -> None:
             gap: 6px;
             padding: 6px 10px;
             border-radius: 999px;
-            background: rgba(255, 255, 255, 0.7);
-            border: 1px solid rgba(49, 51, 63, 0.10);
+            background: rgba(255, 255, 255, 0.92);
+            border: 1px solid rgba(255, 154, 47, 0.26);
             font-size: 0.95rem;
             font-weight: 600;
+            color: var(--text-main);
           }
 
           /* Reduce visual noise on separators */
           hr {
             margin: 1.0rem 0;
-            opacity: 0.25;
+            opacity: 0.22;
+            border-color: var(--border-main);
+          }
+
+          .stExpander,
+          [data-testid="stExpander"] {
+            border: 1px solid var(--border-main) !important;
+            border-radius: 16px !important;
+            background: rgba(255, 255, 255, 0.92) !important;
+          }
+
+          div[data-baseweb="select"] > div,
+          div[data-baseweb="input"] > div {
+            background: rgba(255, 255, 255, 0.96) !important;
+            border-color: var(--border-main) !important;
+            color: var(--text-main) !important;
+          }
+
+          .stButton button,
+          .stDownloadButton button {
+            background: linear-gradient(135deg, var(--accent-purple), var(--accent-orange-2)) !important;
+            color: #fff7f0 !important;
+            border: none !important;
+            border-radius: 12px !important;
+            box-shadow: 0 10px 24px rgba(111, 66, 255, 0.28);
+          }
+
+          .stButton button:hover,
+          .stDownloadButton button:hover {
+            filter: brightness(1.05);
+            box-shadow: 0 14px 32px rgba(255, 122, 24, 0.22);
+          }
+
+          .stTabs [data-baseweb="tab-list"] {
+            gap: 8px;
+          }
+
+          .stTabs [data-baseweb="tab"] {
+            background: rgba(255, 255, 255, 0.92);
+            border: 1px solid var(--border-main);
+            border-radius: 12px 12px 0 0;
+            color: var(--text-muted);
+          }
+
+          .stTabs [aria-selected="true"] {
+            background: linear-gradient(180deg, rgba(111, 66, 255, 0.28), rgba(255, 122, 24, 0.18)) !important;
+            color: var(--text-main) !important;
+            border-color: var(--border-strong) !important;
           }
         </style>
         """,
@@ -419,9 +548,9 @@ def render_header(catalog: ModelCatalog | None = None) -> None:
         <div class="app-hero">
           <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:12px;">
             <div style="flex: 1;">
-              <div style="font-size: 0.95rem; font-weight: 700; opacity: 0.85;">NBA analytics</div>
+              <div style="font-size: 0.95rem; font-weight: 700; color:#ffb36b;">NBA analytics</div>
               <div style="margin-top: 2px;">
-                <span style="font-size: 2.2rem; font-weight: 900; letter-spacing: -0.02em;">
+                <span style="font-size: 2.2rem; font-weight: 900; letter-spacing: -0.02em; color:#1b1422;">
                   Over/Under Predictor
                 </span>
               </div>
@@ -1020,7 +1149,7 @@ def _render_shap_reason_block(
     if not items:
         body_html = (
             '<div style="padding:14px 12px;border-radius:12px;'
-            "background:rgba(148,163,184,0.08);color:#64748b;"
+            "background:rgba(248,241,255,0.9);color:#5f4f73;"
             'font-size:0.95rem;font-weight:500;">'
             f"{html.escape(empty_text)}"
             "</div>"
@@ -1030,9 +1159,9 @@ def _render_shap_reason_block(
             (
                 '<div style="display:flex;align-items:center;justify-content:space-between;'
                 "gap:10px;padding:10px 12px;margin-bottom:8px;border-radius:12px;"
-                'background:rgba(15,23,42,0.035);border:1px solid rgba(148,163,184,0.2);">'
+                'background:rgba(255,255,255,0.96);border:1px solid rgba(155,107,255,0.18);">'
                 '<div style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;'
-                'font-size:0.86rem;color:#0f172a;word-break:break-word;">'
+                'font-size:0.86rem;color:#1b1422;word-break:break-word;">'
                 f"{html.escape(item.feature)}"
                 "</div>"
                 f'<div style="font-size:0.95rem;font-weight:800;color:{accent_color};'
@@ -1048,7 +1177,8 @@ def _render_shap_reason_block(
     st.markdown(
         f"""
         <div style="border:1px solid rgba(148,163,184,0.28);border-radius:16px;
-                    padding:14px;background:#ffffff;min-height:100%;">
+                    padding:14px;background:linear-gradient(180deg, rgba(255,255,255,0.98), rgba(249,243,255,0.98));min-height:100%;
+                    border-color:rgba(155,107,255,0.22);box-shadow:0 10px 24px rgba(93,64,145,0.06);">
           <div style="font-size:0.78rem;font-weight:800;color:{accent_color};
                       text-transform:uppercase;letter-spacing:0.08em;margin-bottom:12px;">
             {html.escape(title)}
@@ -1117,14 +1247,14 @@ def _render_model_reasoning_tab(
         _render_shap_reason_block(
             "Pushes Prediction Higher",
             positive_items,
-            accent_color="#c0392b",
+            accent_color="#ff9a2f",
             empty_text="No positive SHAP drivers stored for this prediction.",
         )
     with col_down:
         _render_shap_reason_block(
             "Pulls Prediction Lower",
             negative_items,
-            accent_color="#1f618d",
+            accent_color="#9b6bff",
             empty_text="No negative SHAP drivers stored for this prediction.",
         )
 
@@ -1194,10 +1324,10 @@ def _build_model_cell_html(
 
     if pd.notna(pick) and pick in ("OVER", "UNDER"):
         arrow = "▲" if pick == "OVER" else "▼"
-        clr = "#e74c3c" if pick == "OVER" else "#2980b9"
+        clr = "#ff9a2f" if pick == "OVER" else "#9b6bff"
         pk_text = str(pick)
     else:
-        arrow, clr, pk_text = "—", "#95a5a6", "N/A"
+        arrow, clr, pk_text = "—", "#a591ba", "N/A"
 
     pred_html = ""
     if show_pred_total:
@@ -1210,9 +1340,9 @@ def _build_model_cell_html(
 
     return (
         f'<div style="min-width:0;text-align:center;padding:10px 6px;'
-        f"background:rgba(128,128,128,0.06);border-radius:8px;"
-        f'border:1px solid rgba(128,128,128,0.1);">'
-        f'<div style="font-size:0.72rem;font-weight:700;color:#888;'
+        f"background:linear-gradient(180deg, rgba(255,255,255,0.99), rgba(248,241,255,0.92));border-radius:10px;"
+        f'border:1px solid rgba(155,107,255,0.18);box-shadow:0 8px 18px rgba(93,64,145,0.05);">'
+        f'<div style="font-size:0.72rem;font-weight:700;color:#5f4f73;'
         f"text-transform:uppercase;letter-spacing:0.04em;margin-bottom:4px;"
         f'line-height:1.25;word-break:break-word;overflow-wrap:anywhere;">'
         f"{label}</div>"
@@ -1254,12 +1384,16 @@ def _render_game_card(
     if pd.notna(consensus_pick) and consensus_pick in ("OVER", "UNDER"):
         is_over = consensus_pick == "OVER"
         bet_label = "BET OVER ▲" if is_over else "BET UNDER ▼"
-        accent = "#e74c3c" if is_over else "#2980b9"
-        banner_bg = "rgba(231,76,60,0.12)" if is_over else "rgba(41,128,185,0.12)"
+        accent = "#ff9a2f" if is_over else "#9b6bff"
+        banner_bg = (
+            "linear-gradient(90deg, rgba(255,154,47,0.18), rgba(255,122,24,0.10))"
+            if is_over
+            else "linear-gradient(90deg, rgba(155,107,255,0.20), rgba(111,66,255,0.10))"
+        )
     else:
         bet_label = "PUSH —"
-        accent = "#7f8c8d"
-        banner_bg = "rgba(127,140,141,0.08)"
+        accent = "#c8b6d8"
+        banner_bg = "linear-gradient(90deg, rgba(80,62,102,0.35), rgba(34,18,53,0.22))"
 
     margin_text = f"{consensus_diff:+.1f}" if pd.notna(consensus_diff) else "—"
     cons_total_text = f"{consensus_total:.1f}" if pd.notna(consensus_total) else "—"
@@ -1313,7 +1447,8 @@ def _render_game_card(
     else:
         total_section_html += (
             '<div style="padding:12px;border:1px dashed rgba(128,128,128,0.24);'
-            'border-radius:10px;color:#888;font-size:0.9rem;margin-bottom:12px;">'
+            'border-radius:10px;color:#5f4f73;font-size:0.9rem;margin-bottom:12px;'
+            'background:rgba(248,241,255,0.7);border-color:rgba(155,107,255,0.18);">'
             "No total-points model output available for this game."
             "</div>"
         )
@@ -1329,7 +1464,8 @@ def _render_game_card(
     else:
         diff_section_html += (
             '<div style="padding:12px;border:1px dashed rgba(128,128,128,0.24);'
-            'border-radius:10px;color:#888;font-size:0.9rem;">'
+            'border-radius:10px;color:#5f4f73;font-size:0.9rem;'
+            'background:rgba(248,241,255,0.7);border-color:rgba(155,107,255,0.18);">'
             "No line-error model output available for this game."
             "</div>"
         )
@@ -1342,9 +1478,17 @@ def _render_game_card(
     home_score_html = ""
     away_score_html = ""
     if include_actual and pd.notna(home_pts) and pd.notna(away_pts):
-        winner_style = "background:rgba(46,204,113,0.25);border:2px solid #27ae60;"
+        winner_style = (
+            "background:linear-gradient(180deg, rgba(24,18,34,0.96), rgba(12,9,19,0.98));"
+            "border:2px solid rgba(255,154,47,0.78);box-shadow:0 10px 18px rgba(0,0,0,0.22);"
+        )
         loser_style = (
-            "background:rgba(231,76,60,0.15);border:2px solid rgba(231,76,60,0.4);"
+            "background:linear-gradient(180deg, rgba(20,14,30,0.94), rgba(10,8,16,0.98));"
+            "border:2px solid rgba(155,107,255,0.52);box-shadow:0 10px 18px rgba(0,0,0,0.18);"
+        )
+        tie_style = (
+            "background:linear-gradient(180deg, rgba(28,22,38,0.94), rgba(14,10,20,0.98));"
+            "border:2px solid rgba(124,107,145,0.58);box-shadow:0 10px 18px rgba(0,0,0,0.16);"
         )
 
         home_style = (
@@ -1352,14 +1496,14 @@ def _render_game_card(
             if home_pts > away_pts
             else loser_style
             if home_pts < away_pts
-            else "border:2px solid rgba(127,140,141,0.5);"
+            else tie_style
         )
         away_style = (
             winner_style
             if away_pts > home_pts
             else loser_style
             if away_pts < home_pts
-            else "border:2px solid rgba(127,140,141,0.5);"
+            else tie_style
         )
 
         home_score_html = (
@@ -1384,11 +1528,11 @@ def _render_game_card(
 
         if pd.notna(actual_side) and actual_side in ("OVER", "UNDER", "PUSH"):
             a_clr = (
-                "#e74c3c"
+                "#ff9a2f"
                 if actual_side == "OVER"
-                else "#2980b9"
+                else "#9b6bff"
                 if actual_side == "UNDER"
-                else "#7f8c8d"
+                else "#c8b6d8"
             )
             a_text = (
                 f"{actual_side} ({actual_total:.1f} pts)"
@@ -1396,7 +1540,7 @@ def _render_game_card(
                 else actual_side
             )
         else:
-            a_clr, a_text = "#95a5a6", "Pending"
+            a_clr, a_text = "#a591ba", "Pending"
 
         icon = (
             "✅"
@@ -1425,7 +1569,7 @@ def _render_game_card(
             result_cells += (
                 f'<div style="flex:1;text-align:center;font-size:0.9rem;'
                 f'font-weight:600;">'
-                f'<div style="font-size:0.75rem;color:#888;'
+                f'<div style="font-size:0.75rem;color:#c8b6d8;'
                 f'text-transform:uppercase;">{lbl}</div>'
                 f"{r_icon}</div>"
             )
@@ -1437,12 +1581,12 @@ def _render_game_card(
 
     card_html = f"""
     <div style="border:2px solid {accent};border-radius:16px;overflow:hidden;
-                margin-bottom:16px;box-shadow:0 4px 16px rgba(0,0,0,0.08);
+                margin-bottom:16px;box-shadow:0 16px 34px rgba(93,64,145,0.10);
                 font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
-                background:#fff;">
+                background:linear-gradient(180deg,#ffffff 0%, #fff9f2 100%);">
       <!-- Header -->
-      <div style="background:linear-gradient(135deg,#0f0c29 0%,#302b63 50%,#24243e 100%);
-                  padding:18px 16px;color:white;">
+      <div style="background:linear-gradient(135deg,#ffffff 0%,#f7eeff 52%,#fff1df 100%);
+                  padding:18px 16px;color:#1b1422;border-bottom:1px solid rgba(155,107,255,0.18);">
         <div style="display:flex;align-items:center;justify-content:space-between;">
           <div style="flex:1;text-align:center;">
             <img src="{home_logo}" width="64" style="margin-bottom:4px;"
@@ -1468,26 +1612,26 @@ def _render_game_card(
       {actual_banner}
       <!-- Consensus Banner -->
       <div style="background:{banner_bg};padding:12px 16px;
-                  border-bottom:1px solid rgba(128,128,128,0.12);">
+                  border-bottom:1px solid rgba(155,107,255,0.18);">
         <div style="display:flex;justify-content:space-between;align-items:center;">
           <div>
             <div style="font-size:1.6rem;font-weight:900;color:{accent};
                         letter-spacing:-0.01em;">{bet_label}</div>
-            <div style="font-size:0.8rem;color:#888;margin-top:1px;">{vote_text}</div>
+            <div style="font-size:0.8rem;color:#5f4f73;margin-top:1px;">{vote_text}</div>
           </div>
           <div style="text-align:center;">
-            <div style="font-size:0.7rem;font-weight:600;color:#aaa;
+            <div style="font-size:0.7rem;font-weight:600;color:#a591ba;
                         text-transform:uppercase;">O/U Line</div>
-            <div style="font-size:1.5rem;font-weight:800;color:#333;">{line_text}</div>
+            <div style="font-size:1.5rem;font-weight:800;color:#1b1422;">{line_text}</div>
           </div>
           <div style="text-align:center;">
-            <div style="font-size:0.7rem;font-weight:600;color:#aaa;
+            <div style="font-size:0.7rem;font-weight:600;color:#a591ba;
                         text-transform:uppercase;">Predicted</div>
-            <div style="font-size:1.3rem;font-weight:800;color:#333;">
+            <div style="font-size:1.3rem;font-weight:800;color:#1b1422;">
               {cons_total_text}</div>
           </div>
           <div style="text-align:right;">
-            <div style="font-size:0.7rem;font-weight:600;color:#aaa;
+            <div style="font-size:0.7rem;font-weight:600;color:#a591ba;
                         text-transform:uppercase;">Margin</div>
             <div style="font-size:1.3rem;font-weight:700;color:{accent};">
               {margin_text}</div>
