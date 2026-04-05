@@ -35,7 +35,6 @@ from nba_ou.postgre_db.predictions.update.update_total_points_predictions import
 from nba_ou.utils.streamlit_utils import get_team_logo_url
 
 import streamlit as st
-
 from scripts.predict_nba_games import predict_nba_games as run_nba_predictor
 
 warnings.filterwarnings("ignore", message="pandas only supports SQLAlchemy connectable")
@@ -142,22 +141,14 @@ def _build_model_metadata(
     prediction_source: object,
     prediction_value_type: object,
 ) -> tuple[str | None, str, bool]:
-    canonical_text = _first_non_empty_text(model_name, prediction_source, model_type)
+    canonical_text = _first_non_empty_text(model_type, model_name, prediction_source)
     key = _slugify_model_key(canonical_text)
 
     prediction_value_slug = _slugify_model_key(prediction_value_type)
     if key is None:
         key = prediction_value_slug
     elif prediction_value_slug and prediction_value_slug not in key:
-        generic_keys = {
-            "tabpfnregressor",
-            "tabpfn_regressor",
-            "xgbregressor",
-            "xgb_regressor",
-            "regressor",
-        }
-        if key in generic_keys:
-            key = f"{key}_{prediction_value_slug}"
+        key = f"{key}_{prediction_value_slug}"
 
     label = _pretty_model_label(canonical_text)
     if prediction_value_slug == "diff_from_line" and "line error" not in label.lower():
@@ -1447,7 +1438,7 @@ def _render_game_card(
     else:
         total_section_html += (
             '<div style="padding:12px;border:1px dashed rgba(128,128,128,0.24);'
-            'border-radius:10px;color:#5f4f73;font-size:0.9rem;margin-bottom:12px;'
+            "border-radius:10px;color:#5f4f73;font-size:0.9rem;margin-bottom:12px;"
             'background:rgba(248,241,255,0.7);border-color:rgba(155,107,255,0.18);">'
             "No total-points model output available for this game."
             "</div>"
@@ -1464,7 +1455,7 @@ def _render_game_card(
     else:
         diff_section_html += (
             '<div style="padding:12px;border:1px dashed rgba(128,128,128,0.24);'
-            'border-radius:10px;color:#5f4f73;font-size:0.9rem;'
+            "border-radius:10px;color:#5f4f73;font-size:0.9rem;"
             'background:rgba(248,241,255,0.7);border-color:rgba(155,107,255,0.18);">'
             "No line-error model output available for this game."
             "</div>"
@@ -1646,6 +1637,7 @@ def _render_game_card(
       {model_results_html}
     </div>
     """
+
     def _grid_block_height(n_items: int, cols: int) -> int:
         if n_items <= 0:
             return 88
