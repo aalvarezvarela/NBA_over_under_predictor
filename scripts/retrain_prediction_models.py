@@ -101,12 +101,30 @@ def main() -> None:
             s3_client=s3_client,
             bucket=bucket,
         )
+        training_metrics = bundle.metadata.training_metrics
+        sample_weight_lambda = None
+        sample_weight_lambda_bounds = None
+        if training_metrics is not None:
+            best_params = training_metrics.best_params or {}
+            sample_weight_lambda = best_params.get("sample_weight_lambda")
+            sample_weight_lambda_bounds = (
+                training_metrics.sample_weight_lambda_bounds
+            )
+
         print(
             "Staged retrained bundle: "
             f"prefix={prefix}, staging_prefix={bundle.staging_prefix}, "
             f"model_key={bundle.model_key}, meta_key={bundle.meta_key}, "
             f"train_games={bundle.train_games}"
         )
+        if sample_weight_lambda is not None:
+            print(
+                "Recency decay: "
+                f"enabled (sample_weight_lambda={sample_weight_lambda}, "
+                f"sample_weight_lambda_bounds={sample_weight_lambda_bounds})"
+            )
+        else:
+            print("Recency decay: disabled")
 
 
 if __name__ == "__main__":

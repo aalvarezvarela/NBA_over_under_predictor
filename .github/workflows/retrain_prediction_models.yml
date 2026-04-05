@@ -10,42 +10,44 @@ permissions:
   id-token: write
 
 jobs:
-  #  update-database:
-  #    runs-on: self-hosted
-  #    env:
-  #      PYTHONWARNINGS: "ignore::UserWarning,ignore::DeprecationWarning,ignore::FutureWarning"
-  #      DB_ENV: supabase
-  #      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-  #      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
-  #      ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-  #
-  #    steps:
-  #      - name: Checkout
-  #        uses: actions/checkout@v4
-  #
-  #      - name: Set up Python
-  #        uses: actions/setup-python@v5
-  #        with:
-  #          python-version: "3.12"
-  #
-  #      - name: Install dependencies
-  #        run: |
-  #          python -m pip install --upgrade pip
-  #          pip install -r requirements.txt
-  #
-  #      - name: Install Playwright browsers
-  #        run: |
-  #          playwright install chromium
-  #
-  #      - name: Update all databases
-  #        run: |
-  #          python scripts/update_databases/update_all_databases.py --only-new-games
+  update-database:
+    runs-on: self-hosted
+    env:
+      PYTHONWARNINGS: "ignore::UserWarning,ignore::DeprecationWarning,ignore::FutureWarning"
+      TQDM_DISABLE: "1"
+      DB_ENV: supabase
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Playwright browsers
+        run: |
+          playwright install chromium
+
+      - name: Update all databases
+        run: |
+          python scripts/update_databases/update_all_databases.py --only-new-games
 
   retrain:
-    #    needs: update-database
+    needs: update-database
     runs-on: ubuntu-latest
     env:
       PYTHONWARNINGS: "ignore::UserWarning,ignore::DeprecationWarning,ignore::FutureWarning,ignore::PerformanceWarning"
+      TQDM_DISABLE: "1"
       PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/src
       DB_ENV: supabase
       SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
