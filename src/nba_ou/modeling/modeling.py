@@ -3,7 +3,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
@@ -81,6 +81,13 @@ class SplitValidationResult:
     is_valid: bool
     errors: list[str]
     warnings: list[str]
+
+
+@dataclass
+class DailyWalkForwardEvaluationResult:
+    mean_metric: float
+    daily_results: pd.DataFrame
+    predictions: pd.DataFrame
 
 
 def _coerce_datetime_indexed_series(
@@ -214,6 +221,164 @@ class TemporalDecaySampleWeightRegressor(RegressorMixin, BaseEstimator):
 
     def __sklearn_is_fitted__(self) -> bool:
         return hasattr(self, "estimator_")
+
+
+def evaluate_day_by_day_walk_forward(
+    df_dev: pd.DataFrame,
+    df_test_final: pd.DataFrame,
+    *,
+    fit_and_predict: Callable[[pd.DataFrame, pd.DataFrame], np.ndarray],
+    metric_fn: Callable[[pd.Series | np.ndarray, np.ndarray], float],
+    target_col: str,
+    date_col: str = "GAME_DATE",
+    max_games: int | None = None,
+    metric_name: str = "metric",
+) -> DailyWalkForwardEvaluationResult:
+    """
+    Evaluate a model with a day-by-day walk-forward protocol.
+
+    The evaluation iterates over the unique dates present in ``df_test_final``.
+    For each prediction date, the training set is formed from every row strictly
+    before that date across the combined ``df_dev`` + ``df_test_final`` history.
+    This means earlier test rows become eligible training rows for later dates.
+
+    Parameters
+    ----------
+    df_dev : pd.DataFrame
+        Development data available before the final holdout period.
+    df_test_final : pd.DataFrame
+        Chronological holdout rows to evaluate day by day.
+    fit_and_predict : callable
+        Receives ``(train_df, test_df)`` and must return one prediction per row
+        in ``test_df``.
+    metric_fn : callable
+        Receives ``(y_true, y_pred)`` for one day and returns a scalar metric.
+    target_col : str
+        Target column name.
+    date_col : str
+        Date column name.
+    max_games : int | None
+        If provided, keep only the latest ``max_games`` rows in each day's
+        training set.
+    metric_name : str
+        Column name used in the returned per-day summary.
+
+    Returns
+    -------
+    DailyWalkForwardEvaluationResult
+        Mean metric across evaluated days, per-day summary, and row-level
+        predictions for the test rows.
+    """
+    if max_games is not None and max_games <= 0:
+        raise ValueError("max_games must be > 0 when provided.")
+    if target_col not in df_dev.columns or target_col not in df_test_final.columns:
+        raise KeyError(f"Missing required target column: {target_col}")
+    if date_col not in df_dev.columns or date_col not in df_test_final.columns:
+        raise KeyError(f"Missing required date column: {date_col}")
+    if len(df_test_final) == 0:
+        raise ValueError("df_test_final must not be empty.")
+
+    dev_part = df_dev.copy()
+    dev_part["_walk_source"] = "dev"
+    dev_part["_walk_source_order"] = 0
+    dev_part["_walk_orig_pos"] = np.arange(len(dev_part))
+
+    test_part = df_test_final.copy()
+    test_part["_walk_source"] = "test"
+    test_part["_walk_source_order"] = 1
+    test_part["_walk_orig_pos"] = np.arange(len(test_part))
+
+    combined = pd.concat([dev_part, test_part], axis=0, ignore_index=True)
+    combined["_walk_date"] = pd.to_datetime(combined[date_col], errors="coerce").dt.normalize()
+
+    if combined["_walk_date"].isna().any():
+        raise ValueError(f"Invalid dates found in column '{date_col}'.")
+
+    combined = combined.sort_values(
+        ["_walk_date", "_walk_source_order", "_walk_orig_pos"],
+        kind="mergesort",
+    ).reset_index(drop=True)
+
+    test_dates = sorted(
+        pd.to_datetime(df_test_final[date_col], errors="coerce").dt.normalize().unique()
+    )
+    helper_cols = {
+        "_walk_source",
+        "_walk_source_order",
+        "_walk_orig_pos",
+        "_walk_date",
+    }
+    feature_cols = [col for col in combined.columns if col not in helper_cols]
+
+    daily_rows: list[dict[str, Any]] = []
+    prediction_frames: list[pd.DataFrame] = []
+
+    for current_day in test_dates:
+        test_mask = (combined["_walk_source"] == "test") & (
+            combined["_walk_date"] == current_day
+        )
+        train_mask = combined["_walk_date"] < current_day
+
+        train_df = combined.loc[train_mask, feature_cols].copy()
+        if max_games is not None:
+            train_df = train_df.tail(max_games).copy()
+
+        test_positions = combined.loc[test_mask, "_walk_orig_pos"].to_numpy()
+        test_df = combined.loc[test_mask, feature_cols].copy()
+
+        if len(test_df) == 0:
+            continue
+        if len(train_df) == 0:
+            raise ValueError(
+                f"No training rows are available before test day {pd.Timestamp(current_day).date()}."
+            )
+
+        y_true = test_df[target_col].copy()
+        y_pred = np.asarray(fit_and_predict(train_df, test_df))
+        if y_pred.ndim == 0:
+            y_pred = y_pred.reshape(1)
+
+        if len(y_pred) != len(test_df):
+            raise ValueError(
+                "fit_and_predict must return one prediction for each test row."
+            )
+
+        metric_value = float(metric_fn(y_true, y_pred))
+        train_dates = pd.to_datetime(train_df[date_col], errors="coerce").dt.normalize()
+
+        daily_rows.append(
+            {
+                "date": pd.Timestamp(current_day).normalize(),
+                "train_n_games": int(len(train_df)),
+                "test_n_games": int(len(test_df)),
+                "train_start_date": train_dates.min(),
+                "train_end_date": train_dates.max(),
+                metric_name: metric_value,
+            }
+        )
+
+        prediction_frames.append(
+            pd.DataFrame(
+                {
+                    "date": pd.Timestamp(current_day).normalize(),
+                    "row_in_test_final": test_positions,
+                    "y_true": y_true.to_numpy(),
+                    "y_pred": y_pred,
+                }
+            )
+        )
+
+    if not daily_rows:
+        raise ValueError("No daily evaluations were produced.")
+
+    daily_results = pd.DataFrame(daily_rows)
+    predictions = pd.concat(prediction_frames, ignore_index=True)
+
+    return DailyWalkForwardEvaluationResult(
+        mean_metric=float(daily_results[metric_name].mean()),
+        daily_results=daily_results,
+        predictions=predictions,
+    )
 
 
 def prepare_time_dataframe(
