@@ -3,10 +3,12 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
+from sklearn.base import BaseEstimator, RegressorMixin, clone
 from xgboost import XGBRegressor
 
 # ---------------------------------------------------------------------------
@@ -79,6 +81,139 @@ class SplitValidationResult:
     is_valid: bool
     errors: list[str]
     warnings: list[str]
+
+
+def _coerce_datetime_indexed_series(
+    data: pd.DataFrame | pd.Series,
+    *,
+    date_col: str = "GAME_DATE",
+    index: pd.Index | None = None,
+) -> pd.Series:
+    """
+    Return a datetime64-normalized series aligned to ``index``.
+    """
+    if isinstance(data, pd.DataFrame):
+        if date_col not in data.columns:
+            raise KeyError(f"Missing required column: {date_col}")
+        dates = data[date_col]
+    else:
+        dates = data
+
+    parsed = pd.to_datetime(dates, errors="coerce").dt.normalize()
+    if parsed.isna().any():
+        raise ValueError("Date series contains missing or invalid values.")
+
+    if index is None:
+        return pd.Series(parsed, index=parsed.index, name=date_col)
+
+    aligned = pd.Series(parsed, index=parsed.index, name=date_col).reindex(index)
+    if aligned.isna().any():
+        raise ValueError("Date series could not be aligned to the requested index.")
+    return aligned
+
+
+def build_recency_sample_weights(
+    data: pd.DataFrame | pd.Series,
+    *,
+    date_col: str = "GAME_DATE",
+    lambda_: float = 0.01,
+    reference_date: pd.Timestamp | datetime | str | None = None,
+) -> pd.Series:
+    """
+    Build exponentially decayed sample weights from dates.
+
+    The newest row in the provided data gets weight 1.0 when
+    ``reference_date`` is omitted. For time-series CV, call this on the
+    training subset inside each fold so the decay is anchored only to the
+    data visible to that fold.
+    """
+    if lambda_ < 0:
+        raise ValueError("lambda_ must be >= 0")
+
+    dates = _coerce_datetime_indexed_series(data, date_col=date_col)
+    resolved_reference_date = (
+        dates.max()
+        if reference_date is None
+        else pd.to_datetime(reference_date, errors="coerce")
+    )
+
+    if pd.isna(resolved_reference_date):
+        raise ValueError("reference_date could not be parsed.")
+
+    resolved_reference_date = pd.Timestamp(resolved_reference_date).normalize()
+    age_days = (resolved_reference_date - dates).dt.days
+
+    if (age_days < 0).any():
+        raise ValueError("reference_date is earlier than at least one sample date.")
+
+    weights = np.exp(-float(lambda_) * age_days.to_numpy(dtype=float))
+    return pd.Series(weights, index=dates.index, name="sample_weight")
+
+
+class TemporalDecaySampleWeightRegressor(RegressorMixin, BaseEstimator):
+    """
+    Wrap a regressor and compute recency weights inside ``fit``.
+
+    This is useful with sklearn CV utilities because each fold fit only sees its
+    training rows, so the weight reference date is leakage-safe.
+    """
+
+    def __init__(
+        self,
+        estimator: Any,
+        dates: pd.Series,
+        *,
+        lambda_: float = 0.01,
+        date_col: str = "GAME_DATE",
+    ) -> None:
+        self.estimator = estimator
+        self.dates = dates
+        self.lambda_ = lambda_
+        self.date_col = date_col
+
+    def fit(
+        self,
+        X: pd.DataFrame,
+        y: pd.Series,
+        **fit_params,
+    ) -> "TemporalDecaySampleWeightRegressor":
+        if not hasattr(X, "index"):
+            raise TypeError(
+                "TemporalDecaySampleWeightRegressor requires X with an index."
+            )
+
+        dates = _coerce_datetime_indexed_series(
+            self.dates,
+            date_col=self.date_col,
+            index=X.index,
+        )
+        temporal_weights = build_recency_sample_weights(dates, lambda_=self.lambda_)
+
+        estimator = clone(self.estimator)
+        existing_sample_weight = fit_params.pop("sample_weight", None)
+
+        if existing_sample_weight is not None:
+            existing_series = pd.Series(existing_sample_weight, index=X.index)
+            temporal_weights = temporal_weights * pd.to_numeric(
+                existing_series, errors="coerce"
+            ).astype(float)
+
+        estimator.fit(
+            X,
+            y,
+            sample_weight=temporal_weights.to_numpy(dtype=float),
+            **fit_params,
+        )
+
+        self.estimator_ = estimator
+        self.sample_weight_ = temporal_weights
+        return self
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        return self.estimator_.predict(X)
+
+    def __sklearn_is_fitted__(self) -> bool:
+        return hasattr(self, "estimator_")
 
 
 def prepare_time_dataframe(
@@ -362,7 +497,6 @@ def make_walk_forward_last_n_seasons_splits(
             start_date_pos += 1
             continue
 
-        test_end_pos = end_pos
         test_mask = temp["_date"].isin(test_dates)
         test_idx = temp.loc[test_mask, "_pos"].to_numpy()
 
@@ -737,7 +871,7 @@ def validate_time_splits(
         train_dates = dates.iloc[train_idx]
         test_dates = dates.iloc[test_idx]
 
-        tr_min, tr_max = train_dates.min(), train_dates.max()
+        tr_max = train_dates.max()
         te_min, te_max = test_dates.min(), test_dates.max()
 
         if require_strict_time_order and not (tr_max < te_min):

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 import optuna
 import pandas as pd
+from nba_ou.modeling.modeling import build_recency_sample_weights
 from nba_ou.modeling.scorers import (
     over_under_betting_accuracy_error_line,
     over_under_betting_accuracy_error_line_with_min_edge,
@@ -49,6 +50,71 @@ def _predict_best(model: XGBRegressor, X: pd.DataFrame) -> np.ndarray:
             pass
 
     return model.predict(X)
+
+
+def _coerce_sample_weight(
+    sample_weight: pd.Series | np.ndarray | list[float] | None,
+    index: pd.Index,
+) -> pd.Series | None:
+    if sample_weight is None:
+        return None
+
+    if isinstance(sample_weight, pd.Series):
+        weights = sample_weight.reindex(index)
+    else:
+        weights = pd.Series(sample_weight, index=index)
+
+    weights = pd.to_numeric(weights, errors="coerce")
+
+    if weights.isna().any():
+        raise ValueError("sample_weight contains missing or non-numeric values.")
+
+    return weights.astype(float)
+
+
+def _coerce_sample_weight_dates(
+    sample_weight_dates: pd.Series | np.ndarray | list[str] | None,
+    index: pd.Index,
+) -> pd.Series | None:
+    if sample_weight_dates is None:
+        return None
+
+    if isinstance(sample_weight_dates, pd.Series):
+        dates = sample_weight_dates.reindex(index)
+    else:
+        dates = pd.Series(sample_weight_dates, index=index)
+
+    dates = pd.to_datetime(dates, errors="coerce").dt.normalize()
+
+    if dates.isna().any():
+        raise ValueError(
+            "sample_weight_dates contains missing or invalid datetime values."
+        )
+
+    return dates
+
+
+def _resolve_sample_weight_lambda(
+    trial: optuna.Trial,
+    *,
+    sample_weight_lambda: float | None,
+    tune_sample_weight_lambda: bool,
+    sample_weight_lambda_bounds: tuple[float, float],
+) -> float | None:
+    if not tune_sample_weight_lambda:
+        if sample_weight_lambda is None:
+            return None
+        if sample_weight_lambda < 0:
+            raise ValueError("sample_weight_lambda must be >= 0.")
+        return float(sample_weight_lambda)
+
+    low, high = sample_weight_lambda_bounds
+    if low <= 0 or high <= 0 or low >= high:
+        raise ValueError("sample_weight_lambda_bounds must be positive and ordered.")
+
+    return float(
+        trial.suggest_float("sample_weight_lambda", low, high, log=True)
+    )
 
 
 def build_xgb_params_error_line(
@@ -152,6 +218,11 @@ def objective_error_line_mae(
     *,
     X: pd.DataFrame,
     y: pd.Series,
+    sample_weight: pd.Series | np.ndarray | list[float] | None = None,
+    sample_weight_dates: pd.Series | np.ndarray | list[str] | None = None,
+    sample_weight_lambda: float | None = None,
+    tune_sample_weight_lambda: bool = False,
+    sample_weight_lambda_bounds: tuple[float, float] = (1e-4, 0.05),
     splits: list[tuple[np.ndarray, np.ndarray]],
     objective_name: str = "reg:squarederror",
 ) -> float:
@@ -165,6 +236,25 @@ def objective_error_line_mae(
         objective=objective_name,
     )
 
+    if sample_weight is not None and sample_weight_dates is not None:
+        raise ValueError(
+            "Provide either sample_weight or sample_weight_dates, not both."
+        )
+
+    sample_weight_series = _coerce_sample_weight(sample_weight, X.index)
+    sample_weight_date_series = _coerce_sample_weight_dates(sample_weight_dates, X.index)
+    resolved_sample_weight_lambda = _resolve_sample_weight_lambda(
+        trial,
+        sample_weight_lambda=sample_weight_lambda,
+        tune_sample_weight_lambda=tune_sample_weight_lambda,
+        sample_weight_lambda_bounds=sample_weight_lambda_bounds,
+    )
+
+    if sample_weight_date_series is not None and resolved_sample_weight_lambda is None:
+        raise ValueError(
+            "sample_weight_lambda must be provided when sample_weight_dates is used."
+        )
+
     fold_metrics: list[FoldMetrics] = []
 
     for fold_num, (tr_idx, va_idx) in enumerate(splits, start=1):
@@ -172,11 +262,20 @@ def objective_error_line_mae(
         X_va = X.iloc[va_idx]
         y_tr = y.iloc[tr_idx]
         y_va = y.iloc[va_idx]
+        sample_weight_tr = None
+        if sample_weight_date_series is not None:
+            sample_weight_tr = build_recency_sample_weights(
+                sample_weight_date_series.iloc[tr_idx],
+                lambda_=float(resolved_sample_weight_lambda),
+            ).to_numpy(dtype=float)
+        elif sample_weight_series is not None:
+            sample_weight_tr = sample_weight_series.iloc[tr_idx].to_numpy(dtype=float)
 
         model = XGBRegressor(**params)
         model.fit(
             X_tr,
             y_tr,
+            sample_weight=sample_weight_tr,
             eval_set=[(X_va, y_va)],
             verbose=False,
         )
@@ -206,6 +305,8 @@ def objective_error_line_mae(
     mean_best_iteration = int(round(np.mean([m.best_iteration for m in fold_metrics])))
     median_best_iteration = int(np.median([m.best_iteration for m in fold_metrics]))
 
+    if resolved_sample_weight_lambda is not None:
+        trial.set_user_attr("sample_weight_lambda", resolved_sample_weight_lambda)
     trial.set_user_attr("mean_mae", mean_mae)
     trial.set_user_attr("mean_rmse", mean_rmse)
     trial.set_user_attr("mean_r2", mean_r2)
@@ -242,6 +343,11 @@ def tune_xgb_error_line_optuna(
     *,
     X: pd.DataFrame,
     y: pd.Series,
+    sample_weight: pd.Series | np.ndarray | list[float] | None = None,
+    sample_weight_dates: pd.Series | np.ndarray | list[str] | None = None,
+    sample_weight_lambda: float | None = None,
+    tune_sample_weight_lambda: bool = False,
+    sample_weight_lambda_bounds: tuple[float, float] = (1e-4, 0.05),
     splits: list[tuple[np.ndarray, np.ndarray]],
     n_trials: int = 80,
     timeout: int | None = None,
@@ -263,6 +369,11 @@ def tune_xgb_error_line_optuna(
             trial,
             X=X,
             y=y,
+            sample_weight=sample_weight,
+            sample_weight_dates=sample_weight_dates,
+            sample_weight_lambda=sample_weight_lambda,
+            tune_sample_weight_lambda=tune_sample_weight_lambda,
+            sample_weight_lambda_bounds=sample_weight_lambda_bounds,
             splits=splits,
             objective_name=objective_name,
         ),
@@ -460,6 +571,9 @@ def fit_best_xgb_error_line(
     *,
     X_dev: pd.DataFrame,
     y_dev: pd.Series,
+    sample_weight: pd.Series | np.ndarray | list[float] | None = None,
+    sample_weight_dates: pd.Series | np.ndarray | list[str] | None = None,
+    sample_weight_lambda: float | None = None,
     study: optuna.Study | None = None,
     trial: optuna.trial.FrozenTrial | None = None,
     objective_name: str = "reg:squarederror",
@@ -473,6 +587,8 @@ def fit_best_xgb_error_line(
     """
     if (study is None) == (trial is None):
         raise ValueError("Provide exactly one of study or trial.")
+    if sample_weight is not None and sample_weight_dates is not None:
+        raise ValueError("Provide either sample_weight or sample_weight_dates, not both.")
 
     selected_trial = trial if trial is not None else study.best_trial
     best_params = selected_trial.params.copy()
@@ -491,5 +607,34 @@ def fit_best_xgb_error_line(
     }
 
     model = XGBRegressor(**final_params)
-    model.fit(X_dev, y_dev, verbose=False)
+    sample_weight_series = _coerce_sample_weight(sample_weight, X_dev.index)
+    sample_weight_date_series = _coerce_sample_weight_dates(
+        sample_weight_dates, X_dev.index
+    )
+
+    if sample_weight_date_series is not None:
+        resolved_sample_weight_lambda = sample_weight_lambda
+        if (
+            resolved_sample_weight_lambda is None
+            and "sample_weight_lambda" in selected_trial.params
+        ):
+            resolved_sample_weight_lambda = float(
+                selected_trial.params["sample_weight_lambda"]
+            )
+
+        if resolved_sample_weight_lambda is None:
+            raise ValueError(
+                "sample_weight_lambda must be provided or present in the selected trial."
+            )
+
+        sample_weight_series = build_recency_sample_weights(
+            sample_weight_date_series,
+            lambda_=float(resolved_sample_weight_lambda),
+        )
+
+    fit_kwargs = {"verbose": False}
+    if sample_weight_series is not None:
+        fit_kwargs["sample_weight"] = sample_weight_series.to_numpy(dtype=float)
+
+    model.fit(X_dev, y_dev, **fit_kwargs)
     return model
