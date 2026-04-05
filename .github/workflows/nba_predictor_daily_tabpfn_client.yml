@@ -4,11 +4,11 @@ on:
     workflow_dispatch:
     schedule:
         # Every day at 21:01 UTC
-        - cron: "01 21 * * *"
+        - cron: "01 20 * * *"
         # Every day at 23:01 UTC
-        - cron: "01 23 * * *"
+        - cron: "01 22 * * *"
         # Saturday and Sunday at 19:01 UTC
-        - cron: "01 19 * * 6,0"
+        - cron: "01 18 * * 6,0"
 
 concurrency:
     group: daily-nba-predictor-tabpfn-client
