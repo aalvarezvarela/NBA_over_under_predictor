@@ -25,7 +25,10 @@ PredictionTarget = Literal["PRED_LINE_ERROR", "TOTAL_POINTS"]
 PREDICTION_TARGET_LINE_ERROR: PredictionTarget = "PRED_LINE_ERROR"
 PREDICTION_TARGET_TOTAL_POINTS: PredictionTarget = "TOTAL_POINTS"
 PREDICTION_VALUE_TYPE_TOTAL_POINTS = "TOTAL_POINTS"
-PREDICTION_VALUE_TYPE_DIFF_FROM_LINE = "DIFF_FROM_LINE"
+# Keep the stored/database value as DIFF_FROM_LINE for backward compatibility,
+# but use "line_error" as the canonical name in code and model metadata.
+PREDICTION_VALUE_TYPE_LINE_ERROR = "DIFF_FROM_LINE"
+PREDICTION_VALUE_TYPE_DIFF_FROM_LINE = PREDICTION_VALUE_TYPE_LINE_ERROR
 
 
 def _resolve_column_name(df: pd.DataFrame, desired_column: str) -> str | None:
@@ -254,6 +257,14 @@ def _nested_metadata_value(metadata: dict, *path: str) -> object | None:
     return current
 
 
+def _is_line_error_signature(signature: str) -> bool:
+    """Return True for canonical and legacy aliases of line-error models."""
+    return any(
+        token in signature
+        for token in ("line_error", "error_line", "diff_from_line")
+    )
+
+
 def _infer_prediction_target_from_metadata(metadata: dict) -> PredictionTarget:
     model_type = str(_nested_metadata_value(metadata, "model", "model_type") or "")
     prediction_source = str(
@@ -264,6 +275,8 @@ def _infer_prediction_target_from_metadata(metadata: dict) -> PredictionTarget:
 
     if "total_points" in signature:
         return PREDICTION_TARGET_TOTAL_POINTS
+    if _is_line_error_signature(signature):
+        return PREDICTION_TARGET_LINE_ERROR
 
     return PREDICTION_TARGET_LINE_ERROR
 
@@ -450,7 +463,7 @@ def load_and_predict_model_for_nba_games(
     df_predictable["PREDICTION_VALUE_TYPE"] = (
         PREDICTION_VALUE_TYPE_TOTAL_POINTS
         if prediction_target == PREDICTION_TARGET_TOTAL_POINTS
-        else PREDICTION_VALUE_TYPE_DIFF_FROM_LINE
+        else PREDICTION_VALUE_TYPE_LINE_ERROR
     )
 
     df_predictable.rename(columns={"MATCHUP_TEAM_HOME": "MATCHUP"}, inplace=True)

@@ -36,6 +36,7 @@ class TrainingMetrics(BaseModel):
     mean_best_iteration: int | None = None
     median_best_iteration: int | None = None
     train_games: int | None = None
+    sample_weight_lambda_bounds: tuple[float, float] | None = None
     cv_mae: float
     cv_rmse: float | None = None
     cv_ou_acc: float | None = None

@@ -13,7 +13,11 @@ from nba_ou.data_preparation.missing_data.handle_missing_data import (
     apply_missing_policy,
 )
 from nba_ou.modeling.model_registry import derive_staging_prefix
-from nba_ou.modeling.modeling import ModelBundleMetadata, save_model_bundle
+from nba_ou.modeling.modeling import (
+    ModelBundleMetadata,
+    build_recency_sample_weights,
+    save_model_bundle,
+)
 from nba_ou.utils.s3_models import (
     list_s3_objects,
     make_s3_client,
@@ -50,6 +54,8 @@ class RetrainingSettings:
     max_na_per_row: int
     train_games: int | None
     xgb_params: dict[str, Any]
+    sample_weight_lambda: float | None
+    sample_weight_lambda_bounds: tuple[float, float] | None
     source_metadata: ModelBundleMetadata
 
 
@@ -218,7 +224,7 @@ def _resolve_n_estimators(
     if boosted_rounds <= 0:
         raise ValueError(
             "Could not infer n_estimators from the production metadata or model."
-    )
+        )
     return boosted_rounds
 
 
@@ -250,12 +256,14 @@ def _infer_target_column_from_metadata(raw_metadata: dict[str, Any]) -> str:
 
     if "total_points" in signature:
         return "TOTAL_POINTS"
-    if "line_error" in signature or "error_line" in signature:
+    if (
+        "line_error" in signature
+        or "error_line" in signature
+        or "diff_from_line" in signature
+    ):
         return "LINE_ERROR"
 
-    raise ValueError(
-        "Could not infer the target column from the production metadata."
-    )
+    raise ValueError("Could not infer the target column from the production metadata.")
 
 
 def _infer_required_line_col_from_feature_names(
@@ -295,6 +303,59 @@ def _infer_required_line_col_from_feature_names(
     )
 
 
+def _coerce_sample_weight_lambda(value: Any) -> float | None:
+    if value is None:
+        return None
+    parsed = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    if pd.isna(parsed):
+        return None
+    parsed_float = float(parsed)
+    if parsed_float < 0:
+        raise ValueError("sample_weight_lambda must be >= 0.")
+    return parsed_float
+
+
+def _coerce_sample_weight_lambda_bounds(value: Any) -> tuple[float, float] | None:
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return None
+
+    low = pd.to_numeric(pd.Series([value[0]]), errors="coerce").iloc[0]
+    high = pd.to_numeric(pd.Series([value[1]]), errors="coerce").iloc[0]
+    if pd.isna(low) or pd.isna(high):
+        return None
+
+    low_float = float(low)
+    high_float = float(high)
+    if low_float <= 0 or high_float <= 0 or low_float >= high_float:
+        return None
+    return (low_float, high_float)
+
+
+def _extract_sample_weight_hyperparameters(
+    *,
+    artifacts: ProductionArtifacts,
+) -> tuple[float | None, tuple[float, float] | None]:
+    training_metrics = artifacts.metadata.training_metrics
+    best_params = dict(training_metrics.best_params) if training_metrics else {}
+
+    sample_weight_lambda = _coerce_sample_weight_lambda(
+        best_params.get("sample_weight_lambda")
+    )
+
+    raw_bounds = (
+        _nested_value(
+            artifacts.raw_metadata, "training_metrics", "sample_weight_lambda_bounds"
+        )
+        or _nested_value(artifacts.raw_metadata, "model", "sample_weight_lambda_bounds")
+        or _nested_value(artifacts.raw_metadata, "sample_weight_lambda_bounds")
+    )
+    sample_weight_lambda_bounds = _coerce_sample_weight_lambda_bounds(raw_bounds)
+
+    return sample_weight_lambda, sample_weight_lambda_bounds
+
+
 def build_retraining_settings(
     *,
     artifacts: ProductionArtifacts,
@@ -324,9 +385,20 @@ def build_retraining_settings(
         training_metrics=training_metrics,
         model=artifacts.model,
     )
+    sample_weight_lambda, sample_weight_lambda_bounds = (
+        _extract_sample_weight_hyperparameters(artifacts=artifacts)
+    )
+    _NON_XGB_PARAM_KEYS = {"sample_weight_lambda"}
+
+    best_params = {
+        k: v
+        for k, v in (training_metrics.best_params or {}).items()
+        if k not in _NON_XGB_PARAM_KEYS
+    }
+
     xgb_params = {
         **xgb_static_params,
-        **dict(training_metrics.best_params),
+        **best_params,
         "n_estimators": n_estimators,
     }
 
@@ -340,6 +412,8 @@ def build_retraining_settings(
         max_na_per_row=int(max_na_per_row),
         train_games=None if train_games is None else int(train_games),
         xgb_params=xgb_params,
+        sample_weight_lambda=sample_weight_lambda,
+        sample_weight_lambda_bounds=sample_weight_lambda_bounds,
         source_metadata=metadata,
     )
 
@@ -361,9 +435,7 @@ def build_retraining_settings_from_artifacts(
     if schema_info is None or not schema_info.feature_names:
         raise ValueError("Production metadata is missing schema.feature_names.")
     if training_metrics.train_games is None or int(training_metrics.train_games) <= 0:
-        raise ValueError(
-            "Production metadata is missing a positive train_games value."
-        )
+        raise ValueError("Production metadata is missing a positive train_games value.")
 
     feature_names = [str(feature) for feature in schema_info.feature_names]
     target_column = _infer_target_column_from_metadata(artifacts.raw_metadata)
@@ -386,6 +458,22 @@ def build_retraining_settings_from_artifacts(
     )
 
 
+def _needs_derived_line_error(
+    *,
+    target_column: str,
+    required_line_col: str | None,
+    raw_df: pd.DataFrame,
+) -> bool:
+    """Return True when LINE_ERROR must be computed from TOTAL_POINTS and the line column."""
+    return (
+        target_column == "LINE_ERROR"
+        and required_line_col is not None
+        and _resolve_column_name(raw_df, "LINE_ERROR") is None
+        and _resolve_column_name(raw_df, "TOTAL_POINTS") is not None
+        and _resolve_column_name(raw_df, required_line_col) is not None
+    )
+
+
 def prepare_retraining_dataframe_from_raw(
     raw_df: pd.DataFrame,
     *,
@@ -393,11 +481,17 @@ def prepare_retraining_dataframe_from_raw(
 ) -> pd.DataFrame:
     """Prepare retraining rows from the raw dataframe using the selected required columns."""
     if settings.date_column not in raw_df.columns:
-        raise KeyError(
-            f"Raw training dataframe must include {settings.date_column!r}."
-        )
+        raise KeyError(f"Raw training dataframe must include {settings.date_column!r}.")
+
+    derive_line_error = _needs_derived_line_error(
+        target_column=settings.target_column,
+        required_line_col=settings.required_line_col,
+        raw_df=raw_df,
+    )
 
     required_columns = [settings.date_column, settings.target_column]
+    if derive_line_error:
+        required_columns.append("TOTAL_POINTS")
     if settings.required_line_col:
         required_columns.append(settings.required_line_col)
     required_columns.extend(settings.feature_names)
@@ -413,22 +507,40 @@ def prepare_retraining_dataframe_from_raw(
         else:
             resolved_columns[column] = resolved
 
+    if derive_line_error:
+        missing_columns = [
+            col for col in missing_columns if col != settings.target_column
+        ]
+
     if missing_columns:
         raise KeyError(
             "Raw training dataframe is missing required production columns: "
             f"{missing_columns}"
         )
 
-    prepared = raw_df[[resolved_columns[column] for column in required_columns]].copy()
-    prepared.columns = required_columns
+    columns_to_select = [col for col in required_columns if col in resolved_columns]
+    prepared = raw_df[[resolved_columns[column] for column in columns_to_select]].copy()
+    prepared.columns = columns_to_select
     prepared[settings.date_column] = pd.to_datetime(
         prepared[settings.date_column],
         errors="coerce",
     ).dt.normalize()
-    prepared[settings.target_column] = pd.to_numeric(
-        prepared[settings.target_column],
-        errors="coerce",
-    )
+
+    if derive_line_error:
+        prepared["TOTAL_POINTS"] = pd.to_numeric(
+            prepared["TOTAL_POINTS"], errors="coerce"
+        )
+        prepared[settings.required_line_col] = pd.to_numeric(
+            prepared[settings.required_line_col], errors="coerce"
+        )
+        prepared[settings.target_column] = (
+            prepared["TOTAL_POINTS"] - prepared[settings.required_line_col]
+        )
+    else:
+        prepared[settings.target_column] = pd.to_numeric(
+            prepared[settings.target_column],
+            errors="coerce",
+        )
 
     if settings.required_line_col is not None:
         prepared[settings.required_line_col] = pd.to_numeric(
@@ -515,7 +627,16 @@ def retrain_model(
     )
 
     model = XGBRegressor(**settings.xgb_params)
-    model.fit(X_train, y_train, verbose=False)
+    fit_kwargs: dict[str, Any] = {"verbose": False}
+
+    if settings.sample_weight_lambda is not None:
+        fit_kwargs["sample_weight"] = build_recency_sample_weights(
+            training_window_df[[settings.date_column]],
+            date_col=settings.date_column,
+            lambda_=settings.sample_weight_lambda,
+        ).to_numpy(dtype=float)
+
+    model.fit(X_train, y_train, **fit_kwargs)
     return model
 
 
@@ -558,6 +679,7 @@ def build_updated_retraining_metadata(
             "train_games": int(len(training_window_df)),
             "train_date_min": train_date_min,
             "train_date_max": train_date_max,
+            "sample_weight_lambda_bounds": settings.sample_weight_lambda_bounds,
         }
     )
 
