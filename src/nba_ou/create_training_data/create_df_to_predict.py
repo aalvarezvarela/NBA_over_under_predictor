@@ -110,8 +110,7 @@ def _infer_recent_limit_for_scheduled_games(
                     return scheduled_dates.dt.normalize().max() - pd.Timedelta(days=1)
 
     return (
-        pd.Timestamp.now(tz=ZoneInfo("US/Pacific")).normalize()
-        - pd.Timedelta(days=1)
+        pd.Timestamp.now(tz=ZoneInfo("US/Pacific")).normalize() - pd.Timedelta(days=1)
     ).tz_localize(None)
 
 
@@ -351,6 +350,7 @@ def create_df_to_predict(
     df, df_players = load_all_nba_data_from_db(
         seasons=seasons, extra_game_ids=extra_game_ids
     )
+    print(f"✓ Loaded {len(df)} games and {len(df_players)} player records")
 
     # Ensure GAME_DATE column is pandas Timestamp for df (df_players doesn't have it yet)
     df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
@@ -380,6 +380,7 @@ def create_df_to_predict(
     print(f"Loading data for seasons: {seasons}")
 
     # Process team statistics
+    print("Processing team statistics...")
     df = process_team_statistics_for_training(
         df,
         df_odds,
@@ -387,11 +388,15 @@ def create_df_to_predict(
         spread_ml_book=DEFAULT_SPREAD_ML_BOOK,
         total_line_book=DEFAULT_TOTAL_LINE_BOOK,
     )
+    print("✓ Team statistics processed")
+
     # Load injury data from database
+    print("Loading injury data...")
     df_injuries = get_injury_data_from_db(seasons, extra_game_ids=extra_game_ids)
+    print(f"✓ Loaded {len(df_injuries)} injury records")
 
     # Add Players Statistics
-
+    print("Processing player statistics...")
     df, injured_dict = process_player_statistics_for_training(
         df_players,
         df,
@@ -402,8 +407,11 @@ def create_df_to_predict(
         injury_dict_scheduled=injury_dict_scheduled if todays_prediction else None,
         extra_game_ids=extra_game_ids,
     )
+    print("✓ Player statistics processed")
 
+    print("Merging home/away data...")
     df_merged = merge_home_away_data(df, todays_prediction=todays_prediction)
+    print(f"✓ Merged data: {len(df_merged)} games")
 
     # Merge remaining odds data - only additional spread/total lines not yet merged
     # This safely merges any spread line columns from non-primary books without duplicating
@@ -421,6 +429,7 @@ def create_df_to_predict(
     # Add global market regime features (league-wide, game-date level)
     df_merged = add_global_market_features(df_merged)
 
+    print("Adding referee features...")
     df_merged = add_referee_features_to_training_data(
         seasons,
         df_merged,
@@ -428,6 +437,7 @@ def create_df_to_predict(
         extra_game_ids=extra_game_ids,
         include_ref_trio_features=False,
     )
+    print("✓ Referee features added")
 
     df_training = select_training_columns(
         df_merged, original_columns, keep_game_time=todays_prediction
@@ -437,6 +447,7 @@ def create_df_to_predict(
 
     df_training = add_derived_features_after_computed_stats(df_training)
 
+    print("Computing injury availability effects...")
     df_training = add_top3_availability_effect_features_for_columns(
         df_training,
         injured_dict,
@@ -478,10 +489,13 @@ def create_df_to_predict(
         shrinkage_k=10.0,
         include_per_player_columns=False,
     )
+    print("✓ Injury availability effects computed")
 
+    print("Adding travel and temporal features...")
     df_training = compute_travel_features(df_training, log_scale=True)
     df_training = add_high_value_features_for_team_points(df_training)
     df_training = add_game_date_features(df_training)
+    print("✓ Travel and temporal features added")
 
     # Filter out games with "NOT YET SUBMITTED" injury status when doing today's prediction
     if todays_prediction and games_not_updated:
