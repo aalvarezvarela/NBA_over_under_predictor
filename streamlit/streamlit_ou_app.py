@@ -579,6 +579,14 @@ def format_madrid_datetime(series: pd.Series, fmt: str) -> pd.Series:
     return dt_utc.dt.tz_convert("Europe/Madrid").dt.strftime(fmt)
 
 
+def pick_from_diff(diff: pd.Series) -> pd.Series:
+    out = pd.Series(index=diff.index, dtype="object")
+    out.loc[diff > 0] = "OVER"
+    out.loc[diff < 0] = "UNDER"
+    out.loc[diff == 0] = "PUSH"
+    return out
+
+
 def build_game_level_predictions(
     df: pd.DataFrame,
     prediction_cutoff: pd.Timestamp | None = None,
@@ -783,13 +791,6 @@ def build_game_level_predictions(
     actual_side.loc[actual_total < line] = "UNDER"
     actual_side.loc[actual_total == line] = "PUSH"
     base["actual_side"] = actual_side
-
-    def pick_from_diff(diff: pd.Series) -> pd.Series:
-        out = pd.Series(index=diff.index, dtype="object")
-        out.loc[diff > 0] = "OVER"
-        out.loc[diff < 0] = "UNDER"
-        out.loc[diff == 0] = "PUSH"
-        return out
 
     model_pick_cols: list[str] = []
     model_total_cols: list[str] = []
@@ -2046,6 +2047,367 @@ def compute_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(out_rows).sort_values(["game_date", "model_type"])
 
 
+def prepare_prediction_history(
+    df: pd.DataFrame, training_code_tag_filter: str | None = "1.0"
+) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame()
+
+    work = df.copy()
+    if "model_type" not in work.columns:
+        work["model_type"] = np.nan
+    if "model_name" not in work.columns:
+        work["model_name"] = np.nan
+    if "prediction_source" not in work.columns:
+        work["prediction_source"] = np.nan
+    if "prediction_value_type" not in work.columns:
+        work["prediction_value_type"] = np.nan
+    if "training_code_tag" not in work.columns:
+        work["training_code_tag"] = np.nan
+
+    model_type_source = _normalized_text_series(work, "model_type")
+    model_name_source = _normalized_text_series(work, "model_name")
+    prediction_source = _normalized_text_series(work, "prediction_source")
+    prediction_value_type = _normalized_text_series(work, "prediction_value_type")
+
+    metadata = [
+        _build_model_metadata(
+            model_type=mt,
+            model_name=mn,
+            prediction_source=ps,
+            prediction_value_type=pvt,
+        )
+        for mt, mn, ps, pvt in zip(
+            model_type_source,
+            model_name_source,
+            prediction_source,
+            prediction_value_type,
+            strict=False,
+        )
+    ]
+    work["_model_key"] = [item[0] for item in metadata]
+    work["_model_label"] = [item[1] for item in metadata]
+    work = work[work["_model_key"].notna()].copy()
+
+    if training_code_tag_filter:
+        normalized_tag = str(training_code_tag_filter).strip()
+        work = work[
+            work["training_code_tag"].fillna("").astype(str).str.strip()
+            == normalized_tag
+        ].copy()
+
+    if work.empty:
+        return pd.DataFrame()
+
+    if "prediction_datetime" in work.columns:
+        pred_dt = pd.to_datetime(work["prediction_datetime"], errors="coerce", utc=True)
+    else:
+        pred_dt = pd.Series(pd.NaT, index=work.index, dtype="datetime64[ns, UTC]")
+
+    if "prediction_date" in work.columns:
+        pred_date_dt = pd.to_datetime(
+            work["prediction_date"], errors="coerce", utc=True
+        )
+    else:
+        pred_date_dt = pd.Series(pd.NaT, index=work.index, dtype="datetime64[ns, UTC]")
+    work["prediction_datetime_utc"] = pred_dt.fillna(pred_date_dt)
+    work = work[work["prediction_datetime_utc"].notna()].copy()
+
+    if work.empty:
+        return pd.DataFrame()
+
+    if "game_time" in work.columns:
+        work["game_time_utc"] = pd.to_datetime(
+            work["game_time"], errors="coerce", utc=True
+        )
+    else:
+        work["game_time_utc"] = pd.NaT
+
+    line = pd.to_numeric(work.get("total_over_under_line"), errors="coerce")
+    line_at_prediction = pd.to_numeric(
+        work.get("total_bet365_line_at_prediction"), errors="coerce"
+    )
+    work["line_for_calc"] = line.fillna(line_at_prediction)
+    work["pred_total_points"] = pd.to_numeric(
+        work.get("pred_total_points"), errors="coerce"
+    )
+    work["pred_line_error"] = pd.to_numeric(
+        work.get("pred_line_error"), errors="coerce"
+    )
+    work["pred_total_points"] = work["pred_total_points"].where(
+        work["pred_total_points"].notna(),
+        work["line_for_calc"] + work["pred_line_error"],
+    )
+    work["pred_line_error"] = work["pred_line_error"].where(
+        work["pred_line_error"].notna(),
+        work["pred_total_points"] - work["line_for_calc"],
+    )
+
+    if "pred_pick" in work.columns:
+        work["pred_pick"] = work["pred_pick"].apply(normalize_pick)
+    else:
+        work["pred_pick"] = pd.Series(np.nan, index=work.index, dtype="object")
+    work["pred_pick"] = work["pred_pick"].where(
+        work["pred_pick"].notna(), pick_from_diff(work["pred_line_error"])
+    )
+
+    if "time_to_match_minutes" in work.columns:
+        time_to_match = pd.to_numeric(work["time_to_match_minutes"], errors="coerce")
+    else:
+        time_to_match = pd.Series(np.nan, index=work.index, dtype="float64")
+    derived_time_to_match = (
+        work["game_time_utc"] - work["prediction_datetime_utc"]
+    ).dt.total_seconds() / 60.0
+    work["time_to_match_minutes"] = time_to_match.fillna(derived_time_to_match)
+    work["hours_to_tip"] = work["time_to_match_minutes"] / 60.0
+
+    actual_total = pd.to_numeric(work.get("total_scored_points"), errors="coerce")
+    work["actual_total"] = actual_total
+    work["actual_side"] = pick_from_diff(actual_total - work["line_for_calc"])
+    work["error"] = work["pred_total_points"] - actual_total
+
+    if "prediction_value_type" in work.columns:
+        work["_prediction_priority"] = (
+            work["prediction_value_type"].astype(str).str.upper() == "TOTAL_POINTS"
+        ).astype(int)
+    else:
+        work["_prediction_priority"] = 0
+
+    keep_cols = [
+        "game_id",
+        "_model_key",
+        "_model_label",
+        "prediction_datetime_utc",
+        "game_time_utc",
+        "time_to_match_minutes",
+        "hours_to_tip",
+        "line_for_calc",
+        "pred_total_points",
+        "pred_line_error",
+        "pred_pick",
+        "actual_total",
+        "actual_side",
+        "error",
+        "_prediction_priority",
+    ]
+    available_keep_cols = [col for col in keep_cols if col in work.columns]
+    work = (
+        work.sort_values(
+            ["game_id", "_model_key", "prediction_datetime_utc", "_prediction_priority"]
+        )
+        .groupby(
+            ["game_id", "_model_key", "prediction_datetime_utc"], as_index=False
+        )
+        .tail(1)[available_keep_cols]
+        .reset_index(drop=True)
+    )
+
+    catalog = extract_model_catalog(df)
+    work.attrs["model_catalog"] = catalog
+    return work
+
+
+def bucket_prediction_timing(time_to_match_minutes: pd.Series) -> pd.Series:
+    labels = ["<=1h", "2-4h", "4-6h"]
+    hours = pd.to_numeric(time_to_match_minutes, errors="coerce") / 60.0
+    hours = hours.where(hours >= 0)
+    buckets = pd.Series(pd.NA, index=hours.index, dtype="object")
+    buckets.loc[hours <= 1] = labels[0]
+    buckets.loc[(hours >= 2) & (hours < 4)] = labels[1]
+    buckets.loc[(hours >= 4) & (hours <= 6)] = labels[2]
+    return pd.Categorical(buckets, categories=labels, ordered=True)
+
+
+def compute_prediction_timing_metrics(
+    df: pd.DataFrame, training_code_tag_filter: str | None = "1.0"
+) -> pd.DataFrame:
+    history = prepare_prediction_history(
+        df, training_code_tag_filter=training_code_tag_filter
+    )
+    if history.empty:
+        return pd.DataFrame()
+
+    history = history[history["time_to_match_minutes"].notna()].copy()
+    history = history[history["time_to_match_minutes"] >= 0].copy()
+    history = history[history["time_to_match_minutes"] <= 360].copy()
+    if history.empty:
+        return pd.DataFrame()
+
+    history["time_bucket"] = bucket_prediction_timing(history["time_to_match_minutes"])
+    history = history[history["time_bucket"].notna()].copy()
+    if history.empty:
+        return pd.DataFrame()
+
+    latest_by_bucket = (
+        history.sort_values("prediction_datetime_utc")
+        .groupby(["game_id", "_model_key", "time_bucket"], as_index=False, observed=True)
+        .tail(1)
+        .copy()
+    )
+    final_predictions = (
+        history.sort_values("prediction_datetime_utc")
+        .groupby(["game_id", "_model_key"], as_index=False)
+        .tail(1)[["game_id", "_model_key", "pred_total_points", "pred_pick"]]
+        .rename(
+            columns={
+                "pred_total_points": "final_pred_total_points",
+                "pred_pick": "final_pred_pick",
+            }
+        )
+    )
+    latest_by_bucket = latest_by_bucket.merge(
+        final_predictions, on=["game_id", "_model_key"], how="left"
+    )
+    latest_by_bucket["move_vs_final_points"] = (
+        latest_by_bucket["pred_total_points"] - latest_by_bucket["final_pred_total_points"]
+    ).abs()
+
+    valid_final_pick_mask = latest_by_bucket["final_pred_pick"].isin(["OVER", "UNDER"])
+    valid_bucket_pick_mask = latest_by_bucket["pred_pick"].isin(["OVER", "UNDER"])
+    latest_by_bucket["pick_agrees_with_final"] = (
+        valid_final_pick_mask
+        & valid_bucket_pick_mask
+        & (latest_by_bucket["pred_pick"] == latest_by_bucket["final_pred_pick"])
+    )
+
+    rows = []
+    grouped = latest_by_bucket.groupby(
+        ["_model_key", "_model_label", "time_bucket"], observed=True
+    )
+    for (model_key, model_label, time_bucket), group in grouped:
+        resolved = group[
+            group["actual_side"].isin(["OVER", "UNDER"])
+            & group["pred_pick"].isin(["OVER", "UNDER"])
+        ]
+        with_final_pick = group[
+            group["final_pred_pick"].isin(["OVER", "UNDER"])
+            & group["pred_pick"].isin(["OVER", "UNDER"])
+        ]
+
+        n_games = len(group)
+        accuracy = (
+            float((resolved["pred_pick"] == resolved["actual_side"]).mean())
+            if len(resolved)
+            else np.nan
+        )
+        mae = float(resolved["error"].abs().mean()) if len(resolved) else np.nan
+        mean_abs_line_diff = (
+            float(group["pred_line_error"].abs().mean())
+            if group["pred_line_error"].notna().any()
+            else np.nan
+        )
+        move_vs_final = (
+            float(group["move_vs_final_points"].mean())
+            if group["move_vs_final_points"].notna().any()
+            else np.nan
+        )
+        agreement_vs_final = (
+            float(with_final_pick["pick_agrees_with_final"].mean())
+            if len(with_final_pick)
+            else np.nan
+        )
+        avg_hours_before_tip = (
+            float(group["hours_to_tip"].mean())
+            if group["hours_to_tip"].notna().any()
+            else np.nan
+        )
+
+        rows.append(
+            {
+                "model_type": model_key,
+                "Model": model_label,
+                "Time Bucket": str(time_bucket),
+                "Games": n_games,
+                "Avg Hours Before Tip": None
+                if pd.isna(avg_hours_before_tip)
+                else round(avg_hours_before_tip, 2),
+                "Accuracy (%)": None
+                if pd.isna(accuracy)
+                else round(accuracy * 100, 2),
+                "MAE": None if pd.isna(mae) else round(mae, 2),
+                "Avg |Diff vs Line|": None
+                if pd.isna(mean_abs_line_diff)
+                else round(mean_abs_line_diff, 2),
+                "Avg |Move vs Final|": None
+                if pd.isna(move_vs_final)
+                else round(move_vs_final, 2),
+                "Pick Agreement vs Final (%)": None
+                if pd.isna(agreement_vs_final)
+                else round(agreement_vs_final * 100, 2),
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame()
+
+    timing_df = pd.DataFrame(rows)
+    bucket_order = ["<=1h", "2-4h", "4-6h"]
+    timing_df["Time Bucket"] = pd.Categorical(
+        timing_df["Time Bucket"], categories=bucket_order, ordered=True
+    )
+    return timing_df.sort_values(["Model", "Time Bucket"]).reset_index(drop=True)
+
+
+def render_prediction_timing_analysis(
+    raw: pd.DataFrame, training_code_tag_filter: str | None
+) -> None:
+    st.markdown("---")
+    st.markdown("### ⏱ Prediction Timing Analysis")
+    st.caption(
+        "Only predictions made within 6 hours of tip-off are included. Buckets are <=1h, 2-4h, and 4-6h before tip-off. "
+        "For each game/model/bucket, the latest prediction inside that bucket is used. Move vs final measures the gap to that model's final pregame prediction."
+    )
+
+    timing_df = compute_prediction_timing_metrics(
+        raw, training_code_tag_filter=training_code_tag_filter
+    )
+    if timing_df.empty:
+        st.info("No timing-based prediction history is available for the selected range.")
+        return
+
+    st.dataframe(timing_df, width="stretch", hide_index=True, height=320)
+
+    model_options = timing_df["Model"].dropna().drop_duplicates().tolist()
+    selected_model = st.selectbox(
+        "Timing detail by model",
+        model_options,
+        key="historical_prediction_timing_model",
+    )
+    model_df = timing_df[timing_df["Model"] == selected_model].copy()
+    model_df["Time Bucket"] = model_df["Time Bucket"].astype(str)
+
+    st.dataframe(
+        model_df.drop(columns=["model_type"]),
+        width="stretch",
+        hide_index=True,
+    )
+
+    fig, (ax_acc, ax_move) = plt.subplots(1, 2, figsize=(14, 5), dpi=140)
+    x = np.arange(len(model_df))
+
+    ax_acc.set_facecolor("white")
+    ax_acc.grid(True, alpha=0.2)
+    ax_acc.plot(x, model_df["Accuracy (%)"], linewidth=2.5, marker="o")
+    ax_acc.set_xticks(x)
+    ax_acc.set_xticklabels(model_df["Time Bucket"], rotation=25, ha="right")
+    ax_acc.set_ylim(0, 100)
+    ax_acc.set_ylabel("Accuracy (%)")
+    ax_acc.set_xlabel("Time Before Tip")
+    ax_acc.set_title(f"{selected_model}: Accuracy by Prediction Time")
+
+    ax_move.set_facecolor("white")
+    ax_move.grid(True, alpha=0.2)
+    ax_move.plot(x, model_df["Avg |Move vs Final|"], linewidth=2.5, marker="o")
+    ax_move.set_xticks(x)
+    ax_move.set_xticklabels(model_df["Time Bucket"], rotation=25, ha="right")
+    ax_move.set_ylabel("Avg |Move vs Final|")
+    ax_move.set_xlabel("Time Before Tip")
+    ax_move.set_title(f"{selected_model}: Movement Toward Final Prediction")
+
+    fig.tight_layout()
+    st.pyplot(fig, width="stretch")
+
+
 def show_upcoming_predictions(training_code_tag_filter: str | None) -> None:
     st.markdown("### 🔄 Update Predictions")
     st.caption(
@@ -2367,14 +2729,14 @@ def show_historical_performance(training_code_tag_filter: str | None) -> None:
     st.caption("Analyze model accuracy and prediction error over time.")
     st.markdown("")
 
-    use_date_filter = st.checkbox("Filter by Date Range", value=False)
+    use_date_filter = st.checkbox("Filter by Date Range", value=True)
     start_date = None
     end_date = None
 
     if use_date_filter:
         col1, col2 = st.columns(2)
         with col1:
-            start_date = st.date_input("Start Date", value=pd.to_datetime("2026-01-01"))
+            start_date = st.date_input("Start Date", value=pd.to_datetime("2026-03-26"))
         with col2:
             end_date = st.date_input("End Date", value=pd.to_datetime("today"))
 
@@ -2440,6 +2802,8 @@ def show_historical_performance(training_code_tag_filter: str | None) -> None:
         height=240,
     )
 
+    render_prediction_timing_analysis(raw, training_code_tag_filter)
+
     st.markdown("---")
     st.markdown("### 📅 Daily Accuracy")
     daily = compute_daily_metrics(games)
@@ -2461,7 +2825,7 @@ def show_historical_performance(training_code_tag_filter: str | None) -> None:
         height=350,
     )
 
-    smooth_window = st.slider("Smoothing window (days)", 1, 14, 1)
+    smooth_window = st.slider("Smoothing window (days)", 1, 14, 4)
 
     fig_acc, ax_acc = plt.subplots(figsize=(14, 6), dpi=140)
     ax_acc.set_facecolor("white")
