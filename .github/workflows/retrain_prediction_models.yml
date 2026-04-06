@@ -14,6 +14,7 @@ jobs:
     runs-on: self-hosted
     env:
       PYTHONWARNINGS: "ignore::UserWarning,ignore::DeprecationWarning,ignore::FutureWarning"
+      TQDM_DISABLE: "1"
       DB_ENV: supabase
       SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
       SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
@@ -46,6 +47,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PYTHONWARNINGS: "ignore::UserWarning,ignore::DeprecationWarning,ignore::FutureWarning,ignore::PerformanceWarning"
+      TQDM_DISABLE: "1"
       PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/src
       DB_ENV: supabase
       SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}

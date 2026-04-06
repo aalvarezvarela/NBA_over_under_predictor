@@ -231,3 +231,4 @@ data/*
 *.json
 *.txt
 *.joblib
+.codex

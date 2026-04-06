@@ -27,7 +27,10 @@ PredictionTarget = Literal["PRED_LINE_ERROR", "TOTAL_POINTS"]
 PREDICTION_TARGET_LINE_ERROR: PredictionTarget = "PRED_LINE_ERROR"
 PREDICTION_TARGET_TOTAL_POINTS: PredictionTarget = "TOTAL_POINTS"
 PREDICTION_VALUE_TYPE_TOTAL_POINTS = "TOTAL_POINTS"
-PREDICTION_VALUE_TYPE_DIFF_FROM_LINE = "DIFF_FROM_LINE"
+# Keep the stored/database value as DIFF_FROM_LINE for backward compatibility,
+# but use "line_error" as the canonical name in code and model metadata.
+PREDICTION_VALUE_TYPE_LINE_ERROR = "DIFF_FROM_LINE"
+PREDICTION_VALUE_TYPE_DIFF_FROM_LINE = PREDICTION_VALUE_TYPE_LINE_ERROR
 
 
 def _resolve_column_name(df: pd.DataFrame, desired_column: str) -> str | None:
@@ -421,7 +424,7 @@ def _run_tabpfn_client_prediction(
             ["OVER", "UNDER", "PUSH"],
             default=None,
         )
-        df_predictable["PREDICTION_VALUE_TYPE"] = PREDICTION_VALUE_TYPE_DIFF_FROM_LINE
+        df_predictable["PREDICTION_VALUE_TYPE"] = PREDICTION_VALUE_TYPE_LINE_ERROR
         non_null_pred_col = "PRED_LINE_ERROR"
 
     df_predictable.rename(columns={"MATCHUP_TEAM_HOME": "MATCHUP"}, inplace=True)
