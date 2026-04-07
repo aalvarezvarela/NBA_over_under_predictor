@@ -252,6 +252,24 @@ def get_model_catalog(df: pd.DataFrame | None) -> ModelCatalog:
     return extract_model_catalog(df)
 
 
+def _ordered_model_types_by_prediction_target(catalog: ModelCatalog) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    for model_type in [*catalog.total_points_models, *catalog.diff_from_line_models]:
+        if model_type not in seen:
+            ordered.append(model_type)
+            seen.add(model_type)
+
+    return ordered
+
+
+def _prediction_target_label(catalog: ModelCatalog, model_type: str) -> str:
+    if model_type in catalog.diff_from_line_models:
+        return "Diff From Line"
+    return "Total Points"
+
+
 def set_runtime_env_from_secrets() -> None:
     try:
         os.environ["SUPABASE_DB_URL"] = st.secrets["DatabaseSupabase"][
@@ -523,7 +541,10 @@ def inject_global_css() -> None:
 def render_header(catalog: ModelCatalog | None = None) -> None:
     model_labels = []
     if catalog is not None:
-        model_labels = [catalog.labels[model_type] for model_type in catalog.order]
+        model_labels = [
+            catalog.labels[model_type]
+            for model_type in _ordered_model_types_by_prediction_target(catalog)
+        ]
 
     chip_html = "".join(
         f'<span class="chip">📊 {html.escape(model_label)}</span>'
@@ -668,7 +689,7 @@ def build_game_level_predictions(
         return pd.DataFrame()
 
     catalog = extract_model_catalog(work)
-    model_order = catalog.order
+    model_order = _ordered_model_types_by_prediction_target(catalog)
     model_prefixes = catalog.prefixes
     if not model_order:
         return pd.DataFrame()
@@ -918,7 +939,7 @@ def build_upcoming_display(
     df: pd.DataFrame, show_pred_times: bool = False
 ) -> pd.DataFrame:
     catalog = get_model_catalog(df)
-    model_order = catalog.order
+    model_order = _ordered_model_types_by_prediction_target(catalog)
     model_labels = catalog.labels
     model_prefixes = catalog.prefixes
 
@@ -934,10 +955,10 @@ def build_upcoming_display(
     for model_type in model_order:
         prefix = model_prefixes[model_type]
         label = model_labels[model_type]
-        display[f"{label} Total"] = pd.to_numeric(
+        display[f"{label} Total Points"] = pd.to_numeric(
             df[f"pred_total_{prefix}"], errors="coerce"
         ).round(1)
-        display[f"{label} Diff"] = pd.to_numeric(
+        display[f"{label} Line Error"] = pd.to_numeric(
             df[f"line_diff_{prefix}"], errors="coerce"
         ).round(2)
         display[f"{label} Pick"] = df[f"pick_{prefix}"]
@@ -948,18 +969,18 @@ def build_upcoming_display(
                 df[f"pred_dt_{prefix}"], "%m-%d %H:%M"
             )
 
-    display["Consensus Total"] = pd.to_numeric(
+    display["Consensus Total Points"] = pd.to_numeric(
         df["consensus_pred_total"], errors="coerce"
     ).round(1)
-    display["Consensus Diff"] = pd.to_numeric(
+    display["Consensus Line Error"] = pd.to_numeric(
         df["consensus_line_diff"], errors="coerce"
     ).round(2)
     display["Consensus Pick"] = df["consensus_pick"]
 
-    display["Consensus (No TabPFN) Total"] = pd.to_numeric(
+    display["Consensus (No TabPFN) Total Points"] = pd.to_numeric(
         df["consensus_no_tabpfn_pred_total"], errors="coerce"
     ).round(1)
-    display["Consensus (No TabPFN) Diff"] = pd.to_numeric(
+    display["Consensus (No TabPFN) Line Error"] = pd.to_numeric(
         df["consensus_no_tabpfn_line_diff"], errors="coerce"
     ).round(2)
     display["Consensus (No TabPFN) Pick"] = df["consensus_no_tabpfn_pick"]
@@ -972,10 +993,10 @@ def build_upcoming_display(
         df["consensus_vote_n_under"], errors="coerce"
     ).astype("Int64")
 
-    display["Bold Contrarian Total"] = pd.to_numeric(
+    display["Bold Contrarian Total Points"] = pd.to_numeric(
         df["consensus_bold_contrarian_pred_total"], errors="coerce"
     ).round(1)
-    display["Bold Contrarian Diff"] = pd.to_numeric(
+    display["Bold Contrarian Line Error"] = pd.to_numeric(
         df["consensus_bold_contrarian_line_diff"], errors="coerce"
     ).round(2)
     display["Bold Contrarian Pick"] = df["consensus_bold_contrarian_pick"]
@@ -992,7 +1013,7 @@ def build_upcoming_display(
 
 def build_past_display(df: pd.DataFrame) -> pd.DataFrame:
     catalog = get_model_catalog(df)
-    model_order = catalog.order
+    model_order = _ordered_model_types_by_prediction_target(catalog)
     model_labels = catalog.labels
     model_prefixes = catalog.prefixes
 
@@ -1010,10 +1031,10 @@ def build_past_display(df: pd.DataFrame) -> pd.DataFrame:
     for model_type in model_order:
         prefix = model_prefixes[model_type]
         label = model_labels[model_type]
-        display[f"{label} Total"] = pd.to_numeric(
+        display[f"{label} Total Points"] = pd.to_numeric(
             df[f"pred_total_{prefix}"], errors="coerce"
         ).round(1)
-        display[f"{label} Diff"] = pd.to_numeric(
+        display[f"{label} Line Error"] = pd.to_numeric(
             df[f"line_diff_{prefix}"], errors="coerce"
         ).round(2)
         display[f"{label} Pick"] = df[f"pick_{prefix}"]
@@ -1021,10 +1042,10 @@ def build_past_display(df: pd.DataFrame) -> pd.DataFrame:
             {True: "✅", False: "❌"}
         )
 
-    display["Consensus Total"] = pd.to_numeric(
+    display["Consensus Total Points"] = pd.to_numeric(
         df["consensus_pred_total"], errors="coerce"
     ).round(1)
-    display["Consensus Diff"] = pd.to_numeric(
+    display["Consensus Line Error"] = pd.to_numeric(
         df["consensus_line_diff"], errors="coerce"
     ).round(2)
     display["Consensus Pick"] = df["consensus_pick"]
@@ -1032,10 +1053,10 @@ def build_past_display(df: pd.DataFrame) -> pd.DataFrame:
         {True: "✅", False: "❌"}
     )
 
-    display["Consensus (No TabPFN) Total"] = pd.to_numeric(
+    display["Consensus (No TabPFN) Total Points"] = pd.to_numeric(
         df["consensus_no_tabpfn_pred_total"], errors="coerce"
     ).round(1)
-    display["Consensus (No TabPFN) Diff"] = pd.to_numeric(
+    display["Consensus (No TabPFN) Line Error"] = pd.to_numeric(
         df["consensus_no_tabpfn_line_diff"], errors="coerce"
     ).round(2)
     display["Consensus (No TabPFN) Pick"] = df["consensus_no_tabpfn_pick"]
@@ -1054,10 +1075,10 @@ def build_past_display(df: pd.DataFrame) -> pd.DataFrame:
         df["consensus_vote_n_under"], errors="coerce"
     ).astype("Int64")
 
-    display["Bold Contrarian Total"] = pd.to_numeric(
+    display["Bold Contrarian Total Points"] = pd.to_numeric(
         df["consensus_bold_contrarian_pred_total"], errors="coerce"
     ).round(1)
-    display["Bold Contrarian Diff"] = pd.to_numeric(
+    display["Bold Contrarian Line Error"] = pd.to_numeric(
         df["consensus_bold_contrarian_line_diff"], errors="coerce"
     ).round(2)
     display["Bold Contrarian Pick"] = df["consensus_bold_contrarian_pick"]
@@ -1111,7 +1132,7 @@ def _available_models_for_row(
     *,
     total_points_only: bool | None = None,
 ) -> list[str]:
-    models = catalog.order
+    models = _ordered_model_types_by_prediction_target(catalog)
     if total_points_only is True:
         models = catalog.total_points_models
     elif total_points_only is False:
@@ -1216,7 +1237,7 @@ def _render_model_reasoning_tab(
         )
     with metric_cols[2]:
         st.metric(
-            "Diff vs Line",
+            "Line Error",
             f"{line_diff:+.1f}" if pd.notna(line_diff) else "N/A",
         )
     with metric_cols[3]:
@@ -1254,7 +1275,7 @@ def _render_model_reasoning_tab(
 def _render_game_reasoning_content(row: pd.Series, catalog: ModelCatalog) -> None:
     available_models = [
         model_type
-        for model_type in catalog.order
+        for model_type in _ordered_model_types_by_prediction_target(catalog)
         if _has_model_prediction(row, model_type, catalog)
     ]
     if not available_models:
@@ -1697,7 +1718,7 @@ def summarize_model_performance(
     )
     rows = []
 
-    for model_type in catalog.order:
+    for model_type in _ordered_model_types_by_prediction_target(catalog):
         prefix = catalog.prefixes[model_type]
         picks = df[f"pick_{prefix}"]
         valid_mask = resolved_mask & picks.isin(["OVER", "UNDER"])
@@ -1723,6 +1744,7 @@ def summarize_model_performance(
         rows.append(
             {
                 "Model": catalog.labels[model_type],
+                "Prediction Target": _prediction_target_label(catalog, model_type),
                 "Games": n_games,
                 "Accuracy (%)": None if pd.isna(accuracy) else round(accuracy * 100, 2),
                 "Accuracy Before 00:00 (%)": None
@@ -1732,7 +1754,7 @@ def summarize_model_performance(
                 ),
                 "Mean Error": None if pd.isna(mean_error) else round(mean_error, 2),
                 "MAE": None if pd.isna(mae) else round(mae, 2),
-                "Avg |Diff vs Line|": None
+                "Avg |Line Error|": None
                 if pd.isna(mean_abs_line_diff)
                 else round(mean_abs_line_diff, 2),
             }
@@ -1764,6 +1786,7 @@ def summarize_model_performance(
     rows.append(
         {
             "Model": "Consensus",
+            "Prediction Target": "Diff From Line",
             "Games": n_consensus_games,
             "Accuracy (%)": None
             if pd.isna(consensus_accuracy)
@@ -1775,7 +1798,7 @@ def summarize_model_performance(
             if pd.isna(consensus_mean_error)
             else round(consensus_mean_error, 2),
             "MAE": None if pd.isna(consensus_mae) else round(consensus_mae, 2),
-            "Avg |Diff vs Line|": None
+            "Avg |Line Error|": None
             if pd.isna(consensus_mean_abs_line_diff)
             else round(consensus_mean_abs_line_diff, 2),
         }
@@ -1821,6 +1844,7 @@ def summarize_model_performance(
     rows.append(
         {
             "Model": "Consensus (No TabPFN)",
+            "Prediction Target": "Diff From Line",
             "Games": n_consensus_no_tabpfn_games,
             "Accuracy (%)": None
             if pd.isna(consensus_no_tabpfn_accuracy)
@@ -1834,7 +1858,7 @@ def summarize_model_performance(
             "MAE": None
             if pd.isna(consensus_no_tabpfn_mae)
             else round(consensus_no_tabpfn_mae, 2),
-            "Avg |Diff vs Line|": None
+            "Avg |Line Error|": None
             if pd.isna(consensus_no_tabpfn_mean_abs_line_diff)
             else round(consensus_no_tabpfn_mean_abs_line_diff, 2),
         }
@@ -1851,6 +1875,7 @@ def summarize_model_performance(
     rows.append(
         {
             "Model": "Consensus (Majority Vote)",
+            "Prediction Target": "Pick Vote",
             "Games": n_vote_games,
             "Accuracy (%)": None
             if pd.isna(vote_accuracy)
@@ -1860,7 +1885,7 @@ def summarize_model_performance(
             else round(pre_midnight_accuracy_map["Consensus (Majority Vote)"] * 100, 2),
             "Mean Error": None,
             "MAE": None,
-            "Avg |Diff vs Line|": None,
+            "Avg |Line Error|": None,
         }
     )
 
@@ -1890,6 +1915,7 @@ def summarize_model_performance(
     rows.append(
         {
             "Model": "Bold Contrarian",
+            "Prediction Target": "Diff From Line",
             "Games": n_bc_games,
             "Accuracy (%)": None
             if pd.isna(bc_accuracy)
@@ -1899,7 +1925,7 @@ def summarize_model_performance(
             else round(pre_midnight_accuracy_map["Bold Contrarian"] * 100, 2),
             "Mean Error": None if pd.isna(bc_mean_error) else round(bc_mean_error, 2),
             "MAE": None if pd.isna(bc_mae) else round(bc_mae, 2),
-            "Avg |Diff vs Line|": None
+            "Avg |Line Error|": None
             if pd.isna(bc_mean_abs_line_diff)
             else round(bc_mean_abs_line_diff, 2),
         }
@@ -1915,7 +1941,10 @@ def compute_threshold_accuracy_table(
 ) -> pd.DataFrame:
     catalog = get_model_catalog(df)
     if model_thresholds is None:
-        model_thresholds = {m: (0.0, 0.5, 1.0, 1.5, 2.0) for m in catalog.order}
+        model_thresholds = {
+            m: (0.0, 0.5, 1.0, 1.5, 2.0)
+            for m in _ordered_model_types_by_prediction_target(catalog)
+        }
         model_thresholds["consensus"] = (0.0, 0.5, 1.0, 1.5, 2.0)
         model_thresholds["consensus_no_tabpfn"] = (0.0, 0.5, 1.0, 1.5, 2.0)
         model_thresholds["consensus_bold_contrarian"] = (0.0, 0.5, 1.0, 1.5, 2.0)
@@ -1929,22 +1958,26 @@ def compute_threshold_accuracy_table(
             correct_col = "consensus_correct"
             line_diff_col = "consensus_line_diff"
             model_label = "Consensus"
+            prediction_target = "Diff From Line"
         elif model_type == "consensus_no_tabpfn":
             pick_col = "consensus_no_tabpfn_pick"
             correct_col = "consensus_no_tabpfn_correct"
             line_diff_col = "consensus_no_tabpfn_line_diff"
             model_label = "Consensus (No TabPFN)"
+            prediction_target = "Diff From Line"
         elif model_type == "consensus_bold_contrarian":
             pick_col = "consensus_bold_contrarian_pick"
             correct_col = "consensus_bold_contrarian_correct"
             line_diff_col = "consensus_bold_contrarian_line_diff"
             model_label = "Bold Contrarian"
+            prediction_target = "Diff From Line"
         else:
             prefix = catalog.prefixes[model_type]
             pick_col = f"pick_{prefix}"
             correct_col = f"correct_{prefix}"
             line_diff_col = f"line_diff_{prefix}"
             model_label = catalog.labels[model_type]
+            prediction_target = _prediction_target_label(catalog, model_type)
 
         for threshold in thresholds:
             mask = (
@@ -1958,7 +1991,8 @@ def compute_threshold_accuracy_table(
             rows.append(
                 {
                     "Model": model_label,
-                    "Filter": f"|Diff vs Line| >= {threshold:g}",
+                    "Prediction Target": prediction_target,
+                    "Filter": f"|Line Error| >= {threshold:g}",
                     "Games": n_games,
                     "Accuracy (%)": None
                     if pd.isna(accuracy)
@@ -1982,7 +2016,7 @@ def compute_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
     for game_date, group in temp.groupby(temp["game_date_dt"].dt.date):
         resolved = group[group["actual_side"].isin(["OVER", "UNDER"])]
 
-        for model_type in catalog.order:
+        for model_type in _ordered_model_types_by_prediction_target(catalog):
             prefix = catalog.prefixes[model_type]
             valid = resolved[resolved[f"pick_{prefix}"].isin(["OVER", "UNDER"])]
             n_games = len(valid)
@@ -1992,6 +2026,7 @@ def compute_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
                     "game_date": pd.to_datetime(game_date),
                     "model_type": model_type,
                     "model_label": catalog.labels[model_type],
+                    "prediction_target": _prediction_target_label(catalog, model_type),
                     "n_games": n_games,
                     "accuracy": valid[f"correct_{prefix}"].mean()
                     if n_games
@@ -2009,6 +2044,7 @@ def compute_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
                 "game_date": pd.to_datetime(game_date),
                 "model_type": "consensus",
                 "model_label": "Consensus",
+                "prediction_target": "Diff From Line",
                 "n_games": n_consensus_games,
                 "accuracy": consensus_valid["consensus_correct"].mean()
                 if n_consensus_games
@@ -2030,6 +2066,7 @@ def compute_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
                 "game_date": pd.to_datetime(game_date),
                 "model_type": "consensus_no_tabpfn",
                 "model_label": "Consensus (No TabPFN)",
+                "prediction_target": "Diff From Line",
                 "n_games": n_consensus_no_tabpfn_games,
                 "accuracy": consensus_no_tabpfn_valid[
                     "consensus_no_tabpfn_correct"
@@ -2055,6 +2092,7 @@ def compute_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
                 "game_date": pd.to_datetime(game_date),
                 "model_type": "consensus_bold_contrarian",
                 "model_label": "Bold Contrarian",
+                "prediction_target": "Diff From Line",
                 "n_games": n_bc_games_daily,
                 "accuracy": bc_valid["consensus_bold_contrarian_correct"].mean()
                 if n_bc_games_daily
@@ -2065,7 +2103,16 @@ def compute_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
             }
         )
 
-    return pd.DataFrame(out_rows).sort_values(["game_date", "model_type"])
+    daily = pd.DataFrame(out_rows)
+    daily["_target_order"] = daily["prediction_target"].map(
+        {"Total Points": 0, "Diff From Line": 1}
+    )
+    daily["_target_order"] = daily["_target_order"].fillna(2)
+    return (
+        daily.sort_values(["game_date", "_target_order", "model_type"])
+        .drop(columns=["_target_order"])
+        .reset_index(drop=True)
+    )
 
 
 def prepare_prediction_history(
@@ -2270,7 +2317,7 @@ def compute_pre_midnight_accuracy_map(
 
     accuracy_map: dict[str, float] = {}
 
-    for model_type in catalog.order:
+    for model_type in _ordered_model_types_by_prediction_target(catalog):
         model_rows = pre_midnight[pre_midnight["_model_key"] == model_type]
         valid_rows = model_rows[
             model_rows["actual_side"].isin(["OVER", "UNDER"])
@@ -2370,6 +2417,7 @@ def compute_prediction_timing_metrics(
     )
     if history.empty:
         return pd.DataFrame()
+    catalog = get_model_catalog(history)
 
     history = history[history["time_to_match_minutes"].notna()].copy()
     history = history[history["time_to_match_minutes"] >= 0].copy()
@@ -2460,6 +2508,7 @@ def compute_prediction_timing_metrics(
             {
                 "model_type": model_key,
                 "Model": model_label,
+                "Prediction Target": _prediction_target_label(catalog, model_key),
                 "Time Bucket": str(time_bucket),
                 "Games": n_games,
                 "Avg Hours Before Tip": None
@@ -2469,7 +2518,7 @@ def compute_prediction_timing_metrics(
                 if pd.isna(accuracy)
                 else round(accuracy * 100, 2),
                 "MAE": None if pd.isna(mae) else round(mae, 2),
-                "Avg |Diff vs Line|": None
+                "Avg |Line Error|": None
                 if pd.isna(mean_abs_line_diff)
                 else round(mean_abs_line_diff, 2),
                 "Avg |Move vs Final|": None
@@ -2489,7 +2538,15 @@ def compute_prediction_timing_metrics(
     timing_df["Time Bucket"] = pd.Categorical(
         timing_df["Time Bucket"], categories=bucket_order, ordered=True
     )
-    return timing_df.sort_values(["Model", "Time Bucket"]).reset_index(drop=True)
+    timing_df["_target_order"] = timing_df["Prediction Target"].map(
+        {"Total Points": 0, "Diff From Line": 1}
+    )
+    timing_df["_target_order"] = timing_df["_target_order"].fillna(2)
+    return (
+        timing_df.sort_values(["_target_order", "Model", "Time Bucket"])
+        .drop(columns=["_target_order"])
+        .reset_index(drop=True)
+    )
 
 
 def render_prediction_timing_analysis(
@@ -2844,8 +2901,9 @@ def show_past_games_results(training_code_tag_filter: str | None) -> None:
 
     st.markdown("")
     catalog = get_model_catalog(games)
-    model_metric_cols = st.columns(max(len(catalog.order), 1))
-    for idx, model_type in enumerate(catalog.order):
+    ordered_models = _ordered_model_types_by_prediction_target(catalog)
+    model_metric_cols = st.columns(max(len(ordered_models), 1))
+    for idx, model_type in enumerate(ordered_models):
         prefix = catalog.prefixes[model_type]
         label = catalog.labels[model_type]
         model_mask = resolved_mask & games[f"pick_{prefix}"].isin(["OVER", "UNDER"])
@@ -2940,7 +2998,7 @@ def show_historical_performance(training_code_tag_filter: str | None) -> None:
     st.dataframe(summary_df, width="stretch", hide_index=True)
 
     st.markdown("")
-    st.markdown("### 🎯 Accuracy by |Diff vs O/U Line|")
+    st.markdown("### 🎯 Accuracy by |Line Error|")
     st.caption("All models: thresholds at >=0, >=0.5, >=1, >=1.5, >=2.")
     threshold_df = compute_threshold_accuracy_table(games)
     st.dataframe(
@@ -2960,10 +3018,21 @@ def show_historical_performance(training_code_tag_filter: str | None) -> None:
         st.warning("No daily metrics available.")
         return
 
+    catalog = get_model_catalog(games)
+    daily_model_order = [
+        catalog.labels[model_type]
+        for model_type in _ordered_model_types_by_prediction_target(catalog)
+    ]
+    daily_model_order.extend(
+        ["Consensus", "Consensus (No TabPFN)", "Bold Contrarian"]
+    )
     accuracy_pivot = (
         daily.pivot(index="game_date", columns="model_label", values="accuracy")
         .sort_index()
         .mul(100)
+    )
+    accuracy_pivot = accuracy_pivot.reindex(
+        columns=[label for label in daily_model_order if label in accuracy_pivot.columns]
     )
 
     st.dataframe(
@@ -3017,6 +3086,9 @@ def show_historical_performance(training_code_tag_filter: str | None) -> None:
     mae_pivot = daily.pivot(
         index="game_date", columns="model_label", values="mae"
     ).sort_index()
+    mae_pivot = mae_pivot.reindex(
+        columns=[label for label in daily_model_order if label in mae_pivot.columns]
+    )
 
     fig_mae, ax_mae = plt.subplots(figsize=(14, 6), dpi=140)
     ax_mae.set_facecolor("white")
