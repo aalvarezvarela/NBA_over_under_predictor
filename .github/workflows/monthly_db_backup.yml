@@ -1,10 +1,12 @@
-name: Monthly DB Backup to S3
+name: Twice-Monthly DB Backup to S3
 
 on:
     workflow_dispatch:
     schedule:
         # 1st of every month at 14:47 UTC
         - cron: "47 14 1 * *"
+        # 15th of every month at 14:47 UTC
+        - cron: "47 14 15 * *"
 
 concurrency:
     group: monthly-db-backup
