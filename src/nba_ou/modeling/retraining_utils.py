@@ -25,6 +25,7 @@ from nba_ou.utils.s3_models import (
     read_s3_object_bytes,
     upload_file_to_s3,
 )
+from pandas.api.types import is_bool_dtype, is_numeric_dtype
 from xgboost import XGBRegressor
 
 
@@ -104,6 +105,39 @@ def _stable_unique_columns(columns: list[str]) -> list[str]:
         seen.add(column)
         unique_columns.append(column)
     return unique_columns
+
+
+def _coerce_feature_column_for_xgboost(series: pd.Series) -> pd.Series:
+    """Convert object-like feature columns into XGBoost-compatible numeric values."""
+    if is_numeric_dtype(series) or is_bool_dtype(series):
+        return series
+
+    non_null = series.dropna()
+    if non_null.empty:
+        return pd.to_numeric(series, errors="coerce")
+
+    normalized = non_null.astype(str).str.strip().str.lower()
+    bool_mapping = {
+        "true": 1.0,
+        "false": 0.0,
+        "yes": 1.0,
+        "no": 0.0,
+        "y": 1.0,
+        "n": 0.0,
+        "t": 1.0,
+        "f": 0.0,
+        "0": 0.0,
+        "1": 1.0,
+    }
+    if normalized.isin(bool_mapping).all():
+        mapped = series.astype("string").str.strip().str.lower().map(bool_mapping)
+        return pd.to_numeric(mapped, errors="coerce")
+
+    numeric = pd.to_numeric(series, errors="coerce")
+    if int(numeric.notna().sum()) == int(series.notna().sum()):
+        return numeric
+
+    return series
 
 
 def _metadata_from_raw(raw_metadata: dict[str, Any]) -> ModelBundleMetadata:
@@ -478,6 +512,7 @@ def prepare_retraining_dataframe_from_raw(
     raw_df: pd.DataFrame,
     *,
     settings: RetrainingSettings,
+    passthrough_columns: list[str] | None = None,
 ) -> pd.DataFrame:
     """Prepare retraining rows from the raw dataframe using the selected required columns."""
     if settings.date_column not in raw_df.columns:
@@ -494,6 +529,8 @@ def prepare_retraining_dataframe_from_raw(
         required_columns.append("TOTAL_POINTS")
     if settings.required_line_col:
         required_columns.append(settings.required_line_col)
+    if passthrough_columns:
+        required_columns.extend(str(column) for column in passthrough_columns)
     required_columns.extend(settings.feature_names)
     required_columns = _stable_unique_columns(required_columns)
 
@@ -571,6 +608,25 @@ def prepare_retraining_dataframe_from_raw(
     if settings.max_na_per_row >= 0:
         na_per_row = prepared.isna().sum(axis=1)
         prepared = prepared.loc[na_per_row <= settings.max_na_per_row].copy()
+
+    for feature_name in settings.feature_names:
+        prepared[feature_name] = _coerce_feature_column_for_xgboost(
+            prepared[feature_name]
+        )
+
+    invalid_feature_columns = [
+        feature_name
+        for feature_name in settings.feature_names
+        if not (
+            is_numeric_dtype(prepared[feature_name])
+            or is_bool_dtype(prepared[feature_name])
+        )
+    ]
+    if invalid_feature_columns:
+        raise ValueError(
+            "Prepared retraining dataframe contains non-numeric feature columns "
+            f"that XGBoost cannot consume: {invalid_feature_columns}"
+        )
 
     prepared["_row_order"] = range(len(prepared))
     prepared = prepared.sort_values(
