@@ -11,10 +11,10 @@ INPUT_CSV_PATH = (
     Path(PROJECT_ROOT)
     / "data"
     / "train_data"
-    / "all_odds_training_data_until_20260405.csv"
+    / "all_odds_training_data_until_20260408.csv"
 )
 LAST_N_SEASONS = 3
-TOP_N_FEATURES_PER_MODEL = 50
+TOP_N_FEATURES_PER_MODEL = 75
 DROP_ROWS_MISSING_ANY_PREDICTION = True
 SHOW_PROGRESS = True
 

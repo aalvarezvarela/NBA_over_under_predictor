@@ -22,6 +22,8 @@ from xgboost import XGBClassifier
 try:
     from meta_learner_baselines import (
         BASE_AVG_ALL_6_ERR_COL,
+        BASE_MAJORITY_LINE_ERROR_ONLY_ERR_COL,
+        BASE_MAJORITY_TOTAL_ONLY_ERR_COL,
         BASE_MAJORITY_ALL_6_TIE_WITH_PRED_LINE_ERROR_FULL_DATASET_ERR_COL,
     )
     from meta_learner_feature_utils import (
@@ -31,6 +33,8 @@ try:
 except ModuleNotFoundError:
     from lab.meta_learner.meta_learner_baselines import (
         BASE_AVG_ALL_6_ERR_COL,
+        BASE_MAJORITY_LINE_ERROR_ONLY_ERR_COL,
+        BASE_MAJORITY_TOTAL_ONLY_ERR_COL,
         BASE_MAJORITY_ALL_6_TIE_WITH_PRED_LINE_ERROR_FULL_DATASET_ERR_COL,
     )
     from lab.meta_learner.meta_learner_feature_utils import (
@@ -219,6 +223,8 @@ def build_meta_classifier_dataset_from_feature_frame(
         non_feature_cols.update(
             [
                 BASE_AVG_ALL_6_ERR_COL,
+                BASE_MAJORITY_TOTAL_ONLY_ERR_COL,
+                BASE_MAJORITY_LINE_ERROR_ONLY_ERR_COL,
                 BASE_MAJORITY_ALL_6_TIE_WITH_PRED_LINE_ERROR_FULL_DATASET_ERR_COL,
             ]
         )
@@ -239,6 +245,8 @@ def build_meta_classifier_dataset_from_feature_frame(
         dropped_feature_cols=dropped_feature_cols,
         baseline_cols=[
             BASE_AVG_ALL_6_ERR_COL,
+            BASE_MAJORITY_TOTAL_ONLY_ERR_COL,
+            BASE_MAJORITY_LINE_ERROR_ONLY_ERR_COL,
             BASE_MAJORITY_ALL_6_TIE_WITH_PRED_LINE_ERROR_FULL_DATASET_ERR_COL,
         ],
     )
@@ -708,6 +716,19 @@ def _get_completed_trials(study: optuna.Study) -> list[optuna.trial.FrozenTrial]
     if not completed_trials:
         raise ValueError("No completed Optuna trials found.")
     return completed_trials
+
+
+def select_best_trial_min_log_loss_classifier(
+    study: optuna.Study,
+) -> optuna.trial.FrozenTrial:
+    completed_trials = _get_completed_trials(study)
+    return min(
+        completed_trials,
+        key=lambda trial: (
+            float(trial.user_attrs.get("mean_log_loss", trial.value)),
+            trial.number,
+        ),
+    )
 
 
 def _resolve_log_loss_cutoff(

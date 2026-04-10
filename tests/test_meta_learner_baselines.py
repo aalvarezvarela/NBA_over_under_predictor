@@ -2,10 +2,14 @@ import pandas as pd
 
 from lab.meta_learner.meta_learner_baselines import (
     BASE_AVG_ALL_6_ERR_COL,
+    BASE_MAJORITY_LINE_ERROR_ONLY_ERR_COL,
+    BASE_MAJORITY_TOTAL_ONLY_ERR_COL,
     BASE_MAJORITY_ALL_6_TIE_WITH_PRED_LINE_ERROR_FULL_DATASET_ERR_COL,
     add_default_meta_learner_baselines,
     build_base_avg_all_6_error,
     build_base_majority_all_6_tie_line_error_full_dataset_error,
+    build_base_majority_line_error_only_error,
+    build_base_majority_total_only_error,
     build_total_points_error_space_predictions,
 )
 
@@ -58,12 +62,32 @@ def test_build_majority_all_6_tie_line_error_full_dataset_error() -> None:
     assert baseline.tolist() == [-1.0, 1.0, -1.0]
 
 
+def test_build_base_majority_total_only_error() -> None:
+    df = _make_meta_df()
+
+    baseline = build_base_majority_total_only_error(df)
+
+    assert baseline.name == BASE_MAJORITY_TOTAL_ONLY_ERR_COL
+    assert baseline.tolist() == [1.0, 1.0, -1.0]
+
+
+def test_build_base_majority_line_error_only_error() -> None:
+    df = _make_meta_df()
+
+    baseline = build_base_majority_line_error_only_error(df)
+
+    assert baseline.name == BASE_MAJORITY_LINE_ERROR_ONLY_ERR_COL
+    assert baseline.tolist() == [-1.0, -1.0, 0.0]
+
+
 def test_add_default_meta_learner_baselines() -> None:
     df = _make_meta_df()
 
     enriched = add_default_meta_learner_baselines(df)
 
     assert BASE_AVG_ALL_6_ERR_COL in enriched.columns
+    assert BASE_MAJORITY_TOTAL_ONLY_ERR_COL in enriched.columns
+    assert BASE_MAJORITY_LINE_ERROR_ONLY_ERR_COL in enriched.columns
     assert (
         BASE_MAJORITY_ALL_6_TIE_WITH_PRED_LINE_ERROR_FULL_DATASET_ERR_COL
         in enriched.columns
@@ -73,6 +97,12 @@ def test_add_default_meta_learner_baselines() -> None:
         0.333333,
         -0.166667,
     ]
+    assert enriched[
+        BASE_MAJORITY_TOTAL_ONLY_ERR_COL
+    ].tolist() == [1.0, 1.0, -1.0]
+    assert enriched[
+        BASE_MAJORITY_LINE_ERROR_ONLY_ERR_COL
+    ].tolist() == [-1.0, -1.0, 0.0]
     assert enriched[
         BASE_MAJORITY_ALL_6_TIE_WITH_PRED_LINE_ERROR_FULL_DATASET_ERR_COL
     ].tolist() == [-1.0, 1.0, -1.0]
