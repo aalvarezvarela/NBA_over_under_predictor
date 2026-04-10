@@ -24,8 +24,9 @@ def _make_artifacts(
     *,
     sample_weight_lambda: float | None,
     sample_weight_lambda_bounds: tuple[float, float] | None,
+    feature_names: list[str] | None = None,
 ) -> ProductionArtifacts:
-    feature_names = [total_line_col(), "PACE_LAST_10"]
+    feature_names = feature_names or [total_line_col(), "PACE_LAST_10"]
     training_metrics = TrainingMetrics(
         best_params={
             "max_depth": 3,
@@ -217,3 +218,38 @@ def test_prepare_retraining_uses_existing_line_error_column() -> None:
     prepared = prepare_retraining_dataframe_from_raw(raw_df, settings=settings)
 
     assert list(prepared["LINE_ERROR"]) == [10.0, 20.0, 30.0]
+
+
+def test_prepare_retraining_coerces_object_features_to_numeric() -> None:
+    artifacts = _make_artifacts(
+        sample_weight_lambda=0.004,
+        sample_weight_lambda_bounds=(1e-4, 0.01),
+        feature_names=[total_line_col(), "IS_US_HOLIDAY_BEFORE"],
+    )
+    settings = build_retraining_settings_from_artifacts(
+        artifacts=artifacts,
+        date_column="GAME_DATE",
+        minimum_line_value=None,
+        xgb_static_params={
+            "objective": "reg:squarederror",
+            "eval_metric": "mae",
+            "tree_method": "hist",
+            "random_state": 16,
+        },
+    )
+
+    raw_df = pd.DataFrame(
+        {
+            "GAME_DATE": pd.to_datetime(["2025-01-01", "2025-01-03", "2025-01-05"]),
+            total_line_col(): [220.5, 221.0, 219.5],
+            "IS_US_HOLIDAY_BEFORE": ["0", "1", None],
+            "LINE_ERROR": [10.0, 20.0, 30.0],
+        }
+    )
+
+    prepared = prepare_retraining_dataframe_from_raw(raw_df, settings=settings)
+
+    assert pd.api.types.is_numeric_dtype(prepared["IS_US_HOLIDAY_BEFORE"])
+    assert prepared["IS_US_HOLIDAY_BEFORE"].iloc[0] == 0.0
+    assert prepared["IS_US_HOLIDAY_BEFORE"].iloc[1] == 1.0
+    assert pd.isna(prepared["IS_US_HOLIDAY_BEFORE"].iloc[2])

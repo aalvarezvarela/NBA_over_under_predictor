@@ -1,14 +1,15 @@
 import json
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
 from sklearn.base import BaseEstimator, RegressorMixin, clone
+from tqdm.auto import tqdm
 from xgboost import XGBRegressor
 
 # ---------------------------------------------------------------------------
@@ -234,6 +235,8 @@ def evaluate_day_by_day_walk_forward(
     date_col: str = "GAME_DATE",
     max_games: int | None = None,
     metric_name: str = "metric",
+    show_progress: bool = False,
+    progress_desc: str | None = None,
 ) -> DailyWalkForwardEvaluationResult:
     """
     Evaluate a model with a day-by-day walk-forward protocol.
@@ -263,6 +266,10 @@ def evaluate_day_by_day_walk_forward(
         training set.
     metric_name : str
         Column name used in the returned per-day summary.
+    show_progress : bool
+        If True, display a tqdm progress bar over prediction days.
+    progress_desc : str | None
+        Optional tqdm description when ``show_progress`` is enabled.
 
     Returns
     -------
@@ -314,7 +321,16 @@ def evaluate_day_by_day_walk_forward(
     daily_rows: list[dict[str, Any]] = []
     prediction_frames: list[pd.DataFrame] = []
 
-    for current_day in test_dates:
+    date_iterator = test_dates
+    if show_progress:
+        date_iterator = tqdm(
+            test_dates,
+            desc=progress_desc or "Walk-forward days",
+            unit="day",
+            leave=False,
+        )
+
+    for current_day in date_iterator:
         test_mask = (combined["_walk_source"] == "test") & (
             combined["_walk_date"] == current_day
         )
