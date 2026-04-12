@@ -72,9 +72,7 @@ def get_schedule_games(date_to_predict: str) -> pd.DataFrame:
     games = nba_api_schedule_games(date_to_predict)
     if games.empty:
         print("No games found for the specified date.")
-        raise ValueError(
-            "No games found for the specified date."
-        )  # Return empty DataFrame if no games found
+        return games
 
     # Extract just the date portion (first 10 chars: YYYY-MM-DD) and combine with time
     games["GAME_TIME"] = pd.to_datetime(
