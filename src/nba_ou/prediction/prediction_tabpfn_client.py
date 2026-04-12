@@ -311,10 +311,22 @@ def _run_tabpfn_client_prediction(
         "PRED_TOTAL_POINTS",
     }
 
+    # Raw DIFF_FROM_* and IS_OVER_* columns contain the current game's outcome
+    # (TOTAL_POINTS - line) and must be excluded. Rolling averages of these
+    # columns (which contain "_BEFORE" in the name) are legitimate features
+    # computed from past games and should be kept.
+    _leakage_patterns = ("DIFF_FROM_", "IS_OVER_")
+
+    def _is_leaky_column(col: str) -> bool:
+        if not any(pat in col for pat in _leakage_patterns):
+            return False
+        return "_BEFORE" not in col
+
     feature_cols = [
         c
         for c in df_train.columns
         if c not in drop_feature_cols
+        and not _is_leaky_column(c)
         and (
             pd.api.types.is_numeric_dtype(df_train[c])
             or pd.api.types.is_bool_dtype(df_train[c])
@@ -334,7 +346,9 @@ def _run_tabpfn_client_prediction(
     if prediction_target == PREDICTION_TARGET_TOTAL_POINTS:
         y_train = pd.to_numeric(df_train["TOTAL_POINTS"], errors="coerce")
     elif prediction_target == PREDICTION_TARGET_LINE_ERROR:
-        y_train = pd.to_numeric(df_train["TOTAL_POINTS"], errors="coerce") - train_pick_line
+        y_train = (
+            pd.to_numeric(df_train["TOTAL_POINTS"], errors="coerce") - train_pick_line
+        )
     else:
         raise ValueError(
             "prediction_target must be one of: "
@@ -372,7 +386,9 @@ def _run_tabpfn_client_prediction(
         for row_mask in na_mask.to_numpy()
     ]
 
-    pred_pick_line_col = _resolve_column_name(df_predictable, total_points_pick_line_col)
+    pred_pick_line_col = _resolve_column_name(
+        df_predictable, total_points_pick_line_col
+    )
     if pred_pick_line_col is None:
         raise ValueError(
             f"Column '{total_points_pick_line_col}' is required to score TabPFN predictions."

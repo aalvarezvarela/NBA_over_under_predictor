@@ -1885,6 +1885,34 @@ def render_prediction_cards(df: pd.DataFrame, include_actual: bool = False) -> N
                 _render_game_card(row, include_actual, catalog)
 
 
+def _per_class_accuracy(
+    picks: pd.Series, actual_sides: pd.Series
+) -> tuple[float, float]:
+    """Return (over_precision, under_precision) — of predicted OVERs how many are
+    actually OVER, and of predicted UNDERs how many are actually UNDER."""
+    valid = picks.isin(["OVER", "UNDER"]) & actual_sides.isin(["OVER", "UNDER"])
+    p = picks[valid]
+    a = actual_sides[valid]
+    pred_over = p == "OVER"
+    pred_under = p == "UNDER"
+    over_prec = (
+        float((a[pred_over] == "OVER").mean()) if pred_over.sum() > 0 else np.nan
+    )
+    under_prec = (
+        float((a[pred_under] == "UNDER").mean()) if pred_under.sum() > 0 else np.nan
+    )
+    return over_prec, under_prec
+
+
+def _pm_stat(pm_map: dict[str, dict[str, float]], label: str, key: str) -> float | None:
+    """Safely extract a percent-rounded stat from the nested pre-midnight map."""
+    entry = pm_map.get(label)
+    if entry is None:
+        return None
+    val = entry.get(key, np.nan)
+    return None if pd.isna(val) else round(val * 100, 2)
+
+
 def summarize_model_performance(
     df: pd.DataFrame,
     *,
@@ -1911,6 +1939,11 @@ def summarize_model_performance(
         accuracy = (
             float(df.loc[valid_mask, f"correct_{prefix}"].mean()) if n_games else np.nan
         )
+        over_acc, under_acc = (
+            _per_class_accuracy(picks[valid_mask], df.loc[valid_mask, "actual_side"])
+            if n_games
+            else (np.nan, np.nan)
+        )
         mean_error = (
             float(df.loc[valid_mask, f"error_{prefix}"].mean()) if n_games else np.nan
         )
@@ -1925,18 +1958,25 @@ def summarize_model_performance(
             else np.nan
         )
 
+        model_label = catalog.labels[model_type]
         rows.append(
             {
-                "Model": catalog.labels[model_type],
+                "Model": model_label,
                 "Prediction Target": _prediction_target_label(catalog, model_type),
                 "Games": n_games,
                 "Accuracy (%)": None if pd.isna(accuracy) else round(accuracy * 100, 2),
-                "Accuracy Before 00:00 (%)": None
-                if pd.isna(
-                    pre_midnight_accuracy_map.get(catalog.labels[model_type], np.nan)
-                )
-                else round(
-                    pre_midnight_accuracy_map[catalog.labels[model_type]] * 100, 2
+                "Over Acc (%)": None if pd.isna(over_acc) else round(over_acc * 100, 2),
+                "Under Acc (%)": None
+                if pd.isna(under_acc)
+                else round(under_acc * 100, 2),
+                "Acc Before 00:00 (%)": _pm_stat(
+                    pre_midnight_accuracy_map, model_label, "accuracy"
+                ),
+                "Over Acc Before 00:00 (%)": _pm_stat(
+                    pre_midnight_accuracy_map, model_label, "over_accuracy"
+                ),
+                "Under Acc Before 00:00 (%)": _pm_stat(
+                    pre_midnight_accuracy_map, model_label, "under_accuracy"
                 ),
                 "Mean Error": None if pd.isna(mean_error) else round(mean_error, 2),
                 "MAE": None if pd.isna(mae) else round(mae, 2),
@@ -1953,6 +1993,14 @@ def summarize_model_performance(
         float(df.loc[consensus_valid_mask, "consensus_correct"].mean())
         if n_consensus_games
         else np.nan
+    )
+    consensus_over_acc, consensus_under_acc = (
+        _per_class_accuracy(
+            consensus_picks[consensus_valid_mask],
+            df.loc[consensus_valid_mask, "actual_side"],
+        )
+        if n_consensus_games
+        else (np.nan, np.nan)
     )
     consensus_mean_error = (
         float(df.loc[consensus_valid_mask, "consensus_error"].mean())
@@ -1977,9 +2025,21 @@ def summarize_model_performance(
             "Accuracy (%)": None
             if pd.isna(consensus_accuracy)
             else round(consensus_accuracy * 100, 2),
-            "Accuracy Before 00:00 (%)": None
-            if pd.isna(pre_midnight_accuracy_map.get("Consensus", np.nan))
-            else round(pre_midnight_accuracy_map["Consensus"] * 100, 2),
+            "Over Acc (%)": None
+            if pd.isna(consensus_over_acc)
+            else round(consensus_over_acc * 100, 2),
+            "Under Acc (%)": None
+            if pd.isna(consensus_under_acc)
+            else round(consensus_under_acc * 100, 2),
+            "Acc Before 00:00 (%)": _pm_stat(
+                pre_midnight_accuracy_map, "Consensus", "accuracy"
+            ),
+            "Over Acc Before 00:00 (%)": _pm_stat(
+                pre_midnight_accuracy_map, "Consensus", "over_accuracy"
+            ),
+            "Under Acc Before 00:00 (%)": _pm_stat(
+                pre_midnight_accuracy_map, "Consensus", "under_accuracy"
+            ),
             "Mean Error": None
             if pd.isna(consensus_mean_error)
             else round(consensus_mean_error, 2),
@@ -2001,6 +2061,14 @@ def summarize_model_performance(
         )
         if n_consensus_no_tabpfn_games
         else np.nan
+    )
+    cntpfn_over_acc, cntpfn_under_acc = (
+        _per_class_accuracy(
+            consensus_no_tabpfn_picks[consensus_no_tabpfn_valid_mask],
+            df.loc[consensus_no_tabpfn_valid_mask, "actual_side"],
+        )
+        if n_consensus_no_tabpfn_games
+        else (np.nan, np.nan)
     )
     consensus_no_tabpfn_mean_error = (
         float(
@@ -2035,9 +2103,21 @@ def summarize_model_performance(
             "Accuracy (%)": None
             if pd.isna(consensus_no_tabpfn_accuracy)
             else round(consensus_no_tabpfn_accuracy * 100, 2),
-            "Accuracy Before 00:00 (%)": None
-            if pd.isna(pre_midnight_accuracy_map.get("Consensus (No TabPFN)", np.nan))
-            else round(pre_midnight_accuracy_map["Consensus (No TabPFN)"] * 100, 2),
+            "Over Acc (%)": None
+            if pd.isna(cntpfn_over_acc)
+            else round(cntpfn_over_acc * 100, 2),
+            "Under Acc (%)": None
+            if pd.isna(cntpfn_under_acc)
+            else round(cntpfn_under_acc * 100, 2),
+            "Acc Before 00:00 (%)": _pm_stat(
+                pre_midnight_accuracy_map, "Consensus (No TabPFN)", "accuracy"
+            ),
+            "Over Acc Before 00:00 (%)": _pm_stat(
+                pre_midnight_accuracy_map, "Consensus (No TabPFN)", "over_accuracy"
+            ),
+            "Under Acc Before 00:00 (%)": _pm_stat(
+                pre_midnight_accuracy_map, "Consensus (No TabPFN)", "under_accuracy"
+            ),
             "Mean Error": None
             if pd.isna(consensus_no_tabpfn_mean_error)
             else round(consensus_no_tabpfn_mean_error, 2),
@@ -2058,6 +2138,14 @@ def summarize_model_performance(
         if n_vote_games
         else np.nan
     )
+    vote_over_acc, vote_under_acc = (
+        _per_class_accuracy(
+            vote_picks[vote_valid_mask],
+            df.loc[vote_valid_mask, "actual_side"],
+        )
+        if n_vote_games
+        else (np.nan, np.nan)
+    )
     rows.append(
         {
             "Model": "Consensus (Majority Vote)",
@@ -2066,11 +2154,21 @@ def summarize_model_performance(
             "Accuracy (%)": None
             if pd.isna(vote_accuracy)
             else round(vote_accuracy * 100, 2),
-            "Accuracy Before 00:00 (%)": None
-            if pd.isna(
-                pre_midnight_accuracy_map.get("Consensus (Majority Vote)", np.nan)
-            )
-            else round(pre_midnight_accuracy_map["Consensus (Majority Vote)"] * 100, 2),
+            "Over Acc (%)": None
+            if pd.isna(vote_over_acc)
+            else round(vote_over_acc * 100, 2),
+            "Under Acc (%)": None
+            if pd.isna(vote_under_acc)
+            else round(vote_under_acc * 100, 2),
+            "Acc Before 00:00 (%)": _pm_stat(
+                pre_midnight_accuracy_map, "Consensus (Majority Vote)", "accuracy"
+            ),
+            "Over Acc Before 00:00 (%)": _pm_stat(
+                pre_midnight_accuracy_map, "Consensus (Majority Vote)", "over_accuracy"
+            ),
+            "Under Acc Before 00:00 (%)": _pm_stat(
+                pre_midnight_accuracy_map, "Consensus (Majority Vote)", "under_accuracy"
+            ),
             "Mean Error": None,
             "MAE": None,
             "Avg |Line Error|": None,
@@ -2085,6 +2183,14 @@ def summarize_model_performance(
         if n_vote_tp_games
         else np.nan
     )
+    vote_tp_over_acc, vote_tp_under_acc = (
+        _per_class_accuracy(
+            vote_tp_picks[vote_tp_valid_mask],
+            df.loc[vote_tp_valid_mask, "actual_side"],
+        )
+        if n_vote_tp_games
+        else (np.nan, np.nan)
+    )
     rows.append(
         {
             "Model": "Consensus (Vote TP)",
@@ -2093,9 +2199,21 @@ def summarize_model_performance(
             "Accuracy (%)": None
             if pd.isna(vote_tp_accuracy)
             else round(vote_tp_accuracy * 100, 2),
-            "Accuracy Before 00:00 (%)": None
-            if pd.isna(pre_midnight_accuracy_map.get("Consensus (Vote TP)", np.nan))
-            else round(pre_midnight_accuracy_map["Consensus (Vote TP)"] * 100, 2),
+            "Over Acc (%)": None
+            if pd.isna(vote_tp_over_acc)
+            else round(vote_tp_over_acc * 100, 2),
+            "Under Acc (%)": None
+            if pd.isna(vote_tp_under_acc)
+            else round(vote_tp_under_acc * 100, 2),
+            "Acc Before 00:00 (%)": _pm_stat(
+                pre_midnight_accuracy_map, "Consensus (Vote TP)", "accuracy"
+            ),
+            "Over Acc Before 00:00 (%)": _pm_stat(
+                pre_midnight_accuracy_map, "Consensus (Vote TP)", "over_accuracy"
+            ),
+            "Under Acc Before 00:00 (%)": _pm_stat(
+                pre_midnight_accuracy_map, "Consensus (Vote TP)", "under_accuracy"
+            ),
             "Mean Error": None,
             "MAE": None,
             "Avg |Line Error|": None,
@@ -2110,6 +2228,14 @@ def summarize_model_performance(
         if n_vote_le_games
         else np.nan
     )
+    vote_le_over_acc, vote_le_under_acc = (
+        _per_class_accuracy(
+            vote_le_picks[vote_le_valid_mask],
+            df.loc[vote_le_valid_mask, "actual_side"],
+        )
+        if n_vote_le_games
+        else (np.nan, np.nan)
+    )
     rows.append(
         {
             "Model": "Consensus (Vote LE)",
@@ -2118,9 +2244,21 @@ def summarize_model_performance(
             "Accuracy (%)": None
             if pd.isna(vote_le_accuracy)
             else round(vote_le_accuracy * 100, 2),
-            "Accuracy Before 00:00 (%)": None
-            if pd.isna(pre_midnight_accuracy_map.get("Consensus (Vote LE)", np.nan))
-            else round(pre_midnight_accuracy_map["Consensus (Vote LE)"] * 100, 2),
+            "Over Acc (%)": None
+            if pd.isna(vote_le_over_acc)
+            else round(vote_le_over_acc * 100, 2),
+            "Under Acc (%)": None
+            if pd.isna(vote_le_under_acc)
+            else round(vote_le_under_acc * 100, 2),
+            "Acc Before 00:00 (%)": _pm_stat(
+                pre_midnight_accuracy_map, "Consensus (Vote LE)", "accuracy"
+            ),
+            "Over Acc Before 00:00 (%)": _pm_stat(
+                pre_midnight_accuracy_map, "Consensus (Vote LE)", "over_accuracy"
+            ),
+            "Under Acc Before 00:00 (%)": _pm_stat(
+                pre_midnight_accuracy_map, "Consensus (Vote LE)", "under_accuracy"
+            ),
             "Mean Error": None,
             "MAE": None,
             "Avg |Line Error|": None,
@@ -2134,6 +2272,14 @@ def summarize_model_performance(
         float(df.loc[bc_valid_mask, "consensus_bold_contrarian_correct"].mean())
         if n_bc_games
         else np.nan
+    )
+    bc_over_acc, bc_under_acc = (
+        _per_class_accuracy(
+            bc_picks[bc_valid_mask],
+            df.loc[bc_valid_mask, "actual_side"],
+        )
+        if n_bc_games
+        else (np.nan, np.nan)
     )
     bc_mean_error = (
         float(df.loc[bc_valid_mask, "consensus_bold_contrarian_error"].mean())
@@ -2158,9 +2304,21 @@ def summarize_model_performance(
             "Accuracy (%)": None
             if pd.isna(bc_accuracy)
             else round(bc_accuracy * 100, 2),
-            "Accuracy Before 00:00 (%)": None
-            if pd.isna(pre_midnight_accuracy_map.get("Bold Contrarian", np.nan))
-            else round(pre_midnight_accuracy_map["Bold Contrarian"] * 100, 2),
+            "Over Acc (%)": None
+            if pd.isna(bc_over_acc)
+            else round(bc_over_acc * 100, 2),
+            "Under Acc (%)": None
+            if pd.isna(bc_under_acc)
+            else round(bc_under_acc * 100, 2),
+            "Acc Before 00:00 (%)": _pm_stat(
+                pre_midnight_accuracy_map, "Bold Contrarian", "accuracy"
+            ),
+            "Over Acc Before 00:00 (%)": _pm_stat(
+                pre_midnight_accuracy_map, "Bold Contrarian", "over_accuracy"
+            ),
+            "Under Acc Before 00:00 (%)": _pm_stat(
+                pre_midnight_accuracy_map, "Bold Contrarian", "under_accuracy"
+            ),
             "Mean Error": None if pd.isna(bc_mean_error) else round(bc_mean_error, 2),
             "MAE": None if pd.isna(bc_mae) else round(bc_mae, 2),
             "Avg |Line Error|": None
@@ -2170,6 +2328,328 @@ def summarize_model_performance(
     )
 
     return pd.DataFrame(rows)
+
+
+def _get_pick_and_actual_for_model(
+    df: pd.DataFrame, model_key: str, catalog: ModelCatalog
+) -> tuple[pd.Series, pd.Series]:
+    """Return (picks, actual_sides) filtered to resolved games with valid picks."""
+    resolved_mask = df["actual_side"].isin(["OVER", "UNDER"])
+
+    if model_key == "consensus":
+        picks = df["consensus_pick"]
+    elif model_key == "consensus_no_tabpfn":
+        picks = df["consensus_no_tabpfn_pick"]
+    elif model_key == "consensus_vote":
+        picks = df["consensus_vote_pick"]
+    elif model_key == "consensus_vote_tp":
+        picks = df["consensus_vote_tp_pick"]
+    elif model_key == "consensus_vote_le":
+        picks = df["consensus_vote_le_pick"]
+    elif model_key == "consensus_bold_contrarian":
+        picks = df["consensus_bold_contrarian_pick"]
+    else:
+        prefix = catalog.prefixes[model_key]
+        picks = df[f"pick_{prefix}"]
+
+    valid = resolved_mask & picks.isin(["OVER", "UNDER"])
+    return picks[valid], df.loc[valid, "actual_side"]
+
+
+def build_confusion_matrix(
+    df: pd.DataFrame, model_key: str, catalog: ModelCatalog
+) -> pd.DataFrame:
+    """Build a 2x2 confusion matrix DataFrame (rows=Predicted, cols=Actual)."""
+    picks, actuals = _get_pick_and_actual_for_model(df, model_key, catalog)
+    labels = ["OVER", "UNDER"]
+    matrix = pd.DataFrame(0, index=labels, columns=labels)
+    for pred, actual in zip(picks, actuals, strict=False):
+        if pred in labels and actual in labels:
+            matrix.loc[pred, actual] += 1
+    matrix.index.name = "Predicted"
+    matrix.columns.name = "Actual"
+    return matrix
+
+
+def _build_pre_midnight_confusion_matrix(
+    raw: pd.DataFrame,
+    model_key: str,
+    catalog: ModelCatalog,
+    training_code_tag_filter: str | None = "1.0",
+) -> pd.DataFrame:
+    """Build a confusion matrix using only the latest prediction before midnight."""
+    history = prepare_prediction_history(
+        raw, training_code_tag_filter=training_code_tag_filter
+    )
+    labels = ["OVER", "UNDER"]
+    matrix = pd.DataFrame(0, index=labels, columns=labels)
+    if history.empty:
+        return matrix
+
+    game_time_madrid = pd.to_datetime(
+        history["game_time_utc"], errors="coerce", utc=True
+    ).dt.tz_convert("Europe/Madrid")
+    game_midnight_madrid = game_time_madrid.dt.normalize()
+
+    if "game_date" in history.columns:
+        game_date_local = pd.to_datetime(history["game_date"], errors="coerce")
+        game_date_local = game_date_local.dt.tz_localize("Europe/Madrid")
+        game_midnight_madrid = game_midnight_madrid.where(
+            game_midnight_madrid.notna(), game_date_local
+        )
+
+    prediction_dt_madrid = pd.to_datetime(
+        history["prediction_datetime_utc"], errors="coerce", utc=True
+    ).dt.tz_convert("Europe/Madrid")
+    pre_midnight = history[prediction_dt_madrid < game_midnight_madrid].copy()
+    if pre_midnight.empty:
+        return matrix
+
+    pre_midnight = (
+        pre_midnight.sort_values("prediction_datetime_utc")
+        .groupby(["game_id", "_model_key"], as_index=False)
+        .tail(1)
+        .reset_index(drop=True)
+    )
+
+    # Determine if this is a consensus-level key or a per-model key
+    consensus_keys = {
+        "consensus",
+        "consensus_no_tabpfn",
+        "consensus_vote",
+        "consensus_vote_tp",
+        "consensus_vote_le",
+        "consensus_bold_contrarian",
+    }
+
+    if model_key not in consensus_keys:
+        # Per-model: filter to rows matching model_key
+        model_rows = pre_midnight[pre_midnight["_model_key"] == model_key]
+        valid = model_rows[
+            model_rows["actual_side"].isin(labels)
+            & model_rows["pred_pick"].isin(labels)
+        ]
+        for _, row in valid.iterrows():
+            matrix.loc[row["pred_pick"], row["actual_side"]] += 1
+    else:
+        # Consensus: aggregate per game
+        for _, group in pre_midnight.groupby("game_id"):
+            actual_side = group["actual_side"].iloc[-1]
+            if actual_side not in set(labels):
+                continue
+
+            diffs = pd.to_numeric(group["pred_line_error"], errors="coerce")
+            valid_diffs = diffs.dropna()
+
+            if model_key == "consensus" and not valid_diffs.empty:
+                pick = pick_from_diff(pd.Series([valid_diffs.mean()])).iloc[0]
+            elif model_key == "consensus_no_tabpfn":
+                ntpfn = group[
+                    ~group["_model_key"]
+                    .astype(str)
+                    .str.contains("tabpfn", case=False, na=False)
+                ]
+                ntpfn_diffs = pd.to_numeric(
+                    ntpfn["pred_line_error"], errors="coerce"
+                ).dropna()
+                if ntpfn_diffs.empty:
+                    continue
+                pick = pick_from_diff(pd.Series([ntpfn_diffs.mean()])).iloc[0]
+            elif model_key == "consensus_bold_contrarian":
+                if valid_diffs.empty:
+                    continue
+                bold_idx = valid_diffs.abs().idxmax()
+                pick = group.loc[bold_idx, "pred_pick"]
+            elif model_key in (
+                "consensus_vote",
+                "consensus_vote_tp",
+                "consensus_vote_le",
+            ):
+                if model_key == "consensus_vote_tp":
+                    sub = group[group["_model_key"].isin(catalog.total_points_models)]
+                elif model_key == "consensus_vote_le":
+                    sub = group[group["_model_key"].isin(catalog.diff_from_line_models)]
+                else:
+                    sub = group
+                vote_picks = sub["pred_pick"][sub["pred_pick"].isin(labels)]
+                if vote_picks.empty:
+                    continue
+                n_over = int((vote_picks == "OVER").sum())
+                n_under = int((vote_picks == "UNDER").sum())
+                if n_over > n_under:
+                    pick = "OVER"
+                elif n_under > n_over:
+                    pick = "UNDER"
+                else:
+                    continue
+            else:
+                continue
+
+            if pick in labels:
+                matrix.loc[pick, actual_side] += 1
+
+    return matrix
+
+
+def _cm_metrics(cm: pd.DataFrame) -> dict[str, float]:
+    """Derive standard metrics from a 2x2 confusion matrix."""
+    total = cm.values.sum()
+    tp_over = int(cm.loc["OVER", "OVER"])
+    fp_over = int(cm.loc["OVER", "UNDER"])
+    tp_under = int(cm.loc["UNDER", "UNDER"])
+    fp_under = int(cm.loc["UNDER", "OVER"])
+    return {
+        "total": total,
+        "accuracy": (tp_over + tp_under) / total if total > 0 else np.nan,
+        "precision_over": tp_over / (tp_over + fp_over)
+        if (tp_over + fp_over) > 0
+        else np.nan,
+        "precision_under": tp_under / (tp_under + fp_under)
+        if (tp_under + fp_under) > 0
+        else np.nan,
+        "recall_over": tp_over / (tp_over + fp_under)
+        if (tp_over + fp_under) > 0
+        else np.nan,
+        "recall_under": tp_under / (tp_under + fp_over)
+        if (tp_under + fp_over) > 0
+        else np.nan,
+    }
+
+
+def _render_cm_html(cm: pd.DataFrame, title: str) -> str:
+    """Return an HTML string for a labelled 2x2 confusion matrix."""
+    total = cm.values.sum()
+    if total == 0:
+        cm_pct = cm.copy().astype(float)
+    else:
+        cm_pct = (cm / total * 100).round(1)
+
+    cells = ""
+    for pred_label in ["OVER", "UNDER"]:
+        row_cells = ""
+        for actual_label in ["OVER", "UNDER"]:
+            count = int(cm.loc[pred_label, actual_label])
+            pct = cm_pct.loc[pred_label, actual_label]
+            is_correct = pred_label == actual_label
+            bg = "rgba(34,197,94,0.18)" if is_correct else "rgba(239,68,68,0.12)"
+            row_cells += (
+                f'<td style="text-align:center;padding:14px 18px;'
+                f'background:{bg};border:1px solid rgba(155,107,255,0.15);">'
+                f'<div style="font-size:1.35rem;font-weight:800;">{count}</div>'
+                f'<div style="font-size:0.8rem;color:#5f4f73;">{pct}%</div>'
+                f"</td>"
+            )
+        cells += (
+            f"<tr>"
+            f'<td style="font-weight:700;padding:10px 12px;'
+            f'background:rgba(255,255,255,0.95);border:1px solid rgba(155,107,255,0.15);">'
+            f"{pred_label}</td>"
+            f"{row_cells}</tr>"
+        )
+
+    return (
+        f'<div style="font-size:0.85rem;font-weight:700;color:#5f4f73;margin-bottom:4px;">'
+        f"{title} — {int(total)} games</div>"
+        f'<table style="border-collapse:collapse;border-radius:12px;overflow:hidden;'
+        f'border:1px solid rgba(155,107,255,0.22);margin:4px 0;">'
+        f"<thead>"
+        f"<tr>"
+        f'<th colspan="3" style="padding:6px 10px;background:rgba(111,66,255,0.08);'
+        f"border:1px solid rgba(155,107,255,0.15);font-size:0.8rem;"
+        f'font-weight:700;text-align:center;color:#5f4f73;">← Actual Outcome →</th>'
+        f"</tr>"
+        f"<tr>"
+        f'<th style="padding:8px 10px;background:rgba(111,66,255,0.12);'
+        f"border:1px solid rgba(155,107,255,0.15);font-size:0.7rem;"
+        f'color:#5f4f73;text-align:center;">↓ Predicted</th>'
+        f'<th style="padding:8px 14px;background:rgba(111,66,255,0.12);'
+        f'border:1px solid rgba(155,107,255,0.15);font-weight:700;">OVER</th>'
+        f'<th style="padding:8px 14px;background:rgba(111,66,255,0.12);'
+        f'border:1px solid rgba(155,107,255,0.15);font-weight:700;">UNDER</th>'
+        f"</tr>"
+        f"</thead>"
+        f"<tbody>{cells}</tbody></table>"
+    )
+
+
+def render_confusion_matrix_selector(
+    df: pd.DataFrame,
+    *,
+    raw: pd.DataFrame | None = None,
+    training_code_tag_filter: str | None = "1.0",
+    key_prefix: str = "cm",
+) -> None:
+    """Render an expander with a model selector and its confusion matrix."""
+    catalog = get_model_catalog(df)
+    model_order = _ordered_model_types_by_prediction_target(catalog)
+
+    options: list[tuple[str, str]] = []
+    for m in model_order:
+        options.append((m, catalog.labels[m]))
+    options.append(("consensus", "Consensus"))
+    options.append(("consensus_no_tabpfn", "Consensus (No TabPFN)"))
+    options.append(("consensus_vote", "Consensus (Majority Vote)"))
+    options.append(("consensus_vote_tp", "Consensus (Vote TP)"))
+    options.append(("consensus_vote_le", "Consensus (Vote LE)"))
+    options.append(("consensus_bold_contrarian", "Bold Contrarian"))
+
+    with st.expander("🔢 Confusion Matrix", expanded=False):
+        selected_label = st.selectbox(
+            "Select model",
+            [label for _, label in options],
+            key=f"{key_prefix}_model_select",
+        )
+        selected_key = next(key for key, label in options if label == selected_label)
+
+        # Build pre-midnight confusion matrix (shown on left)
+        if raw is not None:
+            cm_pm = _build_pre_midnight_confusion_matrix(
+                raw, selected_key, catalog, training_code_tag_filter
+            )
+        else:
+            cm_pm = pd.DataFrame(0, index=["OVER", "UNDER"], columns=["OVER", "UNDER"])
+
+        # Build latest-prediction confusion matrix (for metrics on right)
+        cm_latest = build_confusion_matrix(df, selected_key, catalog)
+
+        pm_total = cm_pm.values.sum()
+        latest_total = cm_latest.values.sum()
+
+        if pm_total == 0 and latest_total == 0:
+            st.info("No resolved games with valid predictions for this model.")
+            return
+
+        def _fmt(v: float) -> str:
+            return f"{v * 100:.1f}%" if pd.notna(v) else "—"
+
+        col_matrix, col_stats = st.columns([1.2, 1])
+
+        with col_matrix:
+            st.markdown(
+                _render_cm_html(cm_pm, f"📅 Before 00:00 — {selected_label}"),
+                unsafe_allow_html=True,
+            )
+
+        with col_stats:
+            pm_m = _cm_metrics(cm_pm)
+            latest_m = _cm_metrics(cm_latest)
+
+            st.markdown(f"**{selected_label}**")
+            header = "| Metric | Before 00:00 | Latest |\n| :--- | :---: | :---: |\n"
+            rows_md = (
+                f"| **Games** | {int(pm_m['total'])} | {int(latest_m['total'])} |\n"
+                f"| **Overall Accuracy** | {_fmt(pm_m['accuracy'])} | {_fmt(latest_m['accuracy'])} |\n"
+                f"| **Over Precision** | {_fmt(pm_m['precision_over'])} | {_fmt(latest_m['precision_over'])} |\n"
+                f"| **Under Precision** | {_fmt(pm_m['precision_under'])} | {_fmt(latest_m['precision_under'])} |\n"
+                f"| **Over Recall** | {_fmt(pm_m['recall_over'])} | {_fmt(latest_m['recall_over'])} |\n"
+                f"| **Under Recall** | {_fmt(pm_m['recall_under'])} | {_fmt(latest_m['recall_under'])} |\n"
+            )
+            st.markdown(header + rows_md)
+            st.caption(
+                "Precision = of games *predicted* as X, how many were actually X. "
+                "Recall = of games *actually* X, how many were predicted X. "
+                "Over/Under Acc in the summary table = Precision."
+            )
 
 
 def compute_threshold_accuracy_table(
@@ -2709,7 +3189,7 @@ def compute_pre_midnight_accuracy_with_threshold(
 
 def compute_pre_midnight_accuracy_map(
     raw: pd.DataFrame, training_code_tag_filter: str | None = "1.0"
-) -> dict[str, float]:
+) -> dict[str, dict[str, float]]:
     history = prepare_prediction_history(
         raw, training_code_tag_filter=training_code_tag_filter
     )
@@ -2746,7 +3226,7 @@ def compute_pre_midnight_accuracy_map(
     if not isinstance(catalog, ModelCatalog):
         catalog = extract_model_catalog(raw)
 
-    accuracy_map: dict[str, float] = {}
+    accuracy_map: dict[str, dict[str, float]] = {}
 
     for model_type in _ordered_model_types_by_prediction_target(catalog):
         model_rows = pre_midnight[pre_midnight["_model_key"] == model_type]
@@ -2754,11 +3234,23 @@ def compute_pre_midnight_accuracy_map(
             model_rows["actual_side"].isin(["OVER", "UNDER"])
             & model_rows["pred_pick"].isin(["OVER", "UNDER"])
         ]
-        accuracy_map[catalog.labels[model_type]] = (
-            float((valid_rows["pred_pick"] == valid_rows["actual_side"]).mean())
-            if len(valid_rows)
-            else np.nan
-        )
+        if len(valid_rows):
+            over_acc, under_acc = _per_class_accuracy(
+                valid_rows["pred_pick"], valid_rows["actual_side"]
+            )
+            accuracy_map[catalog.labels[model_type]] = {
+                "accuracy": float(
+                    (valid_rows["pred_pick"] == valid_rows["actual_side"]).mean()
+                ),
+                "over_accuracy": over_acc,
+                "under_accuracy": under_acc,
+            }
+        else:
+            accuracy_map[catalog.labels[model_type]] = {
+                "accuracy": np.nan,
+                "over_accuracy": np.nan,
+                "under_accuracy": np.nan,
+            }
 
     consensus_rows = []
     for _, group in pre_midnight.groupby("game_id"):
@@ -2870,11 +3362,23 @@ def compute_pre_midnight_accuracy_map(
         consensus_df = pd.DataFrame(consensus_rows)
         for label, group in consensus_df.groupby("label"):
             valid_rows = group[group["pick"].isin(["OVER", "UNDER"])]
-            accuracy_map[label] = (
-                float((valid_rows["pick"] == valid_rows["actual_side"]).mean())
-                if len(valid_rows)
-                else np.nan
-            )
+            if len(valid_rows):
+                over_acc, under_acc = _per_class_accuracy(
+                    valid_rows["pick"], valid_rows["actual_side"]
+                )
+                accuracy_map[label] = {
+                    "accuracy": float(
+                        (valid_rows["pick"] == valid_rows["actual_side"]).mean()
+                    ),
+                    "over_accuracy": over_acc,
+                    "under_accuracy": under_acc,
+                }
+            else:
+                accuracy_map[label] = {
+                    "accuracy": np.nan,
+                    "over_accuracy": np.nan,
+                    "under_accuracy": np.nan,
+                }
 
     return accuracy_map
 
@@ -3514,6 +4018,13 @@ def show_historical_performance(training_code_tag_filter: str | None) -> None:
         training_code_tag_filter=training_code_tag_filter,
     )
     st.dataframe(summary_df, width="stretch", hide_index=True)
+
+    render_confusion_matrix_selector(
+        games,
+        raw=raw,
+        training_code_tag_filter=training_code_tag_filter,
+        key_prefix="hist_cm",
+    )
 
     st.markdown("")
     st.markdown("### 🎯 Accuracy by |Line Error|")
