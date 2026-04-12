@@ -148,10 +148,7 @@ def advanced_column_cleaning(
     cols_to_exclude = sorted(cols_matching_patterns - keep_columns_set)
     if cols_to_exclude:
         if verbose >= 2:
-            print(
-                "\nDropping columns matching exclude patterns: "
-                f"{cols_to_exclude}"
-            )
+            print(f"\nDropping columns matching exclude patterns: {cols_to_exclude}")
         df = df.drop(columns=cols_to_exclude)
     elif cols_matching_patterns and verbose >= 2:
         print(
@@ -229,10 +226,7 @@ def advanced_column_cleaning(
         print(f"\n4. Checking for high-NaN columns (>{nan_threshold}%)...")
     high_nan_cols = []
     for col in df.columns:
-        if (
-            col in columns_to_drop
-            or col in keep_columns_set
-        ):
+        if col in columns_to_drop or col in keep_columns_set:
             continue
         nan_pct = df[col].isna().sum() / len(df) * 100
         if nan_pct > nan_threshold:
@@ -263,10 +257,7 @@ def advanced_column_cleaning(
     else:
         constant_cols = []
         for col in df.columns:
-            if (
-                col in columns_to_drop
-                or col in keep_columns_set
-            ):
+            if col in columns_to_drop or col in keep_columns_set:
                 continue
             if df[col].nunique(dropna=False) == 1:
                 constant_cols.append(col)
@@ -292,8 +283,7 @@ def advanced_column_cleaning(
             print("   Skipping duplicate column removal (keep_all_cols=True)")
     else:
         numeric_cols = [
-            col
-            for col in df.select_dtypes(include=[np.number]).columns.tolist()
+            col for col in df.select_dtypes(include=[np.number]).columns.tolist()
         ]
         duplicate_pairs = []
 
@@ -326,8 +316,7 @@ def advanced_column_cleaning(
             print("   Skipping highly correlated column removal (keep_all_cols=True)")
     else:
         numeric_cols = [
-            col
-            for col in df.select_dtypes(include=[np.number]).columns.tolist()
+            col for col in df.select_dtypes(include=[np.number]).columns.tolist()
         ]
         if len(numeric_cols) > 1:
             corr_matrix = df[numeric_cols].corr().abs()
@@ -368,8 +357,7 @@ def advanced_column_cleaning(
             print("   Skipping absolute value match removal (keep_all_cols=True)")
     else:
         numeric_cols = [
-            col
-            for col in df.select_dtypes(include=[np.number]).columns.tolist()
+            col for col in df.select_dtypes(include=[np.number]).columns.tolist()
         ]
         abs_match_pairs = []
 
@@ -586,5 +574,11 @@ def clean_dataframe_for_training(
         print("CLEANING COMPLETE")
         print(f"Final shape: {df_cleaned.shape}")
         print("=" * 80)
+
+    # Convert all pd.NA to np.nan for compatibility with models and numeric operations
+    # This ensures consistent NA representation across all data types
+    numeric_cols = df_cleaned.select_dtypes(include=[np.number]).columns
+    for col in numeric_cols:
+        df_cleaned[col] = df_cleaned[col].fillna(np.nan)
 
     return df_cleaned

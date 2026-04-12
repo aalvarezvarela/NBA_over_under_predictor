@@ -89,6 +89,11 @@ def _prepare_required_features_for_prediction(
     # Count NaN values per row in required features
     required_df = df[resolved_feature_columns].copy()
     required_df.columns = normalized_required
+
+    # Convert pd.NA to np.nan for compatibility with model predictions
+    # This ensures all NA types are unified before being passed to the model
+    required_df = required_df.fillna(np.nan)
+
     na_mask = required_df.isna()
     col_names = na_mask.columns.to_numpy()
 
@@ -260,8 +265,7 @@ def _nested_metadata_value(metadata: dict, *path: str) -> object | None:
 def _is_line_error_signature(signature: str) -> bool:
     """Return True for canonical and legacy aliases of line-error models."""
     return any(
-        token in signature
-        for token in ("line_error", "error_line", "diff_from_line")
+        token in signature for token in ("line_error", "error_line", "diff_from_line")
     )
 
 
@@ -271,7 +275,9 @@ def _infer_prediction_target_from_metadata(metadata: dict) -> PredictionTarget:
         _nested_metadata_value(metadata, "model", "prediction_source") or ""
     )
     model_name = str(_nested_metadata_value(metadata, "model", "name") or "")
-    signature = " ".join([model_type.lower(), prediction_source.lower(), model_name.lower()])
+    signature = " ".join(
+        [model_type.lower(), prediction_source.lower(), model_name.lower()]
+    )
 
     if "total_points" in signature:
         return PREDICTION_TARGET_TOTAL_POINTS
