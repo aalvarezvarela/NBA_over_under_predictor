@@ -294,6 +294,7 @@ async def scrape_yahoo_day(
     *,
     skip_navigation: bool = False,
     target_date: date | None = None,
+    scraped_urls: set[str] | None = None,
 ) -> tuple[pd.DataFrame | None, str]:
     season_year = season_year_for_date(d)
     schedule_url = build_schedule_url(season_year, d)
@@ -324,6 +325,11 @@ async def scrape_yahoo_day(
 
     for matchup_url in matchup_urls:
         odds_url = with_section_odds(matchup_url)
+
+        # Skip if we've already scraped this URL
+        if scraped_urls is not None and odds_url in scraped_urls:
+            print(f"Skipping already scraped URL: {odds_url}")
+            continue
 
         # Validate URL date matches target date if specified
         if target_date is not None:
@@ -407,6 +413,9 @@ async def scrape_yahoo_day(
         cols_to_check = [c for c in df_game.columns if c not in allowed_null_cols]
         if df_game[cols_to_check].isnull().sum().sum() == 0:
             daily_dfs.append(df_game)
+            # Mark this URL as scraped
+            if scraped_urls is not None:
+                scraped_urls.add(odds_url)
 
     if not daily_dfs:
         return None, actual_url
@@ -426,6 +435,7 @@ async def scrape_yahoo_days(
         )
 
     all_rows: list[pd.DataFrame] = []
+    scraped_urls: set[str] = set()  # Track URLs across all days to avoid duplicates
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=headless)
@@ -448,7 +458,11 @@ async def scrape_yahoo_days(
                 target_d = target_dates[i] if target_dates is not None else None
 
                 df_day, actual_url = await scrape_yahoo_day(
-                    page, d, skip_navigation=skip_nav, target_date=target_d
+                    page,
+                    d,
+                    skip_navigation=skip_nav,
+                    target_date=target_d,
+                    scraped_urls=scraped_urls,
                 )
                 if df_day is not None and not df_day.empty:
                     all_rows.append(df_day)

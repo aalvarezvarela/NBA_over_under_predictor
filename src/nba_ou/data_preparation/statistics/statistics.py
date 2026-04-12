@@ -121,7 +121,9 @@ def compute_rolling_stats(
                 ref_roll = pd.to_numeric(out[ref_col], errors="coerce")
             else:
                 ref_roll = series.groupby(group_keys_any).transform(
-                    lambda s: s.shift(1).rolling(relative_to_window, min_periods=1).mean()
+                    lambda s: (
+                        s.shift(1).rolling(relative_to_window, min_periods=1).mean()
+                    )
                 )
 
             out[relative_col] = ref_roll - out[last_n_avg_col]
@@ -199,6 +201,9 @@ def compute_season_std(df, param="PTS"):
 
     # Sort by TEAM_ID and GAME_DATE ascending to ensure proper order.
     df = df.sort_values(["TEAM_ID", "GAME_DATE"], ascending=True).copy()
+
+    # Ensure the column is float so pd.NA values become NaN (avoids TypeError in .std())
+    df[param] = df[param].fillna(np.nan).astype(float)
 
     # Compute expanding standard deviation after shifting by 1 to exclude the current game.
     df[season_std_col] = df.groupby(["TEAM_ID", "SEASON_YEAR", "HOME"])[
@@ -307,9 +312,11 @@ def compute_rolling_weighted_stats(
 
     # Any (team-level)
     out[last_n_wma_col] = series.groupby(group_keys_any).transform(
-        lambda s: s.shift(1)
-        .rolling(window, min_periods=1)
-        .apply(weighted_moving_average, raw=False)
+        lambda s: (
+            s.shift(1)
+            .rolling(window, min_periods=1)
+            .apply(weighted_moving_average, raw=False)
+        )
     )
 
     # Optional relative column
@@ -319,9 +326,11 @@ def compute_rolling_weighted_stats(
             # (last same-home/away WMA) - (last strict WMA)
             last_n_split_col = f"{param}_LAST_HOME_AWAY_{window}_WMA_BEFORE"
             split_wma = series.groupby(group_keys_homeaway).transform(
-                lambda s: s.shift(1)
-                .rolling(window, min_periods=1)
-                .apply(weighted_moving_average, raw=False)
+                lambda s: (
+                    s.shift(1)
+                    .rolling(window, min_periods=1)
+                    .apply(weighted_moving_average, raw=False)
+                )
             )
             out[last_n_split_col] = split_wma - out[last_n_wma_col]
         elif relative_to_window is not None:
@@ -336,9 +345,11 @@ def compute_rolling_weighted_stats(
                 ref_wma = pd.to_numeric(out[ref_col], errors="coerce")
             else:
                 ref_wma = series.groupby(group_keys_any).transform(
-                    lambda s: s.shift(1)
-                    .rolling(relative_to_window, min_periods=1)
-                    .apply(weighted_moving_average, raw=False)
+                    lambda s: (
+                        s.shift(1)
+                        .rolling(relative_to_window, min_periods=1)
+                        .apply(weighted_moving_average, raw=False)
+                    )
                 )
             out[relative_col] = ref_wma - out[last_n_wma_col]
 

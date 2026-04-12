@@ -25,7 +25,7 @@ jobs:
     run:
         runs-on: self-hosted
         env:
-            PYTHONWARNINGS: "ignore::UserWarning,ignore::DeprecationWarning,ignore::FutureWarning,ignore::PerformanceWarning"
+            PYTHONWARNINGS: "ignore::UserWarning,ignore::DeprecationWarning,ignore::FutureWarning"
             TQDM_DISABLE: "1"
 
             # Critical for resolving imports that live under src/
