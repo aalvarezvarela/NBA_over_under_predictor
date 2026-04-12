@@ -312,13 +312,13 @@ def _run_tabpfn_client_prediction(
     }
 
     # Raw DIFF_FROM_* and IS_OVER_* columns contain the current game's outcome
-    # (TOTAL_POINTS - line) and must be excluded. Rolling averages of these
-    # columns (which contain "_BEFORE" in the name) are legitimate features
-    # computed from past games and should be kept.
-    _leakage_patterns = ("DIFF_FROM_", "IS_OVER_")
+    # (TOTAL_POINTS - line) and must be excluded. Columns that merely reference
+    # line-error history later in the name, such as injury availability effects,
+    # are derived from past games and should be kept.
+    _leakage_patterns = ("DIFF_FROM", "IS_OVER")
 
     def _is_leaky_column(col: str) -> bool:
-        if not any(pat in col for pat in _leakage_patterns):
+        if not col.startswith(_leakage_patterns):
             return False
         return "_BEFORE" not in col
 
