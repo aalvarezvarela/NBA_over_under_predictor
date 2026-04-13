@@ -1,4 +1,5 @@
 import html
+import inspect
 import os
 import re
 import sys
@@ -35,6 +36,7 @@ from nba_ou.postgre_db.predictions.update.update_total_points_predictions import
 from nba_ou.utils.streamlit_utils import get_team_logo_url
 
 import streamlit as st
+import streamlit.components.v1 as components
 from scripts.predict_nba_games import predict_nba_games as run_nba_predictor
 
 warnings.filterwarnings("ignore", message="pandas only supports SQLAlchemy connectable")
@@ -76,6 +78,30 @@ class ModelCatalog:
 FIVE_THREE_TP_KEY = "consensus_tp_5y3y"
 FIVE_THREE_TP_LABEL = "5Y Base + 3Y Over"
 _NUMBER_WORDS = {"3": "three", "5": "five"}
+
+
+def _render_iframe_html(markup: str, *, height: int) -> None:
+    iframe = getattr(st, "iframe", None)
+    if callable(iframe):
+        try:
+            params = inspect.signature(iframe).parameters
+        except (TypeError, ValueError):
+            params = {}
+
+        if "html" in params:
+            iframe(html=markup, height=height)
+            return
+        if "srcdoc" in params:
+            iframe(srcdoc=markup, height=height)
+            return
+        if "src_doc" in params:
+            iframe(src_doc=markup, height=height)
+            return
+
+        iframe(markup, height=height)
+        return
+
+    components.html(markup, height=height)
 
 
 def _empty_text_series(index: pd.Index) -> pd.Series:
@@ -1646,13 +1672,31 @@ def _render_game_card(
     line_val = pd.to_numeric(row.get("total_over_under_line"), errors="coerce")
     line_text = f"{line_val:.1f}" if pd.notna(line_val) else "N/A"
 
-    consensus_diff = pd.to_numeric(row.get("consensus_line_diff"), errors="coerce")
-    consensus_pick = row.get("consensus_pick")
-    consensus_total = pd.to_numeric(row.get("consensus_pred_total"), errors="coerce")
+    if include_actual:
+        primary_diff = pd.to_numeric(
+            row.get("consensus_tp_5y3y_line_diff"), errors="coerce"
+        )
+        primary_pick = row.get("consensus_tp_5y3y_pick")
+        primary_total = pd.to_numeric(
+            row.get("consensus_tp_5y3y_pred_total"), errors="coerce"
+        )
+    else:
+        primary_diff = pd.to_numeric(row.get("consensus_line_diff"), errors="coerce")
+        primary_pick = row.get("consensus_pick")
+        primary_total = pd.to_numeric(
+            row.get("consensus_pred_total"), errors="coerce"
+        )
+
+    if not (pd.notna(primary_pick) and primary_pick in ("OVER", "UNDER", "PUSH")):
+        primary_diff = pd.to_numeric(row.get("consensus_line_diff"), errors="coerce")
+        primary_pick = row.get("consensus_pick")
+        primary_total = pd.to_numeric(
+            row.get("consensus_pred_total"), errors="coerce"
+        )
 
     # Bet recommendation styling
-    if pd.notna(consensus_pick) and consensus_pick in ("OVER", "UNDER"):
-        is_over = consensus_pick == "OVER"
+    if pd.notna(primary_pick) and primary_pick in ("OVER", "UNDER"):
+        is_over = primary_pick == "OVER"
         bet_label = "BET OVER ▲" if is_over else "BET UNDER ▼"
         accent = "#ff9a2f" if is_over else "#9b6bff"
         banner_bg = (
@@ -1665,8 +1709,8 @@ def _render_game_card(
         accent = "#c8b6d8"
         banner_bg = "linear-gradient(90deg, rgba(80,62,102,0.35), rgba(34,18,53,0.22))"
 
-    margin_text = f"{consensus_diff:+.1f}" if pd.notna(consensus_diff) else "—"
-    cons_total_text = f"{consensus_total:.1f}" if pd.notna(consensus_total) else "—"
+    margin_text = f"{primary_diff:+.1f}" if pd.notna(primary_diff) else "—"
+    cons_total_text = f"{primary_total:.1f}" if pd.notna(primary_total) else "—"
 
     # Model agreement / majority vote
     n_over_votes = int(row.get("consensus_vote_n_over") or 0)
@@ -1832,7 +1876,9 @@ def _render_game_card(
     if include_actual:
         actual_total = pd.to_numeric(row.get("total_scored_points"), errors="coerce")
         actual_side = row.get("actual_side")
-        cons_correct = row.get("consensus_correct")
+        primary_correct = row.get("consensus_tp_5y3y_correct")
+        if pd.isna(primary_correct):
+            primary_correct = row.get("consensus_correct")
 
         if pd.notna(actual_side) and actual_side in ("OVER", "UNDER", "PUSH"):
             a_clr = (
@@ -1856,9 +1902,9 @@ def _render_game_card(
         else:
             icon = (
                 "✅"
-                if pd.notna(cons_correct) and cons_correct
+                if pd.notna(primary_correct) and primary_correct
                 else "❌"
-                if pd.notna(cons_correct)
+                if pd.notna(primary_correct)
                 else "⏳"
             )
         actual_banner = (
@@ -2001,7 +2047,7 @@ def _render_game_card(
         </div>
       </div>
       {actual_banner}
-      <!-- Consensus Banner -->
+      <!-- Prediction Banner -->
       <div style="background:{banner_bg};padding:12px 16px;
                   border-bottom:1px solid rgba(155,107,255,0.18);">
         <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -2061,7 +2107,7 @@ def _render_game_card(
     card_height = header_height + actual_banner_height + consensus_height
     card_height += model_section_height + 40
     card_height = max(card_height, 520 if include_actual else 440)
-    st.components.v1.html(card_html, height=card_height)
+    _render_iframe_html(card_html, height=card_height)
 
 
 def render_prediction_cards(df: pd.DataFrame, include_actual: bool = False) -> None:
