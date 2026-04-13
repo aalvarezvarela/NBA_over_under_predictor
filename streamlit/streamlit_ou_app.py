@@ -73,6 +73,11 @@ class ModelCatalog:
         return [model.key for model in self.definitions if not model.is_total_points]
 
 
+FIVE_THREE_TP_KEY = "consensus_tp_5y3y"
+FIVE_THREE_TP_LABEL = "5Y Base + 3Y Over"
+_NUMBER_WORDS = {"3": "three", "5": "five"}
+
+
 def _empty_text_series(index: pd.Index) -> pd.Series:
     return pd.Series(pd.NA, index=index, dtype="string")
 
@@ -545,6 +550,10 @@ def render_header(catalog: ModelCatalog | None = None) -> None:
             catalog.labels[model_type]
             for model_type in _ordered_model_types_by_prediction_target(catalog)
         ]
+        if _find_last_n_total_points_model(
+            catalog, 5
+        ) is not None and _find_last_n_total_points_model(catalog, 3) is not None:
+            model_labels.append(FIVE_THREE_TP_LABEL)
 
     chip_html = "".join(
         f'<span class="chip">📊 {html.escape(model_label)}</span>'
@@ -606,6 +615,100 @@ def pick_from_diff(diff: pd.Series) -> pd.Series:
     out.loc[diff < 0] = "UNDER"
     out.loc[diff == 0] = "PUSH"
     return out
+
+
+def _numeric_scalar(value: object) -> float:
+    return pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+
+
+def _contains_token_sequence(tokens: list[str], sequence: tuple[str, ...]) -> bool:
+    seq_len = len(sequence)
+    if seq_len == 0 or seq_len > len(tokens):
+        return False
+
+    return any(
+        tuple(tokens[idx : idx + seq_len]) == sequence
+        for idx in range(len(tokens) - seq_len + 1)
+    )
+
+
+def _find_last_n_total_points_model(
+    catalog: ModelCatalog, n_seasons: int
+) -> PredictionModelDefinition | None:
+    candidates: list[tuple[int, int, PredictionModelDefinition]] = []
+    season_text = str(n_seasons)
+    season_word = _NUMBER_WORDS.get(season_text)
+    season_tokens = [season_text]
+    if season_word:
+        season_tokens.append(season_word)
+
+    for position, model in enumerate(catalog.definitions):
+        if not model.is_total_points:
+            continue
+
+        text = f"{model.key} {model.label} {model.column_prefix}".lower()
+        slug = re.sub(r"[^a-z0-9]+", "_", text).strip("_")
+        tokens = [token for token in slug.split("_") if token]
+        score = 0
+
+        for season_token in season_tokens:
+            for period_token in ("seasons", "season", "years", "year"):
+                if _contains_token_sequence(
+                    tokens,
+                    ("total", "points", "last", season_token, period_token),
+                ):
+                    score = max(score, 40)
+                if _contains_token_sequence(
+                    tokens, ("last", season_token, period_token)
+                ):
+                    score = max(score, 30)
+                if _contains_token_sequence(tokens, (season_token, period_token)):
+                    score = max(score, 20)
+
+        if score:
+            candidates.append((score, -position, model))
+
+    if not candidates:
+        return None
+
+    return max(candidates, key=lambda item: (item[0], item[1]))[2]
+
+
+def _latest_model_row(group: pd.DataFrame, model_key: str) -> pd.Series | None:
+    rows = group[group["_model_key"] == model_key]
+    if rows.empty:
+        return None
+    if "prediction_datetime_utc" in rows.columns:
+        rows = rows.sort_values("prediction_datetime_utc")
+    return rows.iloc[-1]
+
+
+def _five_three_tp_pick_line_diff_from_group(
+    group: pd.DataFrame, catalog: ModelCatalog
+) -> tuple[object, float]:
+    five_model = _find_last_n_total_points_model(catalog, 5)
+    if five_model is None:
+        return np.nan, np.nan
+
+    five_row = _latest_model_row(group, five_model.key)
+    three_model = _find_last_n_total_points_model(catalog, 3)
+    three_row = (
+        _latest_model_row(group, three_model.key)
+        if three_model is not None
+        else None
+    )
+
+    if three_row is not None and normalize_pick(three_row.get("pred_pick")) == "OVER":
+        return "OVER", _numeric_scalar(three_row.get("pred_line_error"))
+
+    if five_row is None:
+        return np.nan, np.nan
+
+    five_pick = normalize_pick(five_row.get("pred_pick"))
+    if five_pick in {"OVER", "UNDER", "PUSH"}:
+        return five_pick, _numeric_scalar(five_row.get("pred_line_error"))
+
+    return np.nan, np.nan
 
 
 def build_game_level_predictions(
@@ -954,7 +1057,7 @@ def build_game_level_predictions(
         base["consensus_bold_contrarian_line_diff"] = pd.Series(
             [
                 base.loc[idx, col] if pd.notna(col) else np.nan
-                for idx, col in zip(base.index, _bc_col_idx)
+                for idx, col in zip(base.index, _bc_col_idx, strict=False)
             ],
             index=base.index,
         )
@@ -971,6 +1074,51 @@ def build_game_level_predictions(
     )
     base["consensus_bold_contrarian_correct"] = (
         base["consensus_bold_contrarian_pick"] == base["actual_side"]
+    ) & base["actual_side"].isin(["OVER", "UNDER"])
+
+    # 5Y/3Y total-points rule: follow 5Y unless the 3Y model says OVER.
+    five_year_model = _find_last_n_total_points_model(catalog, 5)
+    three_year_model = _find_last_n_total_points_model(catalog, 3)
+    if five_year_model is not None:
+        five_prefix = model_prefixes[five_year_model.key]
+        five_pick_col = f"pick_{five_prefix}"
+        five_diff_col = f"line_diff_{five_prefix}"
+
+        three_pick = pd.Series(np.nan, index=base.index, dtype="object")
+        three_line_diff = pd.Series(np.nan, index=base.index, dtype="float64")
+        if three_year_model is not None:
+            three_prefix = model_prefixes[three_year_model.key]
+            three_pick = base.get(
+                f"pick_{three_prefix}",
+                pd.Series(np.nan, index=base.index, dtype="object"),
+            )
+            three_line_diff = pd.to_numeric(
+                base.get(
+                    f"line_diff_{three_prefix}",
+                    pd.Series(np.nan, index=base.index, dtype="float64"),
+                ),
+                errors="coerce",
+            )
+
+        use_three_over = three_pick.eq("OVER")
+        base["consensus_tp_5y3y_pick"] = base[five_pick_col].where(
+            ~use_three_over, "OVER"
+        )
+        base["consensus_tp_5y3y_line_diff"] = pd.to_numeric(
+            base[five_diff_col], errors="coerce"
+        ).where(~use_three_over, three_line_diff)
+    else:
+        base["consensus_tp_5y3y_pick"] = np.nan
+        base["consensus_tp_5y3y_line_diff"] = np.nan
+
+    base["consensus_tp_5y3y_pred_total"] = line + base[
+        "consensus_tp_5y3y_line_diff"
+    ]
+    base["consensus_tp_5y3y_error"] = (
+        base["consensus_tp_5y3y_pred_total"] - actual_total
+    )
+    base["consensus_tp_5y3y_correct"] = (
+        base["consensus_tp_5y3y_pick"] == base["actual_side"]
     ) & base["actual_side"].isin(["OVER", "UNDER"])
 
     base["all_models_available"] = base[model_total_cols].notna().all(axis=1)
@@ -1052,6 +1200,14 @@ def build_upcoming_display(
     display["Under Votes (TP)"] = pd.to_numeric(
         df["consensus_vote_tp_n_under"], errors="coerce"
     ).astype("Int64")
+
+    display[f"{FIVE_THREE_TP_LABEL} Total Points"] = pd.to_numeric(
+        df["consensus_tp_5y3y_pred_total"], errors="coerce"
+    ).round(1)
+    display[f"{FIVE_THREE_TP_LABEL} Line Error"] = pd.to_numeric(
+        df["consensus_tp_5y3y_line_diff"], errors="coerce"
+    ).round(2)
+    display[f"{FIVE_THREE_TP_LABEL} Pick"] = df["consensus_tp_5y3y_pick"]
 
     display["Vote Pick (LE)"] = df["consensus_vote_le_pick"]
     display["Over Votes (LE)"] = pd.to_numeric(
@@ -1153,6 +1309,17 @@ def build_past_display(df: pd.DataFrame) -> pd.DataFrame:
     display["Under Votes (TP)"] = pd.to_numeric(
         df["consensus_vote_tp_n_under"], errors="coerce"
     ).astype("Int64")
+
+    display[f"{FIVE_THREE_TP_LABEL} Total Points"] = pd.to_numeric(
+        df["consensus_tp_5y3y_pred_total"], errors="coerce"
+    ).round(1)
+    display[f"{FIVE_THREE_TP_LABEL} Line Error"] = pd.to_numeric(
+        df["consensus_tp_5y3y_line_diff"], errors="coerce"
+    ).round(2)
+    display[f"{FIVE_THREE_TP_LABEL} Pick"] = df["consensus_tp_5y3y_pick"]
+    display[f"{FIVE_THREE_TP_LABEL} Correct"] = df[
+        "consensus_tp_5y3y_correct"
+    ].map({True: "✅", False: "❌"})
 
     display["Vote Pick (LE)"] = df["consensus_vote_le_pick"]
     display["Vote Correct (LE)"] = df["consensus_vote_le_correct"].map(
@@ -1525,6 +1692,18 @@ def _render_game_card(
     else:
         vote_text_tp = ""
 
+    hybrid_pick = row.get("consensus_tp_5y3y_pick")
+    hybrid_line_diff = pd.to_numeric(
+        row.get("consensus_tp_5y3y_line_diff"), errors="coerce"
+    )
+    if pd.notna(hybrid_pick) and hybrid_pick in ("OVER", "UNDER", "PUSH"):
+        hybrid_diff_text = (
+            f" ({hybrid_line_diff:+.1f})" if pd.notna(hybrid_line_diff) else ""
+        )
+        hybrid_text = f"{FIVE_THREE_TP_LABEL}: {hybrid_pick}{hybrid_diff_text}"
+    else:
+        hybrid_text = ""
+
     # Line Error models vote
     n_over_votes_le = int(row.get("consensus_vote_le_n_over") or 0)
     n_under_votes_le = int(row.get("consensus_vote_le_n_under") or 0)
@@ -1750,6 +1929,23 @@ def _render_game_card(
             f"{vote_tp_icon}</div>"
         )
 
+        hybrid_correct = row.get("consensus_tp_5y3y_correct")
+        if is_push:
+            hybrid_icon = "⚖️"
+        else:
+            hybrid_icon = (
+                "✅"
+                if pd.notna(hybrid_correct) and hybrid_correct
+                else "❌"
+                if pd.notna(hybrid_correct)
+                else "—"
+            )
+        result_cells += (
+            f'<div style="flex:1;text-align:center;font-size:0.9rem;font-weight:600;">'
+            f'<div style="font-size:0.75rem;color:#c8b6d8;text-transform:uppercase;">5Y/3Y</div>'
+            f"{hybrid_icon}</div>"
+        )
+
         # Add LE vote results
         vote_le_correct = row.get("consensus_vote_le_correct")
         if is_push:
@@ -1814,6 +2010,7 @@ def _render_game_card(
                         letter-spacing:-0.01em;">{bet_label}</div>
             <div style="font-size:0.8rem;color:#5f4f73;margin-top:1px;">{vote_text}</div>
             {f'<div style="font-size:0.75rem;color:#7c6b91;margin-top:2px;">📊 {vote_text_tp}</div>' if vote_text_tp else ""}
+            {f'<div style="font-size:0.75rem;color:#7c6b91;margin-top:2px;">📊 {hybrid_text}</div>' if hybrid_text else ""}
             {f'<div style="font-size:0.75rem;color:#7c6b91;margin-top:2px;">📏 {vote_text_le}</div>' if vote_text_le else ""}
           </div>
           <div style="text-align:center;">
@@ -1860,7 +2057,7 @@ def _render_game_card(
         model_section_height += 80
     actual_banner_height = 48 if include_actual else 0
     header_height = 170
-    consensus_height = 112
+    consensus_height = 128
     card_height = header_height + actual_banner_height + consensus_height
     card_height += model_section_height + 40
     card_height = max(card_height, 520 if include_actual else 440)
@@ -2220,6 +2417,70 @@ def summarize_model_performance(
         }
     )
 
+    hybrid_picks = df["consensus_tp_5y3y_pick"]
+    hybrid_valid_mask = resolved_mask & hybrid_picks.isin(["OVER", "UNDER"])
+    n_hybrid_games = int(hybrid_valid_mask.sum())
+    hybrid_accuracy = (
+        float(df.loc[hybrid_valid_mask, "consensus_tp_5y3y_correct"].mean())
+        if n_hybrid_games
+        else np.nan
+    )
+    hybrid_over_acc, hybrid_under_acc = (
+        _per_class_accuracy(
+            hybrid_picks[hybrid_valid_mask],
+            df.loc[hybrid_valid_mask, "actual_side"],
+        )
+        if n_hybrid_games
+        else (np.nan, np.nan)
+    )
+    hybrid_mean_error = (
+        float(df.loc[hybrid_valid_mask, "consensus_tp_5y3y_error"].mean())
+        if n_hybrid_games
+        else np.nan
+    )
+    hybrid_mae = (
+        float(df.loc[hybrid_valid_mask, "consensus_tp_5y3y_error"].abs().mean())
+        if n_hybrid_games
+        else np.nan
+    )
+    hybrid_mean_abs_line_diff = (
+        float(df.loc[hybrid_valid_mask, "consensus_tp_5y3y_line_diff"].abs().mean())
+        if n_hybrid_games
+        else np.nan
+    )
+    rows.append(
+        {
+            "Model": FIVE_THREE_TP_LABEL,
+            "Prediction Target": "Total Points Rule",
+            "Games": n_hybrid_games,
+            "Accuracy (%)": None
+            if pd.isna(hybrid_accuracy)
+            else round(hybrid_accuracy * 100, 2),
+            "Over Acc (%)": None
+            if pd.isna(hybrid_over_acc)
+            else round(hybrid_over_acc * 100, 2),
+            "Under Acc (%)": None
+            if pd.isna(hybrid_under_acc)
+            else round(hybrid_under_acc * 100, 2),
+            "Acc Before 00:00 (%)": _pm_stat(
+                pre_midnight_accuracy_map, FIVE_THREE_TP_LABEL, "accuracy"
+            ),
+            "Over Acc Before 00:00 (%)": _pm_stat(
+                pre_midnight_accuracy_map, FIVE_THREE_TP_LABEL, "over_accuracy"
+            ),
+            "Under Acc Before 00:00 (%)": _pm_stat(
+                pre_midnight_accuracy_map, FIVE_THREE_TP_LABEL, "under_accuracy"
+            ),
+            "Mean Error": None
+            if pd.isna(hybrid_mean_error)
+            else round(hybrid_mean_error, 2),
+            "MAE": None if pd.isna(hybrid_mae) else round(hybrid_mae, 2),
+            "Avg |Line Error|": None
+            if pd.isna(hybrid_mean_abs_line_diff)
+            else round(hybrid_mean_abs_line_diff, 2),
+        }
+    )
+
     vote_le_picks = df["consensus_vote_le_pick"]
     vote_le_valid_mask = resolved_mask & vote_le_picks.isin(["OVER", "UNDER"])
     n_vote_le_games = int(vote_le_valid_mask.sum())
@@ -2344,6 +2605,8 @@ def _get_pick_and_actual_for_model(
         picks = df["consensus_vote_pick"]
     elif model_key == "consensus_vote_tp":
         picks = df["consensus_vote_tp_pick"]
+    elif model_key == FIVE_THREE_TP_KEY:
+        picks = df["consensus_tp_5y3y_pick"]
     elif model_key == "consensus_vote_le":
         picks = df["consensus_vote_le_pick"]
     elif model_key == "consensus_bold_contrarian":
@@ -2418,6 +2681,7 @@ def _build_pre_midnight_confusion_matrix(
         "consensus_no_tabpfn",
         "consensus_vote",
         "consensus_vote_tp",
+        FIVE_THREE_TP_KEY,
         "consensus_vote_le",
         "consensus_bold_contrarian",
     }
@@ -2460,6 +2724,10 @@ def _build_pre_midnight_confusion_matrix(
                     continue
                 bold_idx = valid_diffs.abs().idxmax()
                 pick = group.loc[bold_idx, "pred_pick"]
+            elif model_key == FIVE_THREE_TP_KEY:
+                pick, _line_diff = _five_three_tp_pick_line_diff_from_group(
+                    group, catalog
+                )
             elif model_key in (
                 "consensus_vote",
                 "consensus_vote_tp",
@@ -2590,6 +2858,7 @@ def render_confusion_matrix_selector(
     options.append(("consensus_no_tabpfn", "Consensus (No TabPFN)"))
     options.append(("consensus_vote", "Consensus (Majority Vote)"))
     options.append(("consensus_vote_tp", "Consensus (Vote TP)"))
+    options.append((FIVE_THREE_TP_KEY, FIVE_THREE_TP_LABEL))
     options.append(("consensus_vote_le", "Consensus (Vote LE)"))
     options.append(("consensus_bold_contrarian", "Bold Contrarian"))
 
@@ -2666,6 +2935,7 @@ def compute_threshold_accuracy_table(
         }
         model_thresholds["consensus"] = (0.0, 0.5, 1.0, 1.5, 2.0)
         model_thresholds["consensus_no_tabpfn"] = (0.0, 0.5, 1.0, 1.5, 2.0)
+        model_thresholds[FIVE_THREE_TP_KEY] = (0.0, 0.5, 1.0, 1.5, 2.0)
         model_thresholds["consensus_bold_contrarian"] = (0.0, 0.5, 1.0, 1.5, 2.0)
 
     resolved_mask = df["actual_side"].isin(["OVER", "UNDER"])
@@ -2684,6 +2954,12 @@ def compute_threshold_accuracy_table(
             line_diff_col = "consensus_no_tabpfn_line_diff"
             model_label = "Consensus (No TabPFN)"
             prediction_target = "Diff From Line"
+        elif model_type == FIVE_THREE_TP_KEY:
+            pick_col = "consensus_tp_5y3y_pick"
+            correct_col = "consensus_tp_5y3y_correct"
+            line_diff_col = "consensus_tp_5y3y_line_diff"
+            model_label = FIVE_THREE_TP_LABEL
+            prediction_target = "Total Points Rule"
         elif model_type == "consensus_bold_contrarian":
             pick_col = "consensus_bold_contrarian_pick"
             correct_col = "consensus_bold_contrarian_correct"
@@ -2849,6 +3125,27 @@ def compute_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
             }
         )
 
+        hybrid_valid = resolved[
+            resolved["consensus_tp_5y3y_pick"].isin(["OVER", "UNDER"])
+        ]
+        n_hybrid_games_daily = len(hybrid_valid)
+
+        out_rows.append(
+            {
+                "game_date": pd.to_datetime(game_date),
+                "model_type": FIVE_THREE_TP_KEY,
+                "model_label": FIVE_THREE_TP_LABEL,
+                "prediction_target": "Total Points Rule",
+                "n_games": n_hybrid_games_daily,
+                "accuracy": hybrid_valid["consensus_tp_5y3y_correct"].mean()
+                if n_hybrid_games_daily
+                else np.nan,
+                "mae": hybrid_valid["consensus_tp_5y3y_error"].abs().mean()
+                if n_hybrid_games_daily
+                else np.nan,
+            }
+        )
+
         # Add LE vote metrics for this date
         vote_le_valid = resolved[
             resolved["consensus_vote_le_pick"].isin(["OVER", "UNDER"])
@@ -2893,9 +3190,9 @@ def compute_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
     daily = pd.DataFrame(out_rows)
     daily["_target_order"] = daily["prediction_target"].map(
-        {"Total Points": 0, "Diff From Line": 1}
+        {"Total Points": 0, "Total Points Rule": 1, "Diff From Line": 2}
     )
-    daily["_target_order"] = daily["_target_order"].fillna(2)
+    daily["_target_order"] = daily["_target_order"].fillna(3)
     return (
         daily.sort_values(["game_date", "_target_order", "model_type"])
         .drop(columns=["_target_order"])
@@ -3165,6 +3462,20 @@ def compute_pre_midnight_accuracy_with_threshold(
                 }
             )
 
+        hybrid_pick, hybrid_line_diff = _five_three_tp_pick_line_diff_from_group(
+            group, catalog
+        )
+        if hybrid_pick in {"OVER", "UNDER", "PUSH"} and (
+            pd.notna(hybrid_line_diff) and abs(hybrid_line_diff) >= threshold
+        ):
+            consensus_rows.append(
+                {
+                    "label": FIVE_THREE_TP_LABEL,
+                    "pick": hybrid_pick,
+                    "actual_side": actual_side,
+                }
+            )
+
         if valid_diffs.empty:
             continue
 
@@ -3324,6 +3635,18 @@ def compute_pre_midnight_accuracy_map(
                 {
                     "label": "Consensus (Vote TP)",
                     "pick": vote_tp_pick,
+                    "actual_side": actual_side,
+                }
+            )
+
+        hybrid_pick, _hybrid_line_diff = _five_three_tp_pick_line_diff_from_group(
+            group, catalog
+        )
+        if hybrid_pick in {"OVER", "UNDER", "PUSH"}:
+            consensus_rows.append(
+                {
+                    "label": FIVE_THREE_TP_LABEL,
+                    "pick": hybrid_pick,
                     "actual_side": actual_side,
                 }
             )
@@ -3773,6 +4096,7 @@ def show_upcoming_predictions(training_code_tag_filter: str | None) -> None:
         - **📊 Total Points Models**: {configured_total_labels}{total_points_suffix} — predict total points directly
         {diff_model_text}
         - **🎯 Consensus**: Average of all model margins to decide OVER/UNDER
+        - **📊 {FIVE_THREE_TP_LABEL}**: Follows the 5-year total-points model unless the 3-year total-points model says OVER
         - **Margin**: How far the consensus prediction is from the line (positive = OVER)
         - **🧠 Model Reasoning**: Open "Inspect model reasoning" to see SHAP drivers for each model
 
@@ -3860,10 +4184,9 @@ def show_past_games_results(training_code_tag_filter: str | None) -> None:
 
     resolved_mask = games["actual_side"].isin(["OVER", "UNDER"])
     n_resolved = int(resolved_mask.sum())
-    n_total = len(games)
     n_push = int((games["actual_side"] == "PUSH").sum())
 
-    metrics_cols = st.columns(6)
+    metrics_cols = st.columns(7)
     with metrics_cols[0]:
         metric_label = "🎮 Games (Resolved)" if n_push > 0 else "🎮 Games Played"
         metric_value = (
@@ -3902,6 +4225,15 @@ def show_past_games_results(training_code_tag_filter: str | None) -> None:
         vote_tp_total = int(vote_tp_mask.sum())
         st.metric("📊 Vote TP", f"{vote_tp_correct}/{vote_tp_total}")
     with metrics_cols[5]:
+        hybrid_mask = resolved_mask & games["consensus_tp_5y3y_pick"].isin(
+            ["OVER", "UNDER"]
+        )
+        hybrid_correct = int(
+            games.loc[hybrid_mask, "consensus_tp_5y3y_correct"].sum()
+        )
+        hybrid_total = int(hybrid_mask.sum())
+        st.metric("📊 5Y/3Y", f"{hybrid_correct}/{hybrid_total}")
+    with metrics_cols[6]:
         vote_le_mask = resolved_mask & games["consensus_vote_le_pick"].isin(
             ["OVER", "UNDER"]
         )
@@ -3996,8 +4328,20 @@ def show_historical_performance(training_code_tag_filter: str | None) -> None:
         if consensus_n
         else np.nan
     )
+    hybrid_mask = resolved_mask & games["consensus_tp_5y3y_pick"].isin(
+        ["OVER", "UNDER"]
+    )
+    hybrid_n = int(hybrid_mask.sum())
+    hybrid_acc = (
+        (
+            games.loc[hybrid_mask, "consensus_tp_5y3y_pick"]
+            == games.loc[hybrid_mask, "actual_side"]
+        ).mean()
+        if hybrid_n
+        else np.nan
+    )
 
-    top_cols = st.columns(4)
+    top_cols = st.columns(5)
     with top_cols[0]:
         st.metric("Games", total_games)
     with top_cols[1]:
@@ -4008,6 +4352,11 @@ def show_historical_performance(training_code_tag_filter: str | None) -> None:
         st.metric(
             "Weighted Consensus",
             f"{(consensus_acc * 100):.2f}%" if pd.notna(consensus_acc) else "N/A",
+        )
+    with top_cols[4]:
+        st.metric(
+            FIVE_THREE_TP_LABEL,
+            f"{(hybrid_acc * 100):.2f}%" if pd.notna(hybrid_acc) else "N/A",
         )
 
     st.markdown("### 💰 Overall Model Statistics")
@@ -4065,7 +4414,9 @@ def show_historical_performance(training_code_tag_filter: str | None) -> None:
         catalog.labels[model_type]
         for model_type in _ordered_model_types_by_prediction_target(catalog)
     ]
-    daily_model_order.extend(["Consensus", "Consensus (No TabPFN)", "Bold Contrarian"])
+    daily_model_order.extend(
+        ["Consensus", "Consensus (No TabPFN)", FIVE_THREE_TP_LABEL, "Bold Contrarian"]
+    )
     accuracy_pivot = (
         daily.pivot(index="game_date", columns="model_label", values="accuracy")
         .sort_index()
