@@ -20,8 +20,8 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 BASE_URL = "https://www.sportsbookreview.com"
 TIMEOUT_MS = 10_000
-SLEEP_MIN_S = 0.7
-SLEEP_MAX_S = 1.6
+SLEEP_MIN_S = 0.4
+SLEEP_MAX_S = 1.1
 
 
 @dataclass(frozen=True)
