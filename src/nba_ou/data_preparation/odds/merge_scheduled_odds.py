@@ -86,22 +86,6 @@ def merge_and_validate_scheduled_odds(
             )
             _log_nan_columns(df_odds_predict)
 
-            df_odds_filtered = df_odds_predict.loc[~rows_exceeding].copy()
-
-            if df_odds_filtered.empty:
-                # All prediction rows would be removed.  This can happen for game types
-                # (e.g. Play-In Tournament) where optional columns such as public-betting
-                # percentages are not published by the data sources.  Rather than aborting
-                # the pipeline, emit a clear warning and keep all rows so the model can
-                # still make predictions with whatever data is available.
-                print(
-                    f"\n⚠️  WARNING: Strict mode (threshold={strict_mode}) would remove ALL "
-                    f"{len(df_odds_predict)} prediction row(s).  Keeping them to allow the "
-                    "pipeline to continue.  Some features will contain NaN values."
-                )
-            else:
-                df_odds_predict = df_odds_filtered
-
     # Concatenate and sort
     df_odds_combined = pd.concat([df_odds, df_odds_predict], ignore_index=True)
     df_odds_combined.sort_values(by="game_date", inplace=True, ascending=False)

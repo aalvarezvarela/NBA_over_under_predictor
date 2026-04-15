@@ -22,6 +22,7 @@ for path in (PROJECT_ROOT, SRC_DIR):
     if path_str not in sys.path:
         sys.path.insert(0, path_str)
 
+import streamlit.components.v1 as components
 from nba_ou.postgre_db.predictions.shap_utils import (
     ShapFeatureContribution,
     parse_serialized_shap_contributions,
@@ -36,7 +37,6 @@ from nba_ou.postgre_db.predictions.update.update_total_points_predictions import
 from nba_ou.utils.streamlit_utils import get_team_logo_url
 
 import streamlit as st
-import streamlit.components.v1 as components
 from scripts.predict_nba_games import predict_nba_games as run_nba_predictor
 
 warnings.filterwarnings("ignore", message="pandas only supports SQLAlchemy connectable")
@@ -576,9 +576,10 @@ def render_header(catalog: ModelCatalog | None = None) -> None:
             catalog.labels[model_type]
             for model_type in _ordered_model_types_by_prediction_target(catalog)
         ]
-        if _find_last_n_total_points_model(
-            catalog, 5
-        ) is not None and _find_last_n_total_points_model(catalog, 3) is not None:
+        if (
+            _find_last_n_total_points_model(catalog, 5) is not None
+            and _find_last_n_total_points_model(catalog, 3) is not None
+        ):
             model_labels.append(FIVE_THREE_TP_LABEL)
 
     chip_html = "".join(
@@ -719,9 +720,7 @@ def _five_three_tp_pick_line_diff_from_group(
     five_row = _latest_model_row(group, five_model.key)
     three_model = _find_last_n_total_points_model(catalog, 3)
     three_row = (
-        _latest_model_row(group, three_model.key)
-        if three_model is not None
-        else None
+        _latest_model_row(group, three_model.key) if three_model is not None else None
     )
 
     if three_row is not None and normalize_pick(three_row.get("pred_pick")) == "OVER":
@@ -867,6 +866,8 @@ def build_game_level_predictions(
         "prediction_date",
         "prediction_datetime_utc",
         "time_to_match_minutes",
+        "na_columns_count",
+        "na_columns_names",
     ]
     available_base_cols = [col for col in base_cols if col in work.columns]
 
@@ -1137,9 +1138,7 @@ def build_game_level_predictions(
         base["consensus_tp_5y3y_pick"] = np.nan
         base["consensus_tp_5y3y_line_diff"] = np.nan
 
-    base["consensus_tp_5y3y_pred_total"] = line + base[
-        "consensus_tp_5y3y_line_diff"
-    ]
+    base["consensus_tp_5y3y_pred_total"] = line + base["consensus_tp_5y3y_line_diff"]
     base["consensus_tp_5y3y_error"] = (
         base["consensus_tp_5y3y_pred_total"] - actual_total
     )
@@ -1343,9 +1342,9 @@ def build_past_display(df: pd.DataFrame) -> pd.DataFrame:
         df["consensus_tp_5y3y_line_diff"], errors="coerce"
     ).round(2)
     display[f"{FIVE_THREE_TP_LABEL} Pick"] = df["consensus_tp_5y3y_pick"]
-    display[f"{FIVE_THREE_TP_LABEL} Correct"] = df[
-        "consensus_tp_5y3y_correct"
-    ].map({True: "✅", False: "❌"})
+    display[f"{FIVE_THREE_TP_LABEL} Correct"] = df["consensus_tp_5y3y_correct"].map(
+        {True: "✅", False: "❌"}
+    )
 
     display["Vote Pick (LE)"] = df["consensus_vote_le_pick"]
     display["Vote Correct (LE)"] = df["consensus_vote_le_correct"].map(
@@ -1672,6 +1671,50 @@ def _render_game_card(
     line_val = pd.to_numeric(row.get("total_over_under_line"), errors="coerce")
     line_text = f"{line_val:.1f}" if pd.notna(line_val) else "N/A"
 
+    # NaN odds columns badge
+    na_count_raw = row.get("na_columns_count")
+    na_count = int(na_count_raw) if pd.notna(na_count_raw) else 0
+    na_names_raw = row.get("na_columns_names")
+    na_names_str = (
+        str(na_names_raw).strip()
+        if pd.notna(na_names_raw) and str(na_names_raw).strip()
+        else ""
+    )
+    if na_count > 0 and na_names_str:
+        na_columns_list = "".join(
+            f'<div style="padding:2px 0;font-size:0.8rem;color:#7c5a00;'
+            f'border-bottom:1px solid rgba(255,180,0,0.2);">{html.escape(col.strip())}</div>'
+            for col in na_names_str.split(",")
+            if col.strip()
+        )
+        nan_badge_html = (
+            f'<details style="margin-top:6px;cursor:pointer;">'
+            f'<summary style="display:inline-flex;align-items:center;gap:5px;'
+            f"padding:4px 10px;border-radius:999px;"
+            f"background:rgba(255,200,0,0.18);border:1px solid rgba(255,180,0,0.45);"
+            f"font-size:0.78rem;font-weight:700;color:#7c5a00;list-style:none;"
+            f'cursor:pointer;">'
+            f"⚠️ {na_count} NaN feature col{'s' if na_count != 1 else ''} — click to inspect"
+            f"</summary>"
+            f'<div style="margin-top:6px;padding:8px 10px;background:rgba(255,250,220,0.95);'
+            f"border:1px solid rgba(255,200,0,0.35);border-radius:8px;max-height:160px;"
+            f'overflow-y:auto;">'
+            f"{na_columns_list}"
+            f"</div>"
+            f"</details>"
+        )
+    elif na_count > 0:
+        nan_badge_html = (
+            f'<div style="margin-top:6px;display:inline-flex;align-items:center;gap:5px;'
+            f"padding:4px 10px;border-radius:999px;"
+            f"background:rgba(255,200,0,0.18);border:1px solid rgba(255,180,0,0.45);"
+            f'font-size:0.78rem;font-weight:700;color:#7c5a00;">'
+            f"⚠️ {na_count} NaN feature col{'s' if na_count != 1 else ''}"
+            f"</div>"
+        )
+    else:
+        nan_badge_html = ""
+
     if include_actual:
         primary_diff = pd.to_numeric(
             row.get("consensus_tp_5y3y_line_diff"), errors="coerce"
@@ -1683,16 +1726,12 @@ def _render_game_card(
     else:
         primary_diff = pd.to_numeric(row.get("consensus_line_diff"), errors="coerce")
         primary_pick = row.get("consensus_pick")
-        primary_total = pd.to_numeric(
-            row.get("consensus_pred_total"), errors="coerce"
-        )
+        primary_total = pd.to_numeric(row.get("consensus_pred_total"), errors="coerce")
 
     if not (pd.notna(primary_pick) and primary_pick in ("OVER", "UNDER", "PUSH")):
         primary_diff = pd.to_numeric(row.get("consensus_line_diff"), errors="coerce")
         primary_pick = row.get("consensus_pick")
-        primary_total = pd.to_numeric(
-            row.get("consensus_pred_total"), errors="coerce"
-        )
+        primary_total = pd.to_numeric(row.get("consensus_pred_total"), errors="coerce")
 
     # Bet recommendation styling
     if pd.notna(primary_pick) and primary_pick in ("OVER", "UNDER"):
@@ -2058,6 +2097,7 @@ def _render_game_card(
             {f'<div style="font-size:0.75rem;color:#7c6b91;margin-top:2px;">📊 {vote_text_tp}</div>' if vote_text_tp else ""}
             {f'<div style="font-size:0.75rem;color:#7c6b91;margin-top:2px;">📊 {hybrid_text}</div>' if hybrid_text else ""}
             {f'<div style="font-size:0.75rem;color:#7c6b91;margin-top:2px;">📏 {vote_text_le}</div>' if vote_text_le else ""}
+            {nan_badge_html}
           </div>
           <div style="text-align:center;">
             <div style="font-size:0.7rem;font-weight:600;color:#a591ba;
@@ -2103,7 +2143,7 @@ def _render_game_card(
         model_section_height += 80
     actual_banner_height = 48 if include_actual else 0
     header_height = 170
-    consensus_height = 128
+    consensus_height = 128 + (50 if na_count > 0 else 0)
     card_height = header_height + actual_banner_height + consensus_height
     card_height += model_section_height + 40
     card_height = max(card_height, 520 if include_actual else 440)
@@ -4274,9 +4314,7 @@ def show_past_games_results(training_code_tag_filter: str | None) -> None:
         hybrid_mask = resolved_mask & games["consensus_tp_5y3y_pick"].isin(
             ["OVER", "UNDER"]
         )
-        hybrid_correct = int(
-            games.loc[hybrid_mask, "consensus_tp_5y3y_correct"].sum()
-        )
+        hybrid_correct = int(games.loc[hybrid_mask, "consensus_tp_5y3y_correct"].sum())
         hybrid_total = int(hybrid_mask.sum())
         st.metric("📊 5Y/3Y", f"{hybrid_correct}/{hybrid_total}")
     with metrics_cols[6]:
