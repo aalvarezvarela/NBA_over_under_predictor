@@ -11,6 +11,9 @@ from nba_ou.create_training_data.get_all_info_for_scheduled_games import (
     get_all_info_for_scheduled_games,
 )
 from nba_ou.postgre_db.update_all.update_all_databases import update_all_databases
+from nba_ou.prediction.baseline_predictions import (
+    load_baseline_predictions_for_nba_games,
+)
 from nba_ou.prediction.prediction import (
     load_s3_model_and_predict,
 )
@@ -63,9 +66,9 @@ def configure_tqdm_for_environment() -> None:
     Set `NBA_OU_GITHUB_ACTIONS_TQDM=keep` to preserve normal tqdm output inside
     GitHub Actions for a specific workflow run.
     """
-    github_actions_tqdm_mode = os.getenv(
-        "NBA_OU_GITHUB_ACTIONS_TQDM", "disable"
-    ).strip().lower()
+    github_actions_tqdm_mode = (
+        os.getenv("NBA_OU_GITHUB_ACTIONS_TQDM", "disable").strip().lower()
+    )
 
     if (
         os.getenv("GITHUB_ACTIONS", "").lower() == "true"
@@ -176,7 +179,9 @@ def predict_nba_games(run_tabpfn_client: bool = False) -> None:
             date_to_predict=date_to_predict,
             df_to_predict=df_to_predict,
         )
-        print_status(f"Input features uploaded to s3://{SETTINGS.s3_bucket}/{snapshot_key}")
+        print_status(
+            f"Input features uploaded to s3://{SETTINGS.s3_bucket}/{snapshot_key}"
+        )
     except Exception as e:
         print_status(f"Failed to upload input features snapshot: {e}", ok=False)
         # Non-fatal: continue with predictions even if snapshot upload fails
@@ -205,13 +210,52 @@ def predict_nba_games(run_tabpfn_client: bool = False) -> None:
                     model_prefix=prefix,
                     predictions_df=predictions_df,
                 )
-                print_status(f"Predictions snapshot uploaded to s3://.../{pred_key.split('/', 3)[-1]}")
+                print_status(
+                    f"Predictions snapshot uploaded to s3://.../{pred_key.split('/', 3)[-1]}"
+                )
             except Exception as snap_exc:
-                print_status(f"Failed to upload predictions snapshot for {prefix}: {snap_exc}", ok=False)
+                print_status(
+                    f"Failed to upload predictions snapshot for {prefix}: {snap_exc}",
+                    ok=False,
+                )
 
         except Exception as e:
             print_status(f"Failed to generate predictions for {prefix}: {e}", ok=False)
             raise
+
+    print_step_header(step_number, "Generating Predictions (Baselines)")
+    step_number += 1
+    try:
+        baseline_predictions = load_baseline_predictions_for_nba_games(
+            df=df_to_predict,
+            df_history=df_to_predict_total,
+            prediction_datetime=prediction_time,
+        )
+        print_status("Baseline predictions generated")
+
+        for baseline_name, baseline_predictions_df in baseline_predictions.items():
+            try:
+                baseline_key = upload_model_predictions_snapshot(
+                    s3_client=s3,
+                    bucket=SETTINGS.s3_bucket,
+                    pipeline_start_time=pipeline_start_time,
+                    date_to_predict=date_to_predict,
+                    model_prefix=baseline_name,
+                    predictions_df=baseline_predictions_df,
+                )
+                print_status(
+                    "Baseline snapshot uploaded to "
+                    f"s3://.../{baseline_key.split('/', 3)[-1]}"
+                )
+            except Exception as snap_exc:
+                print_status(
+                    f"Failed to upload baseline snapshot for {baseline_name}: {snap_exc}",
+                    ok=False,
+                )
+
+    except Exception as e:
+        print_status(f"Failed to generate baseline predictions: {e}", ok=False)
+        raise
 
     if not run_tabpfn_client:
         print("\nPrediction pipeline completed successfully.")
@@ -237,9 +281,13 @@ def predict_nba_games(run_tabpfn_client: bool = False) -> None:
                 model_prefix="tabpfn_client",
                 predictions_df=tabpfn_predictions,
             )
-            print_status(f"TabPFN snapshot uploaded to s3://.../{tabpfn_key.split('/', 3)[-1]}")
+            print_status(
+                f"TabPFN snapshot uploaded to s3://.../{tabpfn_key.split('/', 3)[-1]}"
+            )
         except Exception as snap_exc:
-            print_status(f"Failed to upload TabPFN predictions snapshot: {snap_exc}", ok=False)
+            print_status(
+                f"Failed to upload TabPFN predictions snapshot: {snap_exc}", ok=False
+            )
 
     except Exception as e:
         print_status(f"Failed to generate TabPFN predictions: {e}", ok=False)
