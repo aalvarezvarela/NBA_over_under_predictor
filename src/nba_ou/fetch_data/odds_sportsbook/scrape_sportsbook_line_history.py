@@ -18,7 +18,7 @@ from nba_ou.fetch_data.odds_sportsbook.scrape_sportsbook import (
     random_sleep,
     season_year_for_date,
 )
-from playwright.async_api import Page, async_playwright
+from playwright.async_api import Page, Route, async_playwright
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from tqdm import tqdm
 
@@ -27,6 +27,19 @@ MARKET_FORMATS: dict[str, str] = {
     "money_line": "money-line",
     "totals": "totals",
 }
+CONSENT_BUTTON_LABELS = [
+    "Allow all cookies",
+    "Accept all",
+    "I agree",
+    "Agree",
+    "Accept",
+    "Aceptar",
+    "Aceptar todo",
+    "Continue",
+    "OK",
+    "Got it",
+]
+BLOCKED_RESOURCE_TYPES = {"font", "media"}
 
 SOURCE_MARKET_URL_BUILDERS = {
     "point_spread": build_sbr_spread_url,
@@ -99,24 +112,34 @@ def build_sbr_line_history_url(event_id: str | int) -> str:
 
 
 async def try_click_line_history_consent(page: Page) -> None:
-    candidates = [
-        "Allow all cookies",
-        "Accept all",
-        "I agree",
-        "Agree",
-        "Accept",
-        "Aceptar",
-        "Aceptar todo",
-        "Continue",
-        "OK",
-        "Got it",
-    ]
-    for label in candidates:
-        try:
-            await page.get_by_role("button", name=label).click(timeout=500)
-            return
-        except Exception:
-            pass
+    try:
+        clicked = await page.evaluate(
+            r"""
+            (labels) => {
+              const norm = (s) => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
+              const wanted = new Set(labels.map(norm));
+              for (const button of Array.from(document.querySelectorAll("button"))) {
+                if (wanted.has(norm(button.innerText || button.textContent))) {
+                  button.click();
+                  return true;
+                }
+              }
+              return false;
+            }
+            """,
+            CONSENT_BUTTON_LABELS,
+        )
+        if clicked:
+            await page.wait_for_timeout(100)
+    except Exception:
+        pass
+
+
+async def block_heavy_assets(route: Route) -> None:
+    if route.request.resource_type in BLOCKED_RESOURCE_TYPES:
+        await route.abort()
+    else:
+        await route.continue_()
 
 
 def _slugify_bookmaker(bookmaker: str) -> str:
@@ -653,6 +676,7 @@ async def scrape_sportsbook_line_history_days(
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=headless)
         context = await browser.new_context(viewport={"width": 1440, "height": 1600})
+        await context.route("**/*", block_heavy_assets)
         page = await context.new_page()
 
         for day in days:
@@ -745,6 +769,7 @@ async def download_sportsbook_line_history_season_daily(
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=headless)
         context = await browser.new_context(viewport={"width": 1440, "height": 1600})
+        await context.route("**/*", block_heavy_assets)
         page = await context.new_page()
 
         progress = tqdm(remaining_days, desc="Scraping SBR line history", unit="day")
@@ -918,6 +943,7 @@ async def _scrape_event_id(
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=headless)
         context = await browser.new_context(viewport={"width": 1440, "height": 1600})
+        await context.route("**/*", block_heavy_assets)
         page = await context.new_page()
         line_history_df, matchup_records_df = await scrape_game_line_history(
             page, game, markets=markets
@@ -928,11 +954,11 @@ async def _scrape_event_id(
 
 if __name__ == "__main__":
 
-    season_year = 2025
+    season_year = 2022
     season_start_month = 10
-    season_start_day = 21
-    season_end_month = 4
-    season_end_day = 12
+    season_start_day = 1
+    season_end_month = 6
+    season_end_day = 30
     headless = True
     # Landing page used only to find matchup links. It does not limit line-history markets.
     landing_market = "totals"
