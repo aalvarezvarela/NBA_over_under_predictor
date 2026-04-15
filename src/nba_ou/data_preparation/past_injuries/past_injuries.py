@@ -123,10 +123,18 @@ def create_player_lookup(df_players, injured_dict=None):
     for (season_id, team_id), group_df in df_valid.groupby(["SEASON_ID", "TEAM_ID"]):
         season_team_groups[(season_id, team_id)] = group_df
 
+    season_year_team_groups = {}
+    for (season_year, team_id), group_df in df_valid.groupby(
+        ["SEASON_YEAR", "TEAM_ID"]
+    ):
+        season_year_team_groups[(int(season_year), team_id)] = group_df
+
     # For tracking player movements, use ALL data (including MIN=0 games)
     # because a player's last game might be a DNP (MIN=0) but they're still on the team
     df_all = df_players.copy()
     df_all.sort_values(["SEASON_ID", "PLAYER_ID", "GAME_DATE"], inplace=True)
+    df_all_by_year = df_players.copy()
+    df_all_by_year.sort_values(["SEASON_YEAR", "PLAYER_ID", "GAME_DATE"], inplace=True)
 
     # Pre-compute: for each (season, player), build sorted list of (date, team_id)
     # This allows finding the last team before a given date
@@ -138,12 +146,30 @@ def create_player_lookup(df_players, injured_dict=None):
         # Sorted by date (chronologically across all teams)
         dates = grp["GAME_DATE"].values
         teams = grp["TEAM_ID"].values
-        player_timeline[(season_id, player_id)] = list(zip(dates, teams))
+        player_timeline[(season_id, player_id)] = list(zip(dates, teams, strict=True))
+
+    player_timeline_by_season_year = defaultdict(list)
+    for (season_year, player_id), grp in df_all_by_year.groupby(
+        ["SEASON_YEAR", "PLAYER_ID"]
+    ):
+        dates = grp["GAME_DATE"].values
+        teams = grp["TEAM_ID"].values
+        player_timeline_by_season_year[(int(season_year), player_id)] = list(
+            zip(dates, teams, strict=True)
+        )
 
     # Get unique players per (season, team) - use ALL data for membership tracking
     players_by_season_team = {}
     for (season_id, team_id), group_df in df_all.groupby(["SEASON_ID", "TEAM_ID"]):
         players_by_season_team[(season_id, team_id)] = set(
+            group_df["PLAYER_ID"].unique()
+        )
+
+    players_by_season_year_team = {}
+    for (season_year, team_id), group_df in df_all_by_year.groupby(
+        ["SEASON_YEAR", "TEAM_ID"]
+    ):
+        players_by_season_year_team[(int(season_year), team_id)] = set(
             group_df["PLAYER_ID"].unique()
         )
 
@@ -162,12 +188,23 @@ def create_player_lookup(df_players, injured_dict=None):
                     player_to_teams[str(player_id)].add(team_key)
             injured_team_by_game_player[game_key] = player_to_teams
 
-    def lookup(season_id, team_id, date_to_filter, game_id=None):
-        """
-        Fast lookup for players on a team in a season before a given date.
-        """
-        # Get players who ever played for this team in this season
-        candidate_players = players_by_season_team.get((season_id, team_id))
+    def _season_year_from_season_id(season_id):
+        try:
+            return int(str(season_id)[-4:])
+        except (TypeError, ValueError):
+            return None
+
+    def _lookup_by_key(
+        bucket_key,
+        team_id,
+        date_to_filter,
+        game_id,
+        players_by_bucket_team,
+        player_timeline_by_bucket,
+        bucket_team_groups,
+    ):
+        # Get players who ever played for this team in this season bucket.
+        candidate_players = players_by_bucket_team.get((bucket_key, team_id))
         if not candidate_players:
             return empty_df
 
@@ -183,7 +220,7 @@ def create_player_lookup(df_players, injured_dict=None):
         # Find players whose last game before date_to_filter was with this team
         valid_players = []
         for player_id in candidate_players:
-            timeline = player_timeline.get((season_id, player_id), [])
+            timeline = player_timeline_by_bucket.get((bucket_key, player_id), [])
             if not timeline:
                 continue
 
@@ -209,7 +246,7 @@ def create_player_lookup(df_players, injured_dict=None):
             return empty_df
 
         # Get the pre-filtered data for this season/team
-        df_team_season = season_team_groups.get((season_id, team_id))
+        df_team_season = bucket_team_groups.get((bucket_key, team_id))
         if df_team_season is None or df_team_season.empty:
             return empty_df
 
@@ -222,6 +259,36 @@ def create_player_lookup(df_players, injured_dict=None):
         result = df_team_season[mask]
 
         return result
+
+    def lookup(season_id, team_id, date_to_filter, game_id=None):
+        """
+        Fast lookup for players on a team in a season before a given date.
+        """
+        result = _lookup_by_key(
+            season_id,
+            team_id,
+            date_to_filter,
+            game_id,
+            players_by_season_team,
+            player_timeline,
+            season_team_groups,
+        )
+        if not result.empty:
+            return result
+
+        season_year = _season_year_from_season_id(season_id)
+        if season_year is None:
+            return empty_df
+
+        return _lookup_by_key(
+            season_year,
+            team_id,
+            date_to_filter,
+            game_id,
+            players_by_season_year_team,
+            player_timeline_by_season_year,
+            season_year_team_groups,
+        )
 
     return lookup
 
