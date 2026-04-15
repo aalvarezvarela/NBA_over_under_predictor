@@ -954,11 +954,11 @@ async def _scrape_event_id(
 
 if __name__ == "__main__":
 
-    season_year = 2022
-    season_start_month = 10
-    season_start_day = 1
-    season_end_month = 6
-    season_end_day = 30
+    season_year = 2020
+    season_start_month = 7 #6
+    season_start_day = 29 #30
+    season_end_month = 11 #11
+    season_end_day = 30 #31
     headless = True
     # Landing page used only to find matchup links. It does not limit line-history markets.
     landing_market = "totals"
