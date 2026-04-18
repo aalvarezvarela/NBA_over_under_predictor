@@ -4,15 +4,15 @@ on:
     workflow_dispatch:
     schedule:
         # Every day at 23:00 UTC (1 hour before midnight)
-        - cron: "01 23 * * *"
-        # Weekdays during peak hours
-        - cron: "01 18 * * 1-5"
-        - cron: "01 19 * * *"
-        - cron: "01 21 * * *"
-        # Sundays at 15:30 and 17:00 UTC
-        - cron: "27 15 * * 0"
-        - cron: "01 17 * * 0"
-
+        - cron: "11 00 * * *"
+        - cron: "11 23 * * *"
+        # Weekdays during peak hoursk
+        - cron: "11 18 * * 1-5"
+        - cron: "01 15 * * *"
+        - cron: "11 17 * * *"
+        - cron: "11 16 * * *"
+        - cron: "11 20 * * *"
+        - cron: "11 22 * * *"
 concurrency:
     group: daily-nba-predictor
     cancel-in-progress: true
@@ -25,7 +25,8 @@ jobs:
     run:
         runs-on: self-hosted
         env:
-            PYTHONWARNINGS: "ignore::UserWarning,ignore::DeprecationWarning,ignore::FutureWarning"
+            PYTHONWARNINGS: "ignore::UserWarning,ignore::DeprecationWarning,ignore::FutureW\
+                arning"
             TQDM_DISABLE: "1"
 
             # Critical for resolving imports that live under src/
