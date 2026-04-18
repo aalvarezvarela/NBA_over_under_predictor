@@ -355,7 +355,7 @@ def load_and_predict_model_for_nba_games(
         ],
         keep_all_cols=True,
         verbose=1,
-        strict_mode=10,
+        strict_mode=30,
     )
 
     # Load the model using joblib
