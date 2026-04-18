@@ -147,7 +147,7 @@ def predict_nba_games(run_tabpfn_client: bool = False) -> None:
         df_to_predict_total = create_df_to_predict(
             todays_prediction=True,
             scheduled_data=scheduled_data,
-            strict_mode=2,
+            strict_mode=30,
         )
         df_to_predict = df_to_predict_total[
             df_to_predict_total["GAME_DATE"] == date_to_predict
