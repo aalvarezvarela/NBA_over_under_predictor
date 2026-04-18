@@ -287,11 +287,13 @@ async def extract_matchups_from_odds_page(
         const eventId = eidNode.getAttribute("data-horizontal-eid");
         const root = ascendToGameRoot(eidNode);
         const matchupA = root.querySelector('a[href*="/scores/nba-basketball/matchup/"]');
+        const timeEl = root.querySelector('[data-vertical-sbid="time"] span');
         if (!eventId || !matchupA) continue;
 
         rows.push({
           event_id: eventId,
           matchup_url: matchupA.getAttribute("href"),
+          start_time: timeEl ? norm(timeEl.textContent) : null,
         });
       }
       return rows;
@@ -312,7 +314,7 @@ async def extract_matchups_from_odds_page(
                 event_id=event_id,
                 game_date=page_date,
                 season_year=season_year_for_date(page_date),
-                start_time=None,
+                start_time=row.get("start_time"),
                 matchup_url=matchup_url,
                 line_history_url=build_sbr_line_history_url(event_id),
                 team_away=None,
@@ -955,10 +957,10 @@ async def _scrape_event_id(
 if __name__ == "__main__":
 
     season_year = 2018
-    season_start_month = 11 #6
-    season_start_day = 10 #30
-    season_end_month = 6 #11
-    season_end_day = 30 #31
+    season_start_month = 11  # 6
+    season_start_day = 10  # 30
+    season_end_month = 6  # 11
+    season_end_day = 30  # 31
     headless = True
     # Landing page used only to find matchup links. It does not limit line-history markets.
     landing_market = "totals"
