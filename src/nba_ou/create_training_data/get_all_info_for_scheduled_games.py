@@ -128,7 +128,11 @@ def get_yahoo_prediction_data(
 
     # Scrape both dates to account for timezone differences
     days_to_scrape = [next_date, base_date]
-    df_yahoo = asyncio.run(scrape_yahoo_days(days_to_scrape, headless=headless, target_dates=[base_date]*2))
+    df_yahoo = asyncio.run(
+        scrape_yahoo_days(
+            days_to_scrape, headless=headless, target_dates=[base_date] * 2
+        )
+    )
 
     # Check if we got any data
     if df_yahoo.empty:
@@ -142,6 +146,11 @@ def get_yahoo_prediction_data(
     df_yahoo_with_game_id = merge_odds_with_scheduled_games(
         df_yahoo_processed, scheduled_games
     )
+    # Remove duplicates from scraping multiple dates for timezone coverage
+    df_yahoo_with_game_id = df_yahoo_with_game_id.drop_duplicates(
+        subset=["game_date", "team_home", "team_away"], keep="first"
+    )
+
     # drop NA rows on game ID as they are not shceuled games
     df_yahoo_with_game_id = df_yahoo_with_game_id.dropna(subset=["game_id"])
 
@@ -179,6 +188,10 @@ def get_sportsbook_prediction_data(
     # Merge with scheduled_games to get the game_id
     df_sportsbook_with_game_id = merge_odds_with_scheduled_games(
         df_sportsbook, scheduled_games
+    )
+    # Remove duplicates based on game identifiers
+    df_sportsbook_with_game_id = df_sportsbook_with_game_id.drop_duplicates(
+        subset=["game_date", "team_home", "team_away"], keep="first"
     )
     # drop NA rows on game ID as they are not scheduled games
     df_sportsbook_with_game_id = df_sportsbook_with_game_id.dropna(subset=["game_id"])
@@ -220,7 +233,7 @@ def get_all_info_for_scheduled_games(
 
     # First Get the games itself
     scheduled_games = get_schedule_games(date_to_predict)
-    
+
     if scheduled_games.empty:
         print(f"No scheduled games found for {date_to_predict}")
         return {

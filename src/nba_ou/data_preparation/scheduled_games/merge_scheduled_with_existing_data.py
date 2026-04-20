@@ -44,14 +44,20 @@ def standardize_and_merge_scheduled_games_to_team_data(df, scheduled_games):
     games_renamed["GAME_DATE"] = pd.to_datetime(games_renamed["GAME_DATE"])
     games_renamed["SEASON_ID"] = games_renamed["SEASON_ID"].astype(str)
     # Create separate DataFrames for home and away teams
-    cols_to_keep = ["GAME_ID", "TEAM_ID", "GAME_DATE", "SEASON_ID"]
+    cols_to_keep = ["GAME_ID", "TEAM_ID", "GAME_DATE", "SEASON_ID", "SEASON_YEAR"]
     if "GAME_TIME" in games_renamed.columns:
         cols_to_keep.append("GAME_TIME")
 
     home_games = games_renamed[cols_to_keep].copy()
     home_games["HOME"] = True  # Mark as home team
 
-    cols_to_keep_away = ["GAME_ID", "TEAM_ID_AWAY", "GAME_DATE", "SEASON_ID"]
+    cols_to_keep_away = [
+        "GAME_ID",
+        "TEAM_ID_AWAY",
+        "GAME_DATE",
+        "SEASON_ID",
+        "SEASON_YEAR",
+    ]
     if "GAME_TIME" in games_renamed.columns:
         cols_to_keep_away.append("GAME_TIME")
 
@@ -74,17 +80,18 @@ def standardize_and_merge_scheduled_games_to_team_data(df, scheduled_games):
         sort_cols = ["TEAM_ID", "_GAME_DATE_SORT"]
         ascending = [True, False]
         if "GAME_ID" in df.columns:
-            team_info_source = team_info_source.join(df["GAME_ID"].rename("_GAME_ID_SORT"))
+            team_info_source = team_info_source.join(
+                df["GAME_ID"].rename("_GAME_ID_SORT")
+            )
             sort_cols.append("_GAME_ID_SORT")
             ascending.append(False)
         team_info_source = team_info_source.sort_values(
             by=sort_cols, ascending=ascending, kind="mergesort"
         )
 
-    team_info_from_df = (
-        team_info_source.drop_duplicates(subset=["TEAM_ID"], keep="first")[team_info_cols]
-        .copy()
-    )
+    team_info_from_df = team_info_source.drop_duplicates(
+        subset=["TEAM_ID"], keep="first"
+    )[team_info_cols].copy()
 
     id_to_name = {team_id: name for name, team_id in TEAM_ID_MAP.items()}
     team_info_from_df["TEAM_NAME"] = (
@@ -104,12 +111,15 @@ def standardize_and_merge_scheduled_games_to_team_data(df, scheduled_games):
     df_merged = combined_df[columns_to_keep]
 
     # remove duplicated rows based on TEAM_ID and GAME_DATE, keeping the last one
-    df_merged = df_merged.drop_duplicates(subset=["TEAM_ID", "GAME_DATE"], keep="last").reset_index(
+    df_merged = df_merged.drop_duplicates(
+        subset=["TEAM_ID", "GAME_DATE"], keep="last"
+    ).reset_index(drop=True)
+    df_merged = df_merged.sort_values(by=["GAME_DATE"], ascending=False).reset_index(
         drop=True
     )
-    df_merged = df_merged.sort_values(by=["GAME_DATE"], ascending=False).reset_index(drop=True)
 
     return df_merged
+
 
 def standardize_and_merge_scheduled_games_to_players_data(
     games_original, df_players_original
