@@ -12,9 +12,12 @@ permissions:
 jobs:
   update-database:
     runs-on: self-hosted
+    outputs:
+      has_scheduled_games: ${{ steps.check-scheduled-games.outputs.has_scheduled_games }}
     env:
       PYTHONWARNINGS: "ignore::UserWarning,ignore::DeprecationWarning,ignore::FutureWarning"
       TQDM_DISABLE: "1"
+      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/src
       DB_ENV: supabase
       SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
       SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
@@ -34,16 +37,24 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Check for scheduled games
+        id: check-scheduled-games
+        run: |
+          python scripts/update_databases/check_scheduled_games.py
+
       - name: Install Playwright browsers
+        if: ${{ steps.check-scheduled-games.outputs.has_scheduled_games == 'true' }}
         run: |
           playwright install chromium
 
       - name: Update all databases
+        if: ${{ steps.check-scheduled-games.outputs.has_scheduled_games == 'true' }}
         run: |
           python scripts/update_databases/update_all_databases.py --only-new-games
 
   retrain:
     needs: update-database
+    if: ${{ needs.update-database.outputs.has_scheduled_games == 'true' }}
     runs-on: ubuntu-latest
     env:
       PYTHONWARNINGS: "ignore::UserWarning,ignore::DeprecationWarning,ignore::FutureWarning"
