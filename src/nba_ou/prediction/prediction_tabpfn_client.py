@@ -627,19 +627,19 @@ def load_and_predict_tabpfn_client_for_nba_games(
         total_points_pick_line_col=total_points_pick_line_col,
         prediction_target=PREDICTION_TARGET_TOTAL_POINTS,
     )
-    line_error_predictions = _run_tabpfn_client_prediction(
-        df_train=df_train,
-        df_predictable=df_predictable,
-        prediction_datetime=prediction_datetime,
-        model_name=line_error_model_name,
-        model_version=model_version,
-        total_points_pick_line_col=total_points_pick_line_col,
-        prediction_target=PREDICTION_TARGET_LINE_ERROR,
-    )
+    # line_error_predictions = _run_tabpfn_client_prediction(
+    #     df_train=df_train,
+    #     df_predictable=df_predictable,
+    #     prediction_datetime=prediction_datetime,
+    #     model_name=line_error_model_name,
+    #     model_version=model_version,
+    #     total_points_pick_line_col=total_points_pick_line_col,
+    #     prediction_target=PREDICTION_TARGET_LINE_ERROR,
+    # )
 
     return (
         pd.concat(
-            [total_points_predictions, line_error_predictions],
+            [total_points_predictions],
             ignore_index=True,
             sort=False,
         )

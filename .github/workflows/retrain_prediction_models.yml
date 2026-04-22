@@ -3,7 +3,7 @@ name: Retrain Prediction Models
 on:
   workflow_dispatch:
   schedule:
-    - cron: "06 14 * * *"
+    - cron: "56 13 * * *"
 
 permissions:
   contents: read

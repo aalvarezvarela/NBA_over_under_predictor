@@ -5,9 +5,7 @@ on:
     schedule:
         # Daily at 4:30am, 7am, 8am, and 10am UTC
         - cron: "30 4 * * *"
-        - cron: "0 5 * * *"
         - cron: "2 6 * * *"
-        - cron: "2 8 * * *"
         - cron: "27 11 * * *"
 
 permissions:
