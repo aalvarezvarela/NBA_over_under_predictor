@@ -264,12 +264,16 @@ def extract_model_catalog(df: pd.DataFrame) -> ModelCatalog:
     work["_is_total_points"] = [item[2] for item in metadata]
 
     if "prediction_datetime" in work.columns:
-        prediction_dt = parse_prediction_timestamp_series(work["prediction_datetime"])
+        prediction_dt = pd.to_datetime(
+            work["prediction_datetime"], errors="coerce", utc=True
+        )
     else:
         prediction_dt = pd.Series(pd.NaT, index=work.index, dtype="datetime64[ns, UTC]")
 
     if "prediction_date" in work.columns:
-        prediction_date = parse_prediction_timestamp_series(work["prediction_date"])
+        prediction_date = pd.to_datetime(
+            work["prediction_date"], errors="coerce", utc=True
+        )
     else:
         prediction_date = pd.Series(
             pd.NaT, index=work.index, dtype="datetime64[ns, UTC]"
@@ -670,20 +674,28 @@ def format_madrid_datetime(series: pd.Series, fmt: str) -> pd.Series:
     return dt_utc.dt.tz_convert("Europe/Madrid").dt.strftime(fmt)
 
 
-def _parse_prediction_timestamp_value(value: object) -> pd.Timestamp:
-    """Treat naive prediction timestamps as Madrid-local wall time."""
+def _parse_prediction_timestamp_value(
+    value: object, *, treat_naive_as_madrid_local: bool = False
+) -> pd.Timestamp:
     parsed = pd.to_datetime(value, errors="coerce")
     if pd.isna(parsed):
         return pd.NaT
 
     ts = pd.Timestamp(parsed)
     if ts.tzinfo is None:
-        return ts.tz_localize("Europe/Madrid").tz_convert("UTC")
+        if treat_naive_as_madrid_local:
+            return ts.tz_localize("Europe/Madrid").tz_convert("UTC")
+        return ts.tz_localize("UTC")
     return ts.tz_convert("UTC")
 
 
-def parse_prediction_timestamp_series(series: pd.Series) -> pd.Series:
-    parsed = series.apply(_parse_prediction_timestamp_value)
+def parse_prediction_timestamp_series(
+    series: pd.Series, *, treat_naive_as_madrid_local: bool = False
+) -> pd.Series:
+    parsed = series.apply(
+        _parse_prediction_timestamp_value,
+        treat_naive_as_madrid_local=treat_naive_as_madrid_local,
+    )
     return pd.to_datetime(parsed, errors="coerce", utc=True)
 
 
@@ -791,6 +803,7 @@ def build_game_level_predictions(
     df: pd.DataFrame,
     prediction_cutoff: pd.Timestamp | None = None,
     training_code_tag_filter: str | None = "1.0",
+    treat_prediction_timestamps_as_madrid_local: bool = False,
 ) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame()
@@ -844,12 +857,26 @@ def build_game_level_predictions(
         return pd.DataFrame()
 
     if "prediction_datetime" in work.columns:
-        pred_dt = parse_prediction_timestamp_series(work["prediction_datetime"])
+        if treat_prediction_timestamps_as_madrid_local:
+            pred_dt = parse_prediction_timestamp_series(
+                work["prediction_datetime"], treat_naive_as_madrid_local=True
+            )
+        else:
+            pred_dt = pd.to_datetime(
+                work["prediction_datetime"], errors="coerce", utc=True
+            )
     else:
         pred_dt = pd.Series(pd.NaT, index=work.index, dtype="datetime64[ns, UTC]")
 
     if "prediction_date" in work.columns:
-        pred_date_dt = parse_prediction_timestamp_series(work["prediction_date"])
+        if treat_prediction_timestamps_as_madrid_local:
+            pred_date_dt = parse_prediction_timestamp_series(
+                work["prediction_date"], treat_naive_as_madrid_local=True
+            )
+        else:
+            pred_date_dt = pd.to_datetime(
+                work["prediction_date"], errors="coerce", utc=True
+            )
     else:
         pred_date_dt = pd.Series(pd.NaT, index=work.index, dtype="datetime64[ns, UTC]")
     work["prediction_datetime_utc"] = pred_dt.fillna(pred_date_dt)
@@ -1496,7 +1523,7 @@ def _available_models_for_row(
 
 
 def _format_prediction_timestamp(value: object) -> str:
-    pred_dt = _parse_prediction_timestamp_value(value)
+    pred_dt = pd.to_datetime(value, errors="coerce", utc=True)
     if pd.isna(pred_dt):
         return "N/A"
     return pred_dt.tz_convert("Europe/Madrid").strftime("%Y-%m-%d %H:%M")
@@ -3450,12 +3477,14 @@ def prepare_prediction_history(
         return pd.DataFrame()
 
     if "prediction_datetime" in work.columns:
-        pred_dt = parse_prediction_timestamp_series(work["prediction_datetime"])
+        pred_dt = pd.to_datetime(work["prediction_datetime"], errors="coerce", utc=True)
     else:
         pred_dt = pd.Series(pd.NaT, index=work.index, dtype="datetime64[ns, UTC]")
 
     if "prediction_date" in work.columns:
-        pred_date_dt = parse_prediction_timestamp_series(work["prediction_date"])
+        pred_date_dt = pd.to_datetime(
+            work["prediction_date"], errors="coerce", utc=True
+        )
     else:
         pred_date_dt = pd.Series(pd.NaT, index=work.index, dtype="datetime64[ns, UTC]")
     work["prediction_datetime_utc"] = pred_dt.fillna(pred_date_dt)
@@ -4177,7 +4206,9 @@ def show_upcoming_predictions(training_code_tag_filter: str | None) -> None:
     prediction_times = []
     for col in ["prediction_datetime", "prediction_date"]:
         if col in raw.columns:
-            times = parse_prediction_timestamp_series(raw[col]).dropna()
+            times = parse_prediction_timestamp_series(
+                raw[col], treat_naive_as_madrid_local=True
+            ).dropna()
             prediction_times.extend(times.tolist())
 
     if prediction_times:
@@ -4223,6 +4254,7 @@ def show_upcoming_predictions(training_code_tag_filter: str | None) -> None:
             raw,
             prediction_cutoff=prediction_cutoff,
             training_code_tag_filter=training_code_tag_filter,
+            treat_prediction_timestamps_as_madrid_local=True,
         )
 
     render_header(get_model_catalog(games))
@@ -4356,12 +4388,16 @@ def show_past_games_results(training_code_tag_filter: str | None) -> None:
         return
 
     if "prediction_datetime" in raw.columns:
-        prediction_dt = parse_prediction_timestamp_series(raw["prediction_datetime"])
+        prediction_dt = pd.to_datetime(
+            raw["prediction_datetime"], errors="coerce", utc=True
+        )
     else:
         prediction_dt = pd.Series(pd.NaT, index=raw.index, dtype="datetime64[ns, UTC]")
 
     if "prediction_date" in raw.columns:
-        prediction_date_dt = parse_prediction_timestamp_series(raw["prediction_date"])
+        prediction_date_dt = pd.to_datetime(
+            raw["prediction_date"], errors="coerce", utc=True
+        )
     else:
         prediction_date_dt = pd.Series(
             pd.NaT, index=raw.index, dtype="datetime64[ns, UTC]"
