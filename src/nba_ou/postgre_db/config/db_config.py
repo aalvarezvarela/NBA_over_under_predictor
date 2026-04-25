@@ -181,7 +181,11 @@ def connect_nba_db() -> psycopg.Connection:
         )
         # dsn = os.getenv("SUPABASE_DB_URL")
         if dsn:
-            return psycopg.connect(dsn)
+            # Apply sslmode from config if not already present in the DSN
+            connect_kwargs: dict[str, Any] = {}
+            if c.get("sslmode") and "sslmode" not in dsn:
+                connect_kwargs["sslmode"] = c["sslmode"]
+            return psycopg.connect(dsn, **connect_kwargs)
 
     kwargs: dict[str, Any] = dict(
         dbname=c["dbname"],

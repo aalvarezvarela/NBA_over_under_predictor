@@ -4191,7 +4191,11 @@ def show_upcoming_predictions(training_code_tag_filter: str | None) -> None:
 
     # Load raw data first to extract available prediction times
     with st.spinner("Loading prediction data..."):
-        raw = get_games_with_total_scored_points(only_null=True)
+        try:
+            raw = get_games_with_total_scored_points(only_null=True)
+        except Exception as _exc:
+            st.error(f"Database error while loading predictions: {_exc}")
+            return
 
     if raw.empty:
         st.info("No upcoming predictions found.")
@@ -4376,7 +4380,11 @@ def show_past_games_results(training_code_tag_filter: str | None) -> None:
     date_str = selected_date.strftime("%Y-%m-%d")
 
     with st.spinner("Loading completed games..."):
-        raw = get_games_with_total_scored_points(only_null=False, date=date_str)
+        try:
+            raw = get_games_with_total_scored_points(only_null=False, date=date_str)
+        except Exception as _exc:
+            st.error(f"Database error while loading completed games: {_exc}")
+            return
 
     if raw.empty:
         st.warning(f"No completed games found for {date_str}.")
@@ -4554,11 +4562,15 @@ def show_historical_performance(training_code_tag_filter: str | None) -> None:
             end_date = st.date_input("End Date", value=pd.to_datetime("today"))
 
     with st.spinner("Loading historical predictions..."):
-        raw = get_games_with_total_scored_points(
-            only_null=False,
-            start_date=start_date.strftime("%Y-%m-%d") if start_date else None,
-            end_date=end_date.strftime("%Y-%m-%d") if end_date else None,
-        )
+        try:
+            raw = get_games_with_total_scored_points(
+                only_null=False,
+                start_date=start_date.strftime("%Y-%m-%d") if start_date else None,
+                end_date=end_date.strftime("%Y-%m-%d") if end_date else None,
+            )
+        except Exception as _exc:
+            st.error(f"Database error while loading historical data: {_exc}")
+            return
         games = build_game_level_predictions(
             raw,
             training_code_tag_filter=training_code_tag_filter,
@@ -4800,7 +4812,11 @@ def main() -> None:
             ],
             index=0,
         )
-        available_training_code_tags = load_available_training_code_tags()
+        try:
+            available_training_code_tags = load_available_training_code_tags()
+        except Exception as _exc:
+            st.error(f"Could not connect to the database: {_exc}")
+            available_training_code_tags = []
         training_code_tag_options = ["All available", *available_training_code_tags]
         default_training_code_tag = (
             "1.0"
