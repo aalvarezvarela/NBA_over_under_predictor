@@ -115,6 +115,14 @@ def get_schema_name_games() -> str:
     return get_config().get("Database", "SCHEMA_NAME_GAMES")
 
 
+def get_schema_name_game_time_index() -> str:
+    return get_config().get(
+        "Database",
+        "SCHEMA_NAME_GAME_TIME_INDEX",
+        fallback="nba_game_time_index",
+    )
+
+
 def get_schema_name_players() -> str:
     return get_config().get("Database", "SCHEMA_NAME_PLAYERS")
 

@@ -144,7 +144,7 @@ def normalize_line_history_df(df: pd.DataFrame) -> pd.DataFrame:
     out["bookmaker"] = out["bookmaker"].astype(str).str.strip()
     out["bookmaker_slug"] = out["bookmaker_slug"].astype(str).str.strip().str.lower()
     out["line_timestamp"] = pd.to_datetime(out["timestamp"], errors="coerce")
-    out["game_start_timestamp"] = _build_game_start_timestamp(out)
+    out["game_start_timestamp_utc"] = _resolve_game_start_timestamp_utc(out)
 
     numeric_cols = [
         "change_order",
@@ -160,6 +160,20 @@ def normalize_line_history_df(df: pd.DataFrame) -> pd.DataFrame:
     out["team_home"] = out["team_home"].map(_normalize_sbr_team_name)
 
     return out
+
+
+def _resolve_game_start_timestamp_utc(df: pd.DataFrame) -> pd.Series:
+    resolved = pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns, UTC]")
+    for col in ["game_time_utc", "game_start_timestamp_utc", "game_start_timestamp"]:
+        if col not in df.columns:
+            continue
+        parsed = pd.to_datetime(df[col], errors="coerce", utc=True)
+        resolved = resolved.combine_first(parsed)
+
+    fallback = pd.to_datetime(
+        _build_game_start_timestamp(df), errors="coerce", utc=True
+    )
+    return resolved.combine_first(fallback)
 
 
 def _build_game_start_timestamp(df: pd.DataFrame) -> pd.Series:

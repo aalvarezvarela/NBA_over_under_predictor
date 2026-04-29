@@ -43,6 +43,56 @@ def check_active_connections():
             total = cur.fetchone()[0]
             print(f"\nTotal connections to your database: {total}")
 
+            cur.execute("""
+                SELECT
+                    pid,
+                    usename,
+                    application_name,
+                    client_addr,
+                    state,
+                    now() - backend_start AS backend_age,
+                    now() - xact_start AS transaction_age,
+                    wait_event_type,
+                    wait_event,
+                    left(regexp_replace(query, '\\s+', ' ', 'g'), 220) AS query
+                FROM pg_stat_activity
+                WHERE datname = current_database()
+                    AND pid <> pg_backend_pid()
+                    AND (
+                        state = 'idle in transaction'
+                        OR application_name = 'Supavisor'
+                    )
+                ORDER BY
+                    state = 'idle in transaction' DESC,
+                    xact_start NULLS LAST,
+                    backend_start;
+            """)
+
+            details = cur.fetchall()
+            print("\n=== Supavisor / Idle Transaction Details ===")
+            if not details:
+                print("No Supavisor or idle-in-transaction sessions found.")
+            for row in details:
+                (
+                    pid,
+                    user,
+                    app_name,
+                    client_addr,
+                    state,
+                    backend_age,
+                    transaction_age,
+                    wait_event_type,
+                    wait_event,
+                    query,
+                ) = row
+                print(
+                    f"PID: {pid}, User: {user}, App: {app_name}, "
+                    f"Client: {client_addr}, State: {state}, "
+                    f"Backend age: {backend_age}, Transaction age: {transaction_age}, "
+                    f"Wait: {wait_event_type}/{wait_event}"
+                )
+                print(f"  Last query: {query}")
+
     except Exception as e:
         print(f"Error checking connections: {e}")
     finally:

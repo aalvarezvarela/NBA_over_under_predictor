@@ -60,6 +60,12 @@ MATCHUP_HISTORY_COLUMNS = (
     + MATCHUP_HISTORY_NUMERIC_COLUMNS
     + MATCHUP_HISTORY_TEXT_COLUMNS
 )
+MATCHUP_HISTORY_OPTIONAL_ENRICHMENT_COLUMNS = [
+    "game_id",
+    "game_time_utc",
+    "game_start_timestamp_utc",
+    "game_start_timestamp",
+]
 
 
 def discover_matchup_history_csvs(
@@ -98,11 +104,17 @@ def _read_matchup_history_csv(path: Path) -> pd.DataFrame:
         if col not in out.columns:
             out[col] = pd.NA
 
-    unknown_columns = [col for col in out.columns if col not in MATCHUP_HISTORY_COLUMNS]
+    allowed_columns = (
+        MATCHUP_HISTORY_COLUMNS + MATCHUP_HISTORY_OPTIONAL_ENRICHMENT_COLUMNS
+    )
+    unknown_columns = [col for col in out.columns if col not in allowed_columns]
     if unknown_columns:
         raise ValueError(f"Unexpected columns in {path}: {unknown_columns}")
 
-    return out[MATCHUP_HISTORY_COLUMNS]
+    enrichment_cols = [
+        col for col in MATCHUP_HISTORY_OPTIONAL_ENRICHMENT_COLUMNS if col in out.columns
+    ]
+    return out[MATCHUP_HISTORY_COLUMNS + enrichment_cols]
 
 
 def _normalize_sbr_team_name(value: object) -> object:
@@ -138,7 +150,7 @@ def normalize_matchup_history_df(df: pd.DataFrame) -> pd.DataFrame:
         "Int64"
     )
     out["event_id"] = out["event_id"].astype(str)
-    out["game_start_timestamp"] = _build_game_start_timestamp(out)
+    out["game_start_timestamp_utc"] = _resolve_game_start_timestamp_utc(out)
 
     for col in MATCHUP_HISTORY_NUMERIC_COLUMNS:
         out[col] = pd.to_numeric(out[col], errors="coerce")
@@ -150,6 +162,20 @@ def normalize_matchup_history_df(df: pd.DataFrame) -> pd.DataFrame:
     out["team_home"] = out["team_home"].map(_normalize_sbr_team_name)
 
     return out
+
+
+def _resolve_game_start_timestamp_utc(df: pd.DataFrame) -> pd.Series:
+    resolved = pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns, UTC]")
+    for col in ["game_time_utc", "game_start_timestamp_utc", "game_start_timestamp"]:
+        if col not in df.columns:
+            continue
+        parsed = pd.to_datetime(df[col], errors="coerce", utc=True)
+        resolved = resolved.combine_first(parsed)
+
+    fallback = pd.to_datetime(
+        _build_game_start_timestamp(df), errors="coerce", utc=True
+    )
+    return resolved.combine_first(fallback)
 
 
 def _build_game_start_timestamp(df: pd.DataFrame) -> pd.Series:

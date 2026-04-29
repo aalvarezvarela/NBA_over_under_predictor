@@ -39,7 +39,7 @@ def _line_history_columns() -> list[tuple[str, str]]:
         ("season_year", "INTEGER NOT NULL"),
         ("event_id", "TEXT NOT NULL"),
         ("start_time", "TEXT"),
-        ("game_start_timestamp", "TIMESTAMP"),
+        ("game_start_timestamp_utc", "TIMESTAMPTZ"),
         ("team_away", "VARCHAR(100) NOT NULL"),
         ("team_home", "VARCHAR(100) NOT NULL"),
         ("bookmaker", "VARCHAR(100) NOT NULL"),
@@ -124,11 +124,37 @@ def create_odds_sportsbook_line_history_table(
             )
             cur.execute(
                 sql.SQL(
-                    "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS game_start_timestamp TIMESTAMP"
+                    "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS game_start_timestamp_utc TIMESTAMPTZ"
                 ).format(
                     sql.Identifier(schema),
                     sql.Identifier(table),
                 )
+            )
+            cur.execute(
+                """
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_schema = %s
+                            AND table_name = %s
+                            AND column_name = 'game_start_timestamp'
+                    ) THEN
+                        EXECUTE format(
+                            'UPDATE %I.%I SET game_start_timestamp_utc = COALESCE(game_start_timestamp_utc, game_start_timestamp AT TIME ZONE ''UTC'')',
+                            %s,
+                            %s
+                        );
+                        EXECUTE format(
+                            'ALTER TABLE %I.%I DROP COLUMN game_start_timestamp',
+                            %s,
+                            %s
+                        );
+                    END IF;
+                END $$;
+                """,
+                (schema, table, schema, table, schema, table),
             )
             cur.execute(
                 sql.SQL("ALTER TABLE {}.{} DROP COLUMN IF EXISTS matchup_url").format(
@@ -219,9 +245,9 @@ def _prepare_line_history_for_upsert(df: pd.DataFrame, market: str) -> pd.DataFr
         "Int64"
     )
     out["line_timestamp"] = pd.to_datetime(out["line_timestamp"], errors="coerce")
-    if "game_start_timestamp" in out:
-        out["game_start_timestamp"] = pd.to_datetime(
-            out["game_start_timestamp"], errors="coerce"
+    if "game_start_timestamp_utc" in out:
+        out["game_start_timestamp_utc"] = pd.to_datetime(
+            out["game_start_timestamp_utc"], errors="coerce", utc=True
         )
     out["event_id"] = out["event_id"].astype(str)
     out["bookmaker_slug"] = out["bookmaker_slug"].astype(str).str.strip().str.lower()
