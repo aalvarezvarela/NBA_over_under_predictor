@@ -5,6 +5,8 @@ import pandas as pd
 from nba_api.stats.endpoints import ScoreboardV2
 
 EASTERN_TZ = ZoneInfo("America/New_York")
+UNKNOWN_GAME_TIME_STATUS_TEXT = frozenset({"TBD", "TBA"})
+GAME_TIME_PATTERN = r"\b(\d{1,2}:\d{2}\s*[AP]M)\b"
 
 
 def nba_api_schedule_games(date):
@@ -21,8 +23,8 @@ def nba_api_schedule_games(date):
     try:
         datetime.strptime(date, "%Y-%m-%d")
 
-    except ValueError:
-        raise ValueError("Invalid date format. Please use YYYY-MM-DD.")
+    except ValueError as err:
+        raise ValueError("Invalid date format. Please use YYYY-MM-DD.") from err
 
     # Fetch games
     scoreboard_v2 = ScoreboardV2(game_date=date)
@@ -37,6 +39,8 @@ def filter_started_games(
 ) -> pd.DataFrame:
     """
     Keep only games that have not started yet based on GAME_TIME in Eastern Time.
+    Games with unknown start times are retained because ScoreboardV2 can report
+    future playoff games as TBD/TBA until the league assigns tip-off times.
     """
     if games.empty or "GAME_TIME" not in games.columns:
         return games
@@ -49,9 +53,12 @@ def filter_started_games(
         else:
             current_time_et = current_time_et.tz_convert(EASTERN_TZ)
 
-    upcoming_games = games[games["GAME_TIME"] > current_time_et].copy()
+    known_game_time = games["GAME_TIME"].notna()
+    upcoming_games = games[
+        (~known_game_time) | (games["GAME_TIME"] > current_time_et)
+    ].copy()
 
-    filtered_count = len(games) - len(upcoming_games)
+    filtered_count = (known_game_time & (games["GAME_TIME"] <= current_time_et)).sum()
     if filtered_count > 0:
         print(
             f"Excluded {filtered_count} scheduled game(s) that already started "
@@ -59,6 +66,23 @@ def filter_started_games(
         )
 
     return upcoming_games
+
+
+def _parse_scoreboard_game_times(games: pd.DataFrame) -> pd.Series:
+    """Parse tip-off times from ScoreboardV2 GAME_STATUS_TEXT values."""
+    game_dates = pd.to_datetime(games["GAME_DATE_EST"], errors="coerce").dt.strftime(
+        "%Y-%m-%d"
+    )
+    game_status_text = games["GAME_STATUS_TEXT"].astype("string").str.strip().str.upper()
+    game_time_text = game_status_text.str.extract(GAME_TIME_PATTERN, expand=False)
+    parsed_game_times = pd.to_datetime(
+        game_dates.astype("string") + " " + game_time_text,
+        format="%Y-%m-%d %I:%M %p",
+        errors="coerce",
+    )
+    return parsed_game_times.dt.tz_localize(
+        EASTERN_TZ, ambiguous="infer", nonexistent="shift_forward"
+    )
 
 
 def get_schedule_games(date_to_predict: str) -> pd.DataFrame:
@@ -74,15 +98,11 @@ def get_schedule_games(date_to_predict: str) -> pd.DataFrame:
         print("No games found for the specified date.")
         return games
 
-    # Extract just the date portion (first 10 chars: YYYY-MM-DD) and combine with time
-    games["GAME_TIME"] = pd.to_datetime(
-        games["GAME_DATE_EST"].astype(str).str[:10] + " " + games["GAME_STATUS_TEXT"],
-        format="%Y-%m-%d %I:%M %p ET",
-        errors="coerce",
-    )
+    games["GAME_TIME"] = _parse_scoreboard_game_times(games)
 
-    # Filter out games with invalid GAME_TIME
-    invalid_game_time = games[games["GAME_TIME"].isna()]
+    game_status_text = games["GAME_STATUS_TEXT"].astype("string").str.strip().str.upper()
+    unknown_game_time = game_status_text.isin(UNKNOWN_GAME_TIME_STATUS_TEXT)
+    invalid_game_time = games[games["GAME_TIME"].isna() & ~unknown_game_time]
     if not invalid_game_time.empty:
         print("\n" + "==" * 30)
         print("WARNING: Dropping games with invalid GAME_TIME:")
@@ -99,11 +119,7 @@ def get_schedule_games(date_to_predict: str) -> pd.DataFrame:
             ]
         )
         print("==" * 30 + "\n")
-        games = games[games["GAME_TIME"].notna()].copy()
+        games = games.drop(index=invalid_game_time.index).copy()
 
-    # Make it timezone-aware (Eastern Time)
-    games["GAME_TIME"] = games["GAME_TIME"].dt.tz_localize(
-        EASTERN_TZ, ambiguous="infer", nonexistent="shift_forward"
-    )
     games = filter_started_games(games)
     return games
