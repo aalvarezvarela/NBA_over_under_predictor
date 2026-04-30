@@ -45,6 +45,12 @@ CONFIG_SCHEMA = {
     "db_env": ("Database", "DB_ENV", str, None),
     "db_name": ("Database", "DB_NAME", str, None),
     "schema_name_games": ("Database", "SCHEMA_NAME_GAMES", str, None),
+    "schema_name_game_time_index": (
+        "Database",
+        "SCHEMA_NAME_GAME_TIME_INDEX",
+        str,
+        "nba_game_time_index",
+    ),
     "schema_name_players": ("Database", "SCHEMA_NAME_PLAYERS", str, None),
     "schema_name_odds": ("Database", "SCHEMA_NAME_ODDS", str, None),
     "schema_name_odds_mgm": ("Database", "SCHEMA_NAME_ODDS_MGM", str, None),
