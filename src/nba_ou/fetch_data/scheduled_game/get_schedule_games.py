@@ -5,7 +5,8 @@ import pandas as pd
 from nba_api.stats.endpoints import ScoreboardV2
 
 EASTERN_TZ = ZoneInfo("America/New_York")
-UNKNOWN_GAME_TIME_STATUS_TEXT = frozenset({"TBD", "TBA"})
+UNKNOWN_GAME_TIME_STATUS_TEXT = frozenset({"TBD", "TBA", "TBP"})
+DEFAULT_UNKNOWN_GAME_TIME_TEXT = "11:59 PM"
 GAME_TIME_PATTERN = r"\b(\d{1,2}:\d{2}\s*[AP]M)\b"
 
 
@@ -85,6 +86,21 @@ def _parse_scoreboard_game_times(games: pd.DataFrame) -> pd.Series:
     )
 
 
+def _default_unknown_game_times(games: pd.DataFrame) -> pd.Series:
+    """Create a timezone-aware placeholder tip-off for games without a listed time."""
+    game_dates = pd.to_datetime(games["GAME_DATE_EST"], errors="coerce").dt.strftime(
+        "%Y-%m-%d"
+    )
+    default_game_times = pd.to_datetime(
+        game_dates.astype("string") + f" {DEFAULT_UNKNOWN_GAME_TIME_TEXT}",
+        format="%Y-%m-%d %I:%M %p",
+        errors="coerce",
+    )
+    return default_game_times.dt.tz_localize(
+        EASTERN_TZ, ambiguous="infer", nonexistent="shift_forward"
+    )
+
+
 def get_schedule_games(date_to_predict: str) -> pd.DataFrame:
     """
     Fetch scheduled NBA games for a specific date.
@@ -101,7 +117,11 @@ def get_schedule_games(date_to_predict: str) -> pd.DataFrame:
     games["GAME_TIME"] = _parse_scoreboard_game_times(games)
 
     game_status_text = games["GAME_STATUS_TEXT"].astype("string").str.strip().str.upper()
-    unknown_game_time = game_status_text.isin(UNKNOWN_GAME_TIME_STATUS_TEXT)
+    unknown_game_time = (
+        game_status_text.isin(UNKNOWN_GAME_TIME_STATUS_TEXT)
+        | game_status_text.isna()
+        | game_status_text.eq("")
+    )
     invalid_game_time = games[games["GAME_TIME"].isna() & ~unknown_game_time]
     if not invalid_game_time.empty:
         print("\n" + "==" * 30)
@@ -120,6 +140,13 @@ def get_schedule_games(date_to_predict: str) -> pd.DataFrame:
         )
         print("==" * 30 + "\n")
         games = games.drop(index=invalid_game_time.index).copy()
+        unknown_game_time = unknown_game_time.loc[games.index]
+
+    missing_unknown_time = games["GAME_TIME"].isna() & unknown_game_time
+    if missing_unknown_time.any():
+        games.loc[missing_unknown_time, "GAME_TIME"] = _default_unknown_game_times(
+            games.loc[missing_unknown_time]
+        )
 
     games = filter_started_games(games)
     return games
