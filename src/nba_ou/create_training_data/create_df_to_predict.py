@@ -9,14 +9,9 @@ and statistics needed for model training, including injury data processing.
 import warnings
 from zoneinfo import ZoneInfo
 
-import numpy as np
 import pandas as pd
 
 from nba_ou.config.odds_columns import get_main_book
-from nba_ou.config.settings import SETTINGS
-from nba_ou.create_training_data.get_all_info_for_scheduled_games import (
-    get_all_info_for_scheduled_games,
-)
 from nba_ou.create_training_data.predict_data_utils import (
     extract_home_away_pairs_from_scheduled_games,
     filter_by_seasons_with_extra_game_ids,
@@ -531,7 +526,10 @@ if __name__ == "__main__":
     # Create training data up to a specific date
     date_to_train = "2026-01-10"
     n_seasons = 3  # Optional: specify number of seasons to include
-
+    # from nba_ou.config.settings import SETTINGS
+    # from nba_ou.create_training_data.get_all_info_for_scheduled_games import (
+    #     get_all_info_for_scheduled_games,
+    # )
     # # Get all info for scheduled games
     # date_to_predict = pd.Timestamp.now(tz=ZoneInfo("US/Pacific")).strftime("%Y-%m-%d")
     # scheduled_data = get_all_info_for_scheduled_games(
