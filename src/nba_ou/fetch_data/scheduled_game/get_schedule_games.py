@@ -31,8 +31,53 @@ def nba_api_schedule_games(date):
     scoreboard_v2 = ScoreboardV2(game_date=date)
 
     games = scoreboard_v2.get_data_frames()[0]
+    if not games.empty:
+        return games
 
-    return games
+    from nba_api.stats.endpoints import ScoreboardV3
+
+    scoreboard_v3 = ScoreboardV3(game_date=date)
+    game_header = scoreboard_v3.game_header.get_data_frame()
+    if game_header.empty:
+        return games
+
+    print("ScoreboardV2 returned no games; using ScoreboardV3 fallback.")
+
+    line_score = scoreboard_v3.line_score.get_data_frame()
+    team_ids_by_game = pd.DataFrame(
+        columns=["gameId", "HOME_TEAM_ID", "VISITOR_TEAM_ID"]
+    )
+    if not line_score.empty:
+        line_score = line_score.copy()
+        line_score["_team_position"] = line_score.groupby("gameId").cumcount()
+        team_ids_by_game = (
+            line_score[line_score["_team_position"].isin([0, 1])]
+            .pivot(index="gameId", columns="_team_position", values="teamId")
+            .rename(columns={0: "HOME_TEAM_ID", 1: "VISITOR_TEAM_ID"})
+            .reset_index()
+        )
+
+    fallback_games = game_header.merge(team_ids_by_game, on="gameId", how="left")
+    fallback_games["GAME_DATE_EST"] = f"{date}T00:00:00"
+    fallback_games["GAME_SEQUENCE"] = range(1, len(fallback_games) + 1)
+    fallback_games["GAME_ID"] = fallback_games["gameId"].astype("string")
+    fallback_games["GAME_STATUS_ID"] = fallback_games["gameStatus"]
+    fallback_games["GAME_STATUS_TEXT"] = fallback_games["gameStatusText"]
+    fallback_games["GAMECODE"] = fallback_games["gameCode"]
+    game_date = datetime.strptime(date, "%Y-%m-%d")
+    fallback_games["SEASON"] = (
+        game_date.year if game_date.month >= 10 else game_date.year - 1
+    )
+    fallback_games["LIVE_PERIOD"] = fallback_games["period"]
+    fallback_games["LIVE_PC_TIME"] = fallback_games["gameClock"]
+    fallback_games["NATL_TV_BROADCASTER_ABBREVIATION"] = pd.NA
+    fallback_games["HOME_TV_BROADCASTER_ABBREVIATION"] = pd.NA
+    fallback_games["AWAY_TV_BROADCASTER_ABBREVIATION"] = pd.NA
+    fallback_games["LIVE_PERIOD_TIME_BCAST"] = pd.NA
+    fallback_games["ARENA_NAME"] = pd.NA
+    fallback_games["WH_STATUS"] = pd.NA
+
+    return fallback_games[ScoreboardV2.expected_data["GameHeader"]]
 
 
 def filter_started_games(
