@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -34,9 +35,7 @@ def _get_live_game_ids_from_scoreboard_v2(game_date: str) -> list[str]:
 def _get_live_game_ids_from_scoreboard_v3(game_date: str) -> list[str]:
     scoreboard_v3 = ScoreboardV3(game_date=game_date)
     game_header = scoreboard_v3.game_header.get_data_frame()
-    if game_header.empty or not {"gameId", "gameStatus"}.issubset(
-        game_header.columns
-    ):
+    if game_header.empty or not {"gameId", "gameStatus"}.issubset(game_header.columns):
         return []
 
     game_status = pd.to_numeric(game_header["gameStatus"], errors="coerce")
@@ -55,7 +54,7 @@ def get_live_game_ids():
         ("ScoreboardV3", lambda: _get_live_game_ids_from_scoreboard_v3(game_date)),
     ]
 
-    last_error: Exception | None = None
+    last_error: Optional[Exception] = None
     for source_name, fetcher in fallback_fetchers:
         try:
             return fetcher()
