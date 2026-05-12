@@ -3,7 +3,7 @@ from scipy.stats import linregress
 from tqdm import tqdm
 
 from nba_ou.config.odds_columns import moneyline_col, spread_col, total_line_col
-from nba_ou.data_preparation.statistics.statistics import (
+from nba_ou.data_processing.statistics.statistics import (
     compute_rolling_stats,
     compute_rolling_weighted_stats,
     compute_season_std,

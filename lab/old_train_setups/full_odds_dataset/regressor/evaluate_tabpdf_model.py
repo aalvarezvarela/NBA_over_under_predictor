@@ -1,7 +1,7 @@
 # ============================================================
 # TabPFN NBA over under: load fitted model and predict on new CSV
 # Uses your project cleaning:
-#   from nba_ou.data_preparation.missing_data.clean_df_for_training import clean_dataframe_for_training
+#   from nba_ou.data_processing.missing_data.clean_df_for_training import clean_dataframe_for_training
 # ============================================================
 
 import os
@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 # IMPORTANT: your cleaning function
-from nba_ou.data_preparation.missing_data.clean_df_for_training import (
+from nba_ou.data_processing.missing_data.clean_df_for_training import (
     clean_dataframe_for_training,
 )
 from tabpfn.model_loading import load_fitted_tabpfn_model
@@ -64,10 +64,9 @@ df_clean = clean_dataframe_for_training(
     nan_threshold=100,
     drop_all_na_rows=DROP_ALL_NA_ROWS,
     keep_correlated_and_constant=True,
-
     verbose=VERBOSE_CLEANING,
 )
-    
+
 df_clean.shape
 
 

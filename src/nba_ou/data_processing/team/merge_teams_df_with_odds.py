@@ -3,7 +3,7 @@ import pandas as pd
 from nba_ou.config.constants import (
     TEAM_NAME_STANDARDIZATION as TEAM_NAME_EQUIVALENT_DICT,
 )
-from nba_ou.data_preparation.odds.process_odds_data import process_odds_df
+from nba_ou.data_processing.odds.process_odds_data import process_odds_df
 
 
 def merge_teams_df_with_odds(df_odds, df_team, use_metric: str = "most_common"):

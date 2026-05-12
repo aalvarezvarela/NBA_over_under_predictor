@@ -1,9 +1,9 @@
 import pandas as pd
 
-from nba_ou.data_preparation.players.players_statistics import (
+from nba_ou.data_processing.players.players_statistics import (
     precompute_cumulative_avg_stat,
 )
-from nba_ou.data_preparation.scheduled_games.merge_scheduled_with_existing_data import (
+from nba_ou.data_processing.scheduled_games.merge_scheduled_with_existing_data import (
     standardize_and_merge_scheduled_games_to_players_data,
 )
 

@@ -4,7 +4,7 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
-from nba_ou.data_preparation.missing_data.clean_df_for_training import (
+from nba_ou.data_processing.missing_data.clean_df_for_training import (
     clean_dataframe_for_training,
 )
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score

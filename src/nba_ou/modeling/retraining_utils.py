@@ -9,7 +9,7 @@ from typing import Any
 import pandas as pd
 from nba_ou.config.odds_columns import total_line_col
 from nba_ou.config.settings import SETTINGS
-from nba_ou.data_preparation.missing_data.handle_missing_data import (
+from nba_ou.data_processing.missing_data.handle_missing_data import (
     apply_missing_policy,
 )
 from nba_ou.modeling.model_registry import derive_staging_prefix

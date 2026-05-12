@@ -12,7 +12,7 @@ This module provides functions to:
 import numpy as np
 import pandas as pd
 from nba_ou.config.odds_columns import resolve_main_total_line_col
-from nba_ou.data_preparation.missing_data.handle_missing_data import (
+from nba_ou.data_processing.missing_data.handle_missing_data import (
     apply_missing_policy,
 )
 
