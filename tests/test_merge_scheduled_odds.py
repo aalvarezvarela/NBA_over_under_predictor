@@ -6,7 +6,7 @@ import datetime
 import pandas as pd
 import pytest
 
-from nba_ou.data_preparation.odds.merge_scheduled_odds import (
+from nba_ou.data_processing.odds.merge_scheduled_odds import (
     merge_and_validate_scheduled_odds,
 )
 
@@ -185,7 +185,7 @@ def test_regular_season_game_passes_strict_mode_2(monkeypatch):
     ]:
         merged[col] = 50.0
 
-    import nba_ou.data_preparation.odds.merge_scheduled_odds as mod
+    import nba_ou.data_processing.odds.merge_scheduled_odds as mod
 
     monkeypatch.setattr(mod, "merge_yahoo_sportsbook_odds", lambda y, s: merged)
 
@@ -235,7 +235,7 @@ def test_play_in_game_no_public_pcts_warns_but_does_not_raise(monkeypatch, capsy
     }
     merged = pd.DataFrame([sb_row])
 
-    import nba_ou.data_preparation.odds.merge_scheduled_odds as mod
+    import nba_ou.data_processing.odds.merge_scheduled_odds as mod
 
     monkeypatch.setattr(mod, "merge_yahoo_sportsbook_odds", lambda y, s: merged)
 
@@ -325,7 +325,7 @@ def test_strict_mode_drops_partial_nan_rows_keeps_clean_rows(monkeypatch):
     }
     merged = pd.DataFrame([row_bad, row_good])
 
-    import nba_ou.data_preparation.odds.merge_scheduled_odds as mod
+    import nba_ou.data_processing.odds.merge_scheduled_odds as mod
 
     monkeypatch.setattr(mod, "merge_yahoo_sportsbook_odds", lambda y, s: merged)
 
@@ -352,7 +352,7 @@ def test_missing_columns_in_prediction_raises():
         # Many historical cols deliberately absent
     }
 
-    import nba_ou.data_preparation.odds.merge_scheduled_odds as mod
+    import nba_ou.data_processing.odds.merge_scheduled_odds as mod
     from unittest.mock import patch
 
     with patch.object(mod, "merge_yahoo_sportsbook_odds", return_value=pd.DataFrame([partial_row])):

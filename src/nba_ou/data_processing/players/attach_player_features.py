@@ -1,14 +1,14 @@
 import pandas as pd
 from tqdm import tqdm
 
-from nba_ou.data_preparation.past_injuries.past_injuries import (
+from nba_ou.data_processing.past_injuries.past_injuries import (
     N_TOP_PLAYERS_INJURED,
     N_TOP_PLAYERS_NON_INJURED,
     create_injury_streak_lookup,
     create_player_lookup,
     get_injured_players_dict,
 )
-from nba_ou.data_preparation.players.players_statistics import (
+from nba_ou.data_processing.players.players_statistics import (
     get_top_n_averages_with_names,
     precompute_cumulative_avg_stat,
 )

@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import shap
 from nba_ou.config.odds_columns import total_line_over_col_raw
-from nba_ou.data_preparation.missing_data.clean_df_for_training import (
+from nba_ou.data_processing.missing_data.clean_df_for_training import (
     clean_dataframe_for_training,
 )
 from nba_ou.postgre_db.predictions.create.create_ou_predictions_db import (

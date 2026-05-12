@@ -8,7 +8,7 @@ It combines season-wide updates with game-by-game verification.
 import pandas as pd
 from nba_api.stats.endpoints import LeagueGameFinder
 from nba_ou.config.constants import SEASON_TYPE_MAP
-from nba_ou.data_preparation.team.merge_teams_df_with_odds import (
+from nba_ou.data_processing.team.merge_teams_df_with_odds import (
     merge_teams_df_with_odds,
 )
 from nba_ou.fetch_data.fetch_odds_data.get_odds_date import process_odds_date

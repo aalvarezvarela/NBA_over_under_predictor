@@ -6,10 +6,10 @@ import pandas as pd
 
 from nba_ou.config.constants import TEAM_ID_MAP, TEAM_NAME_STANDARDIZATION
 from nba_ou.config.settings import SETTINGS
-from nba_ou.data_preparation.referees.process_refs_scheduled_game import (
+from nba_ou.data_processing.referees.process_refs_scheduled_game import (
     process_scheduled_referee_assignments,
 )
-from nba_ou.data_preparation.scheduled_games.manage_injury_data import (
+from nba_ou.data_processing.scheduled_games.manage_injury_data import (
     process_injury_data,
 )
 from nba_ou.fetch_data.injury_reports.get_latest_injury_report import (

@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from nba_ou.config.odds_columns import spread_col, total_line_col
-from nba_ou.data_preparation.historic_games.historic_games_statistics import (
+from nba_ou.data_processing.historic_games.historic_games_statistics import (
     compute_differences_in_points_conceeded_annotated,
     compute_home_points_conceded_avg,
     get_last_5_matchup_excluding_current,

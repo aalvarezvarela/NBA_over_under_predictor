@@ -1,5 +1,5 @@
 import pandas as pd
-from nba_ou.data_preparation.team.cleaning_teams import fix_home_away_parsing_errors
+from nba_ou.data_processing.team.cleaning_teams import fix_home_away_parsing_errors
 from nba_ou.postgre_db.config.db_config import (
     connect_nba_db,
     get_schema_name_games,
