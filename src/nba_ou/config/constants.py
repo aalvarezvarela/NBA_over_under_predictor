@@ -390,3 +390,40 @@ CITY_TO_LATLON = {
     "Ra'anana": (32.1844, 34.8708),         # :contentReference[oaicite:6]{index=6}
     "Ra’anana": (32.1844, 34.8708),         # common apostrophe variant
 }
+
+CITY_TO_TIMEZONE = {
+    # NBA / US & Canada
+    "Atlanta": "America/New_York",
+    "Boston": "America/New_York",
+    "Brooklyn": "America/New_York",
+    "Charlotte": "America/New_York",
+    "Chicago": "America/Chicago",
+    "Cleveland": "America/New_York",
+    "Dallas": "America/Chicago",
+    "Denver": "America/Denver",
+    "Detroit": "America/New_York",
+    "Golden State": "America/Los_Angeles",
+    "Houston": "America/Chicago",
+    "Indiana": "America/Indiana/Indianapolis",
+    "LA": "America/Los_Angeles",
+    "Los Angeles": "America/Los_Angeles",
+    "Memphis": "America/Chicago",
+    "Miami": "America/New_York",
+    "Milwaukee": "America/Chicago",
+    "Minnesota": "America/Chicago",
+    "New Orleans": "America/Chicago",
+    "New York": "America/New_York",
+    "Oklahoma City": "America/Chicago",
+    "Orlando": "America/New_York",
+    "Philadelphia": "America/New_York",
+    "Phoenix": "America/Phoenix",
+    "Portland": "America/Los_Angeles",
+    "Sacramento": "America/Los_Angeles",
+    "San Antonio": "America/Chicago",
+    "Toronto": "America/Toronto",
+    "Utah": "America/Denver",
+    "Washington": "America/New_York",
+    "Seattle": "America/Los_Angeles",
+    "New Jersey": "America/New_York",
+    "New Orleans/Oklahoma City": "America/Chicago",
+}

@@ -9,9 +9,12 @@ This module computes travel-related features for NBA teams, including:
 Uses geographic coordinates to calculate great-circle distances between cities.
 """
 
+from datetime import datetime, time
+from zoneinfo import ZoneInfo
+
 import numpy as np
 import pandas as pd
-from nba_ou.config.constants import CITY_TO_LATLON
+from nba_ou.config.constants import CITY_TO_LATLON, CITY_TO_TIMEZONE
 
 
 def haversine_km(lat1, lon1, lat2, lon2):
@@ -148,6 +151,76 @@ def add_travel_distance(team_log, city_coords=None):
     return team_log
 
 
+def _timezone_offset_hours(city, game_date, city_timezones):
+    """Return the UTC offset in hours for a city's timezone on a game date."""
+    if pd.isna(city) or pd.isna(game_date) or city not in city_timezones:
+        return None
+
+    timestamp = pd.Timestamp(game_date)
+    timezone_name = city_timezones[city]
+
+    try:
+        timezone = ZoneInfo(timezone_name)
+    except Exception:
+        return None
+
+    if timestamp.tzinfo is not None:
+        local_dt = timestamp.tz_convert(timezone_name).to_pydatetime()
+    else:
+        local_dt = datetime.combine(timestamp.date(), time(12), tzinfo=timezone)
+
+    utc_offset = local_dt.utcoffset()
+    if utc_offset is None:
+        return None
+
+    return utc_offset.total_seconds() / 3600
+
+
+def add_jetlag_hours(team_log, city_timezones=None, max_lookback_days=4):
+    """
+    Compute timezone-change hours from the team's most recent game location.
+
+    Only the immediately previous game is considered. If it is more than
+    max_lookback_days before the current game, jetlag hours are set to 0.
+    """
+    if city_timezones is None:
+        city_timezones = CITY_TO_TIMEZONE
+
+    team_log = team_log.copy()
+    team_log = team_log.sort_values(["TEAM_ID", "GAME_DATE", "GAME_ID"])
+
+    if "PREV_CITY" not in team_log.columns:
+        team_log["PREV_CITY"] = team_log.groupby("TEAM_ID")["CITY"].shift(1)
+
+    team_log["PREV_GAME_DATE"] = team_log.groupby("TEAM_ID")["GAME_DATE"].shift(1)
+
+    def compute_jetlag_hours(row):
+        if pd.isna(row["PREV_CITY"]) or pd.isna(row["PREV_GAME_DATE"]):
+            return 0.0
+
+        days_since_prev_game = row["GAME_DATE"] - row["PREV_GAME_DATE"]
+        if days_since_prev_game > pd.Timedelta(days=max_lookback_days):
+            return 0.0
+
+        current_offset = _timezone_offset_hours(
+            row["CITY"], row["GAME_DATE"], city_timezones
+        )
+        previous_offset = _timezone_offset_hours(
+            row["PREV_CITY"], row["GAME_DATE"], city_timezones
+        )
+
+        if current_offset is None or previous_offset is None:
+            return 0.0
+
+        return abs(current_offset - previous_offset)
+
+    team_log["JETLAG_HOURS_FROM_LAST_GAME"] = team_log.apply(
+        compute_jetlag_hours, axis=1
+    )
+
+    return team_log
+
+
 def add_rolling_distances(team_log):
     """
     Add rolling travel distance sums for multiple time windows.
@@ -192,7 +265,8 @@ def merge_travel_features(df, team_log, log_scale=True):
     """
     Merge travel features back to original game-level dataframe.
 
-    Creates columns for multiple rolling windows (1, 2, 5, 7, 14 days) for both home and away teams.
+    Creates columns for multiple rolling windows (1, 2, 5, 7, 14 days) and
+    recent jetlag hours for both home and away teams.
 
     Args:
         df (pd.DataFrame): Original game-level dataframe
@@ -206,22 +280,30 @@ def merge_travel_features(df, team_log, log_scale=True):
     windows = [1, 2, 5, 7, 14]
 
     # Build column lists dynamically
-    km_cols = ["GAME_ID", "TEAM_ID"] + [f"KM_LAST_{w}_DAYS" for w in windows]
+    travel_cols = ["GAME_ID", "TEAM_ID", "JETLAG_HOURS_FROM_LAST_GAME"] + [
+        f"KM_LAST_{w}_DAYS" for w in windows
+    ]
 
     # Filter team_log for home teams only and select relevant columns
-    home_feats = team_log[team_log["IS_HOME"] == True][km_cols].copy()
+    home_feats = team_log[team_log["IS_HOME"]][travel_cols].copy()
 
     # Rename columns for home team
-    rename_dict_home = {"TEAM_ID": "TEAM_ID_TEAM_HOME"}
+    rename_dict_home = {
+        "TEAM_ID": "TEAM_ID_TEAM_HOME",
+        "JETLAG_HOURS_FROM_LAST_GAME": "JETLAG_HOURS_FROM_LAST_GAME_HOME_TEAM",
+    }
     for w in windows:
         rename_dict_home[f"KM_LAST_{w}_DAYS"] = f"TOTAL_KM_IN_LAST_{w}_DAYS_HOME_TEAM"
     home_feats.rename(columns=rename_dict_home, inplace=True)
 
     # Filter team_log for away teams only and select relevant columns
-    away_feats = team_log[team_log["IS_HOME"] == False][km_cols].copy()
+    away_feats = team_log[~team_log["IS_HOME"]][travel_cols].copy()
 
     # Rename columns for away team
-    rename_dict_away = {"TEAM_ID": "TEAM_ID_TEAM_AWAY"}
+    rename_dict_away = {
+        "TEAM_ID": "TEAM_ID_TEAM_AWAY",
+        "JETLAG_HOURS_FROM_LAST_GAME": "JETLAG_HOURS_FROM_LAST_GAME_AWAY_TEAM",
+    }
     for w in windows:
         rename_dict_away[f"KM_LAST_{w}_DAYS"] = f"TOTAL_KM_IN_LAST_{w}_DAYS_AWAY_TEAM"
     away_feats.rename(columns=rename_dict_away, inplace=True)
@@ -237,13 +319,20 @@ def merge_travel_features(df, team_log, log_scale=True):
     for w in windows:
         travel_columns.append(f"TOTAL_KM_IN_LAST_{w}_DAYS_HOME_TEAM")
         travel_columns.append(f"TOTAL_KM_IN_LAST_{w}_DAYS_AWAY_TEAM")
+    
+    travel_columns.extend(
+        [
+            "JETLAG_HOURS_FROM_LAST_GAME_HOME_TEAM",
+            "JETLAG_HOURS_FROM_LAST_GAME_AWAY_TEAM",
+        ]
+    )
 
     # Fill any remaining NaN values with 0 and optionally apply log transformation
     for col in travel_columns:
         if col in df.columns:
             df[col] = df[col].fillna(0)
             # Apply logarithmic transformation (log1p handles zeros gracefully)
-            if log_scale:
+            if log_scale and col.startswith("TOTAL_KM_"):
                 df[col] = np.log1p(df[col])
 
     return df
@@ -256,9 +345,10 @@ def compute_travel_features(df, log_scale=True):
     This is the main entry point that orchestrates:
     1. Building team-centric game log
     2. Computing travel distances between consecutive games
-    3. Calculating rolling sums for 1, 2, 5, 7, and 14 day windows
-    4. Merging features back to original dataframe
-    5. Optionally applying log transformation
+    3. Computing timezone-change hours from the last game in the past 4 days
+    4. Calculating rolling sums for 1, 2, 5, 7, and 14 day windows
+    5. Merging features back to original dataframe
+    6. Optionally applying log transformation to travel distances
 
     Args:
         df (pd.DataFrame): Game-level dataframe with required columns:
@@ -274,6 +364,8 @@ def compute_travel_features(df, log_scale=True):
         pd.DataFrame: Original dataframe with added travel features for both home and away teams:
             - TOTAL_KM_IN_LAST_{1,2,5,7,14}_DAYS_HOME_TEAM
             - TOTAL_KM_IN_LAST_{1,2,5,7,14}_DAYS_AWAY_TEAM
+            - JETLAG_HOURS_FROM_LAST_GAME_HOME_TEAM
+            - JETLAG_HOURS_FROM_LAST_GAME_AWAY_TEAM
     """
     print("Computing travel features...")
 
@@ -283,10 +375,13 @@ def compute_travel_features(df, log_scale=True):
     # Step 2: Compute travel distances
     team_log = add_travel_distance(team_log)
 
-    # Step 3: Compute rolling sums
+    # Step 3: Compute jetlag hours from the last game in the past 4 days
+    team_log = add_jetlag_hours(team_log)
+
+    # Step 4: Compute rolling sums
     team_log = add_rolling_distances(team_log)
 
-    # Step 4: Merge back to original dataframe
+    # Step 5: Merge back to original dataframe
     df = merge_travel_features(df, team_log, log_scale=log_scale)
 
     print("Travel features computed successfully.")
