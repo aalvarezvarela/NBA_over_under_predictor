@@ -5,7 +5,6 @@ from nba_ou.postgre_db.config.db_config import (
     get_schema_name_players,
 )
 from nba_ou.postgre_db.players.create_nba_players_db import (
-    database_exists,
     schema_exists,
 )
 from psycopg import sql

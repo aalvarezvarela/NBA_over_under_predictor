@@ -5,6 +5,7 @@ This module provides functions to load NBA games, players, and odds data
 from PostgreSQL databases instead of CSV files.
 """
 
+from .all_star_voting.fetch_data_from_db import load_all_star_voting_from_db
 from .config.db_loader import (
     load_all_nba_data_from_db,
     load_games_from_db,
@@ -13,6 +14,7 @@ from .config.db_loader import (
 
 __all__ = [
     "load_all_nba_data_from_db",
+    "load_all_star_voting_from_db",
     "load_games_from_db",
     "load_players_from_db",
 ]

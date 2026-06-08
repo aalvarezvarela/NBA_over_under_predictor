@@ -127,6 +127,14 @@ def get_schema_name_players() -> str:
     return get_config().get("Database", "SCHEMA_NAME_PLAYERS")
 
 
+def get_schema_name_all_star_voting() -> str:
+    return get_config().get(
+        "Database",
+        "SCHEMA_NAME_ALL_STAR_VOTING",
+        fallback="nba_all_star_voting",
+    )
+
+
 def get_schema_name_odds_mgm() -> str:
     return get_config().get("Database", "SCHEMA_NAME_ODDS_MGM")
 
@@ -257,6 +265,10 @@ def connect_games_db() -> psycopg.Connection:
 
 def connect_players_db() -> psycopg.Connection:
     return connect_schema_db(get_schema_name_players())
+
+
+def connect_all_star_voting_db() -> psycopg.Connection:
+    return connect_schema_db(get_schema_name_all_star_voting())
 
 
 def connect_odds_db() -> psycopg.Connection:
