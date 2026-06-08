@@ -21,6 +21,16 @@ from nba_ou.fetch_data.odds_yahoo.scrape_yahoo import scrape_yahoo_days
 from nba_ou.fetch_data.scheduled_game.get_schedule_games import get_schedule_games
 
 
+def _normalize_team_series(series: pd.Series) -> pd.Series:
+    """Apply ``TEAM_NAME_STANDARDIZATION`` while preserving ``object`` dtype.
+
+    Using ``.map(...).fillna(...)`` silently downcasts an all-NaN object series
+    to ``float64``, which then breaks merges against object-typed team columns.
+    """
+    mapped = series.map(TEAM_NAME_STANDARDIZATION)
+    return mapped.where(mapped.notna(), series).astype(object)
+
+
 def merge_odds_with_scheduled_games(
     odds_df: pd.DataFrame, scheduled_games_df: pd.DataFrame
 ) -> pd.DataFrame:
@@ -52,33 +62,11 @@ def merge_odds_with_scheduled_games(
     odds_df = odds_df.copy()
     scheduled_games_df = scheduled_games_df.copy()
 
-    # Apply normalization to team_home and team_away in odds_df
-    if "team_home" in odds_df.columns:
-        odds_df["team_home"] = (
-            odds_df["team_home"]
-            .map(TEAM_NAME_STANDARDIZATION)
-            .fillna(odds_df["team_home"])
-        )
-    if "team_away" in odds_df.columns:
-        odds_df["team_away"] = (
-            odds_df["team_away"]
-            .map(TEAM_NAME_STANDARDIZATION)
-            .fillna(odds_df["team_away"])
-        )
-
-    # Apply normalization to team_home and team_away in scheduled_games_df
-    if "team_home" in scheduled_games_df.columns:
-        scheduled_games_df["team_home"] = (
-            scheduled_games_df["team_home"]
-            .map(TEAM_NAME_STANDARDIZATION)
-            .fillna(scheduled_games_df["team_home"])
-        )
-    if "team_away" in scheduled_games_df.columns:
-        scheduled_games_df["team_away"] = (
-            scheduled_games_df["team_away"]
-            .map(TEAM_NAME_STANDARDIZATION)
-            .fillna(scheduled_games_df["team_away"])
-        )
+    for col in ("team_home", "team_away"):
+        if col in odds_df.columns:
+            odds_df[col] = _normalize_team_series(odds_df[col])
+        if col in scheduled_games_df.columns:
+            scheduled_games_df[col] = _normalize_team_series(scheduled_games_df[col])
 
     # Ensure required columns exist in scheduled_games_df
     required_cols = ["game_id", "game_date", "team_home", "team_away"]
@@ -96,6 +84,12 @@ def merge_odds_with_scheduled_games(
     scheduled_subset = scheduled_games_df[
         ["game_id", "game_date", "team_home", "team_away"]
     ].copy()
+
+    # Safety net: force object dtype on team merge keys so an all-NaN column on
+    # either side does not trigger an object/float64 merge-key dtype mismatch.
+    for col in ("team_home", "team_away"):
+        odds_df[col] = odds_df[col].astype(object)
+        scheduled_subset[col] = scheduled_subset[col].astype(object)
 
     # Merge to add game_id
     merged_df = odds_df.merge(
