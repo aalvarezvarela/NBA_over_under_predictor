@@ -49,9 +49,9 @@ def _backfill_missing_teams_from_odds(
     if odds_df.empty:
         return scheduled_subset
 
-    missing_mask = scheduled_subset["team_home"].isna() | scheduled_subset[
-        "team_away"
-    ].isna()
+    missing_mask = (
+        scheduled_subset["team_home"].isna() | scheduled_subset["team_away"].isna()
+    )
     if not missing_mask.any():
         return scheduled_subset
 
