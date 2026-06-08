@@ -21,6 +21,76 @@ from nba_ou.fetch_data.odds_yahoo.scrape_yahoo import scrape_yahoo_days
 from nba_ou.fetch_data.scheduled_game.get_schedule_games import get_schedule_games
 
 
+def _normalize_team_series(series: pd.Series) -> pd.Series:
+    """Apply ``TEAM_NAME_STANDARDIZATION`` while preserving ``object`` dtype.
+
+    Using ``.map(...).fillna(...)`` silently downcasts an all-NaN object series
+    to ``float64``, which then breaks merges against object-typed team columns.
+    """
+    mapped = series.map(TEAM_NAME_STANDARDIZATION)
+    return mapped.where(mapped.notna(), series).astype(object)
+
+
+def _backfill_missing_teams_from_odds(
+    scheduled_subset: pd.DataFrame, odds_df: pd.DataFrame
+) -> pd.DataFrame:
+    """Fallback: recover missing ``team_home`` / ``team_away`` from odds.
+
+    The NBA schedule endpoint occasionally returns ``None`` for one of the
+    teams of an upcoming game (e.g. a play-in/playoff opponent not yet
+    determined when the schedule is first published, then later cleared
+    before tip-off). The bookmakers usually have both teams correctly listed
+    by then, so we use the odds rows as a fallback.
+
+    Only fills when exactly one odds row matches on ``game_date`` plus the
+    side that IS known, to avoid wrong assignments. Normal games with both
+    teams populated are untouched.
+    """
+    if odds_df.empty:
+        return scheduled_subset
+
+    missing_mask = (
+        scheduled_subset["team_home"].isna() | scheduled_subset["team_away"].isna()
+    )
+    if not missing_mask.any():
+        return scheduled_subset
+
+    needed = {"game_date", "team_home", "team_away"}
+    if not needed.issubset(odds_df.columns):
+        return scheduled_subset
+
+    out = scheduled_subset.copy()
+    for idx in out.index[missing_mask]:
+        game_date = out.at[idx, "game_date"]
+        team_home = out.at[idx, "team_home"]
+        team_away = out.at[idx, "team_away"]
+
+        candidates = odds_df[odds_df["game_date"] == game_date]
+        if pd.isna(team_home) and pd.notna(team_away):
+            candidates = candidates[candidates["team_away"] == team_away]
+        elif pd.isna(team_away) and pd.notna(team_home):
+            candidates = candidates[candidates["team_home"] == team_home]
+        else:
+            # Both sides missing — too ambiguous to recover safely.
+            continue
+
+        unique = candidates.drop_duplicates(subset=["team_home", "team_away"])
+        if len(unique) != 1:
+            continue
+
+        if pd.isna(team_home):
+            out.at[idx, "team_home"] = unique["team_home"].iloc[0]
+        if pd.isna(team_away):
+            out.at[idx, "team_away"] = unique["team_away"].iloc[0]
+        print(
+            f"  ↳ Backfilled missing team(s) for game_id={out.at[idx, 'game_id']} "
+            f"on {game_date} from odds: team_home={out.at[idx, 'team_home']}, "
+            f"team_away={out.at[idx, 'team_away']}"
+        )
+
+    return out
+
+
 def merge_odds_with_scheduled_games(
     odds_df: pd.DataFrame, scheduled_games_df: pd.DataFrame
 ) -> pd.DataFrame:
@@ -52,33 +122,11 @@ def merge_odds_with_scheduled_games(
     odds_df = odds_df.copy()
     scheduled_games_df = scheduled_games_df.copy()
 
-    # Apply normalization to team_home and team_away in odds_df
-    if "team_home" in odds_df.columns:
-        odds_df["team_home"] = (
-            odds_df["team_home"]
-            .map(TEAM_NAME_STANDARDIZATION)
-            .fillna(odds_df["team_home"])
-        )
-    if "team_away" in odds_df.columns:
-        odds_df["team_away"] = (
-            odds_df["team_away"]
-            .map(TEAM_NAME_STANDARDIZATION)
-            .fillna(odds_df["team_away"])
-        )
-
-    # Apply normalization to team_home and team_away in scheduled_games_df
-    if "team_home" in scheduled_games_df.columns:
-        scheduled_games_df["team_home"] = (
-            scheduled_games_df["team_home"]
-            .map(TEAM_NAME_STANDARDIZATION)
-            .fillna(scheduled_games_df["team_home"])
-        )
-    if "team_away" in scheduled_games_df.columns:
-        scheduled_games_df["team_away"] = (
-            scheduled_games_df["team_away"]
-            .map(TEAM_NAME_STANDARDIZATION)
-            .fillna(scheduled_games_df["team_away"])
-        )
+    for col in ("team_home", "team_away"):
+        if col in odds_df.columns:
+            odds_df[col] = _normalize_team_series(odds_df[col])
+        if col in scheduled_games_df.columns:
+            scheduled_games_df[col] = _normalize_team_series(scheduled_games_df[col])
 
     # Ensure required columns exist in scheduled_games_df
     required_cols = ["game_id", "game_date", "team_home", "team_away"]
@@ -96,6 +144,16 @@ def merge_odds_with_scheduled_games(
     scheduled_subset = scheduled_games_df[
         ["game_id", "game_date", "team_home", "team_away"]
     ].copy()
+
+    # Safety net: force object dtype on team merge keys so an all-NaN column on
+    # either side does not trigger an object/float64 merge-key dtype mismatch.
+    for col in ("team_home", "team_away"):
+        odds_df[col] = odds_df[col].astype(object)
+        scheduled_subset[col] = scheduled_subset[col].astype(object)
+
+    # Fallback: if the schedule endpoint left a team blank, try to recover it
+    # from the odds rows so the merge can still find the game_id.
+    scheduled_subset = _backfill_missing_teams_from_odds(scheduled_subset, odds_df)
 
     # Merge to add game_id
     merged_df = odds_df.merge(
