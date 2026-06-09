@@ -39,6 +39,9 @@ from nba_ou.data_processing.merged_home_away_data.odds_feature_engeneer import (
 from nba_ou.data_processing.merged_home_away_data.select_train_columns import (
     select_training_columns,
 )
+from nba_ou.data_processing.merged_home_away_data.team_one_hot_features import (
+    add_team_one_hot_features,
+)
 from nba_ou.data_processing.odds.merge_scheduled_odds import (
     merge_and_validate_scheduled_odds,
 )
@@ -257,6 +260,7 @@ def create_df_to_predict(
     recent_limit_to_include: str = None,
     older_season_limit: int = None,
     strict_mode: int = 2,
+    categorical_team_encoding: bool = False,
 ) -> pd.DataFrame:
     """
     Create prediction dataset for NBA over/under prediction models.
@@ -277,6 +281,9 @@ def create_df_to_predict(
             For todays_prediction=False, defaults to all seasons from 2017-18.
         strict_mode (int, optional): Maximum number of columns allowed to have NaN/None values
             when validating scheduled odds. Use a negative value to disable the check. Default is 2.
+        categorical_team_encoding (bool, optional): If True, encode home/away team identity as two
+            pandas Categorical columns for native categorical handling in gradient-boosted models.
+            If False (default), add 60 binary one-hot columns.
         include_ref_trio_features (bool, optional): Whether to compute exact
             referee-trio features. Defaults to False.
 
@@ -438,6 +445,9 @@ def create_df_to_predict(
 
     print("Merging home/away data...")
     df_merged = merge_home_away_data(df, todays_prediction=todays_prediction)
+    df_merged = add_team_one_hot_features(
+        df_merged, categorical_team_encoding=categorical_team_encoding
+    )
     all_star_aux_cols = [
         col
         for col in df_merged.columns
