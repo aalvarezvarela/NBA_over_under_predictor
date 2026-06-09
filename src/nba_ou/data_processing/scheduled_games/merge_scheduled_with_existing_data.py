@@ -178,4 +178,11 @@ def standardize_and_merge_scheduled_games_to_players_data(
             df_players["SEASON_YEAR"].dtype
         )
 
+    # create_player_lookup identifies scheduled placeholder rows by MIN.isna(); breaking
+    # this contract would cause those rows to be silently dropped from the roster.
+    assert "MIN" not in df_next_game.columns or df_next_game["MIN"].isna().all(), (
+        "Scheduled placeholder player rows must have NaN MIN to be recognized by "
+        "create_player_lookup; update create_player_lookup if the contract changes."
+    )
+
     return df_next_game

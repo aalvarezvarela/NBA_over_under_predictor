@@ -17,6 +17,10 @@ from nba_ou.create_training_data.predict_data_utils import (
     filter_by_seasons_with_extra_game_ids,
     normalize_game_ids,
 )
+from nba_ou.data_processing.all_star_voting.attach_all_star_voting_features import (
+    add_all_star_voting_features,
+    all_star_season_year_for_game_date,
+)
 from nba_ou.data_processing.merged_home_away_data.add_features_after_merging import (
     add_betting_stats_differences,
     add_derived_features_after_computed_stats,
@@ -68,6 +72,9 @@ from nba_ou.data_processing.team.rolling import compute_all_rolling_statistics
 from nba_ou.data_processing.team.totals import compute_total_points_features
 from nba_ou.data_processing.travel.travel_processing import compute_travel_features
 from nba_ou.postgre_db import load_all_nba_data_from_db
+from nba_ou.postgre_db.all_star_voting.fetch_data_from_db.fetch_all_star_voting_from_db import (
+    load_all_star_voting_from_db,
+)
 from nba_ou.postgre_db.games.fetch_data_from_db.fetch_data_from_games_db import (
     get_historical_game_ids_for_home_away_matchups,
 )
@@ -182,6 +189,7 @@ def process_player_statistics_for_training(
     scheduled_games=None,
     injury_dict_scheduled=None,
     extra_game_ids=None,
+    return_players: bool = False,
 ):
     """
     Process player statistics and prepare for training.
@@ -238,6 +246,8 @@ def process_player_statistics_for_training(
         injury_dict_scheduled=injury_dict_scheduled,
     )
 
+    if return_players:
+        return df, injured_dict, df_players
     return df, injured_dict
 
 
@@ -392,7 +402,7 @@ def create_df_to_predict(
 
     # Add Players Statistics
     print("Processing player statistics...")
-    df, injured_dict = process_player_statistics_for_training(
+    df, injured_dict, df_players = process_player_statistics_for_training(
         df_players,
         df,
         df_injuries,
@@ -401,11 +411,44 @@ def create_df_to_predict(
         scheduled_games=scheduled_games if todays_prediction else None,
         injury_dict_scheduled=injury_dict_scheduled if todays_prediction else None,
         extra_game_ids=extra_game_ids,
+        return_players=True,
     )
     print("✓ Player statistics processed")
 
+    required_all_star_season_years = sorted(
+        {all_star_season_year_for_game_date(d) for d in df["GAME_DATE"]}
+    )
+    all_star_voting_df = load_all_star_voting_from_db(
+        season_years=required_all_star_season_years
+    )
+    if all_star_voting_df is None:
+        raise RuntimeError(
+            "load_all_star_voting_from_db returned None for season_years="
+            f"{required_all_star_season_years}. Cannot build all-star features."
+        )
+
+    print("Adding all-star fan-vote share features...")
+    df = add_all_star_voting_features(
+        df_team=df,
+        df_players=df_players,
+        all_star_voting_df=all_star_voting_df,
+        injured_dict=injured_dict,
+    )
+    print("✓ All-star fan-vote share features added")
+
     print("Merging home/away data...")
     df_merged = merge_home_away_data(df, todays_prediction=todays_prediction)
+    all_star_aux_cols = [
+        col
+        for col in df_merged.columns
+        if col.startswith("ALL_STAR_")
+        and not col.startswith("ALL_STAR_FAN_VOTE_SHARE_BEFORE_")
+        and not col.startswith("ALL_STAR_MIN_SCORE_BEFORE_")
+        and not col.startswith("ALL_STAR_MAX_INJURED_FAN_VOTE_SHARE_BEFORE_")
+        and not col.startswith("ALL_STAR_MIN_INJURED_SCORE_BEFORE_")
+    ]
+    if all_star_aux_cols:
+        df_merged = df_merged.drop(columns=all_star_aux_cols)
     print(f"✓ Merged data: {len(df_merged)} games")
 
     # Merge remaining odds data - only additional spread/total lines not yet merged
@@ -524,7 +567,7 @@ if __name__ == "__main__":
         "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/train_data"
     )
     # Create training data up to a specific date
-    date_to_train = "2026-01-10"
+    date_to_train = "2026-05-10"
     n_seasons = 3  # Optional: specify number of seasons to include
     # from nba_ou.config.settings import SETTINGS
     # from nba_ou.create_training_data.get_all_info_for_scheduled_games import (
