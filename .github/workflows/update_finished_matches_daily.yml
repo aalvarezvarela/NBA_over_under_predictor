@@ -2,11 +2,11 @@ name: Update Finished Matches Total Points (Local Runner)
 
 on:
     workflow_dispatch:
-    schedule:
-        # Daily at 4:30am, 7am, 8am, and 10am UTC
-        - cron: "30 4 * * *"
-        - cron: "2 6 * * *"
-        - cron: "27 11 * * *"
+    # schedule:
+    #     # Daily at 4:30am, 7am, 8am, and 10am UTC
+    #     - cron: "30 4 * * *"
+    #     - cron: "2 6 * * *"
+    #     - cron: "27 11 * * *"
 
 permissions:
     contents: read

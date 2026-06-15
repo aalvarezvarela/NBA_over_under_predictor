@@ -2,16 +2,16 @@ name: Daily NBA Predictor (Local Runner)
 
 on:
     workflow_dispatch:
-    schedule:
-        # Every day at 23:00 UTC (1 hour before midnight)
-        - cron: "11 00 * * *"
-        - cron: "11 23 * * *"
-        # Weekdays during peak hoursk
-        - cron: "01 15 * * *"
-        - cron: "11 17 * * *"
-        - cron: "11 16 * * *"
-        - cron: "11 20 * * *"
-        - cron: "11 22 * * *"
+    # schedule:
+    #     # Every day at 23:00 UTC (1 hour before midnight)
+    #     - cron: "11 00 * * *"
+    #     - cron: "11 23 * * *"
+    #     # Weekdays during peak hoursk
+    #     - cron: "01 15 * * *"
+    #     - cron: "11 17 * * *"
+    #     - cron: "11 16 * * *"
+    #     - cron: "11 20 * * *"
+        # - cron: "11 22 * * *"
 concurrency:
     group: daily-nba-predictor
     cancel-in-progress: true

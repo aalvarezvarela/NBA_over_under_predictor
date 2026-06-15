@@ -2,8 +2,8 @@ name: Retrain Prediction Models
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "56 13 * * *"
+  # schedule:
+  #   - cron: "56 13 * * *"
 
 permissions:
   contents: read
