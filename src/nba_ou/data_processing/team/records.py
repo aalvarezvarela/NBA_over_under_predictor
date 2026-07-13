@@ -39,6 +39,13 @@ def add_team_record_before_game(
     """
     Adds pre-game team record features (wins/losses/record) with no leakage.
 
+    The record is computed independently inside each
+    (season type, season ID, team ID) group. The current game's result is
+    excluded by subtracting the current row's win/loss indicator from that
+    group's cumulative total. This avoids using a plain global ``shift(1)``
+    after ``groupby().cumsum()``, which can leak the previous group's final
+    value into the first row of the next group.
+
     For each row (team-game), computes:
       - GAME_NUMBER: nth game of the season (within season_type, season_id, team_id) [optional]
       - WINS_BEFORE_THIS_GAME
@@ -69,15 +76,15 @@ def add_team_record_before_game(
     win = (out[wl_col] == "W").astype(int)
     loss = (out[wl_col] == "L").astype(int)
 
-    # Cumulative sums, shifted so they are "before this game"
+    # Compute prior records within each group. Using cumulative sum minus the
+    # current result keeps the shift group-local and prevents boundary bleed.
     out["WINS_BEFORE_THIS_GAME"] = (
-        win.groupby([out[c] for c in group_cols]).cumsum().shift(1)
+        win.groupby([out[c] for c in group_cols]).cumsum() - win
     )
     out["LOSSES_BEFORE_THIS_GAME"] = (
-        loss.groupby([out[c] for c in group_cols]).cumsum().shift(1)
+        loss.groupby([out[c] for c in group_cols]).cumsum() - loss
     )
 
-    # First game in group will be NaN after shift -> 0
     out["WINS_BEFORE_THIS_GAME"] = out["WINS_BEFORE_THIS_GAME"].fillna(0).astype(int)
     out["LOSSES_BEFORE_THIS_GAME"] = (
         out["LOSSES_BEFORE_THIS_GAME"].fillna(0).astype(int)
