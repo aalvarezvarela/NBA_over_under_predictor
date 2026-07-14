@@ -67,7 +67,7 @@ At a high level, `create_df_to_predict()` does this:
 4. Load team game logs and player boxscores from PostgreSQL.
 5. Load and merge Yahoo plus Sportsbook Review odds.
 6. Clean and enrich team-level rows.
-7. Load injury data and attach player/injury features.
+7. Load injury data and attach player/injury plus roster-continuity features.
 8. Merge home and away team rows into one game row.
 9. Merge remaining game-level odds.
 10. Add all-star voting, team identity, betting, market-regime, referee,
@@ -92,6 +92,12 @@ Season selection is based on the cutoff date:
   previous `N - 1` seasons.
 - For same-day prediction, the default is two seasons unless
   `older_season_limit` is provided.
+
+The team rows returned by the pipeline still follow that requested range, but
+player and injury loading includes one additional earlier season. That extra
+season is context-only: it supplies the March-15 roster baseline and prior-year
+minute averages for continuity in the earliest output season. It does not add
+games to the returned training/prediction DataFrame.
 
 Filtering is performed by
 `filter_by_seasons_with_extra_game_ids()`, which keeps rows from the selected
@@ -308,6 +314,166 @@ After home/away merging, player columns are suffixed by side, for example:
 - `TOP1_INJURED_PLAYER_PTS_BEFORE_TEAM_AWAY`
 - `TOTAL_INJURED_PLAYER_PTS_BEFORE_TEAM_HOME`
 - `N_ACTIVE_PLAYERS_BEFORE_TEAM_AWAY`
+
+### Minutes-Weighted Roster Continuity
+
+`add_roster_continuity_feature()` adds two team-level continuity horizons before
+the home/away merge. Both measure lost roster value in minutes rather than
+counting players, because losing one 35-minute starter should matter more than
+losing a low-minute end-of-bench player.
+
+For a game in season `S`, the roster-membership window is:
+
+- March 15 during the final months of season `S - 1` through the target game.
+- Regular-season and postseason games only; preseason and All-Star assignments
+  are ignored.
+- Both player rows and injury-report rows count as team assignments, so injured
+  and active players are treated identically for roster membership.
+
+Every player assigned to the target team during that window is a candidate. A
+candidate is considered lost only if their latest known assignment before the
+game is to a different NBA team. If no later assignment exists, the player is
+not assumed to have left; this avoids treating an unobserved status as a trade.
+A player who moved away and later returned is retained because the latest
+assignment wins.
+
+Every observed roster candidate receives a target-team-specific minute weight:
+
+1. Total positive `MIN` played for the target team in season `S`, strictly
+   before the target game, divided by the number of target-team games in that
+   period.
+2. If the player has no target-team appearance in `S`, use the equivalent
+   target-team contribution from season `S - 1`.
+3. If neither season has target-team minute history, the weight is zero.
+
+This prevents minutes played after moving to another team from inflating the
+value of the departure. Dividing by all target-team games also gives short-term
+players their true season contribution instead of treating their per-appearance
+average as if they filled that role for every game.
+
+Continuity is the retained share of the complete observed candidate pool:
+
+```text
+candidate_minutes = sum(target-team minutes per team game for all candidates)
+lost_minutes = sum(candidate minute weights for players now assigned elsewhere)
+ROSTER_MINUTES_CONTINUITY_PCT_BEFORE =
+    1 - lost_minutes / candidate_minutes
+```
+
+For example, if the observed roster candidate pool represents 240 normalized
+team minutes and departed players account for 110, continuity remains
+`1 - 110 / 240 = 0.5417`, or 54.17%. Unlike the former fixed-denominator
+calculation, sequential short stays cannot push the lost total past an unrelated
+240-minute denominator and produce an artificial zero.
+
+Leakage handling is deliberately stricter for historical boxscores than pregame
+sources. A historical boxscore assignment becomes available on the following
+calendar day, so the current game's player rows and minutes cannot affect their
+own feature. Current-game injury reports are allowed because they are pregame
+information. Scheduled synthetic player rows are also available on game day
+when both `MIN` is missing and their `GAME_ID` belongs to the explicit scheduled
+game set. This distinction is necessary because the scheduled injury dictionary
+contains only OUT players; a healthy player on a new team must be represented by
+the active-roster placeholder. Future trades cannot alter earlier historical
+rows.
+
+Allowed competition types come from the shared `SEASON_TYPE_MAP`, not a local
+`SEASON_ID` prefix rule. Regular Season, Playoffs, and Play-In Tournament are
+included. The repository maps `005` to Play-In Tournament and `006` to In-Season
+Final Game; the latter remains excluded from this roster calculation.
+
+If no late-previous-season membership exists in the loaded data for a team, the
+value is `NaN` rather than an artificial 100%. After the home/away merge, the
+two model parameters are:
+
+- `ROSTER_MINUTES_CONTINUITY_PCT_BEFORE_TEAM_HOME`
+- `ROSTER_MINUTES_CONTINUITY_PCT_BEFORE_TEAM_AWAY`
+
+The `_BEFORE` tag ensures both columns survive final leakage-safe column
+selection.
+
+The immediate-trade horizon applies the identical membership, minute weighting,
+and leakage rules with a shorter start date:
+
+- Normally, the window begins two calendar months before the game.
+- If that calculated start lands during the June-through-September offseason,
+  the start is moved back to March 1 of that calendar year. For example, an
+  October 22 game would ordinarily start on August 22, so it instead uses
+  March 1 and can observe the roster that existed before summer transactions.
+- Unlike the season-continuity horizon, it does not require a prior-season
+  observation when the ordinary two-month window lies fully within the current
+  season. It returns `NaN` only when the team has no known assignment in the
+  effective window.
+
+After home/away merging, the two additional immediate-trade parameters are:
+
+- `ROSTER_MINUTES_CONTINUITY_2M_PCT_BEFORE_TEAM_HOME`
+- `ROSTER_MINUTES_CONTINUITY_2M_PCT_BEFORE_TEAM_AWAY`
+
+### Minutes Brought In By New Players
+
+The same season and immediate windows also measure incoming roster value. A
+player is newly incorporated when their latest known assignment is the target
+team and their preceding distinct assignment inside the effective window was a
+different team. Repeated appearances for the new team do not count as multiple
+incorporations; the most recent different team is the previous team.
+
+For multiple observed moves such as `A -> B -> C`, A and B both treat the
+player as lost because the latest assignment is C. Team C treats the player as
+incoming from B and therefore uses only the player's B-minute average. A team
+that never appears in a boxscore or injury assignment cannot be inferred as an
+intermediate stop because this feature does not use a transaction feed.
+
+Each new player is weighted only by minutes played for that previous team:
+
+1. Mean positive `MIN` for the previous team in season `S`, before the game.
+2. If unavailable, mean positive `MIN` for that same team in season `S - 1`.
+3. If neither exists, zero.
+
+```text
+new_player_minutes = sum(previous-team average minutes of incoming players)
+ROSTER_NEW_PLAYER_MINUTES_PCT_BEFORE = clip(new_player_minutes / 240, 0, 1)
+```
+
+Unlike continuity, this is not subtracted from one: zero means no observed
+incoming minute value, while a larger value means the team recently added more
+previous-team playing time. The final four columns are:
+
+- `ROSTER_NEW_PLAYER_MINUTES_PCT_BEFORE_TEAM_HOME`
+- `ROSTER_NEW_PLAYER_MINUTES_PCT_BEFORE_TEAM_AWAY`
+- `ROSTER_NEW_PLAYER_MINUTES_2M_PCT_BEFORE_TEAM_HOME`
+- `ROSTER_NEW_PLAYER_MINUTES_2M_PCT_BEFORE_TEAM_AWAY`
+
+### Net Roster Minutes
+
+The loss and incoming measures are also combined into a directional net value.
+Lost share is `1 - continuity`, so the equivalent formulas are:
+
+```text
+ROSTER_NET_MINUTES_PCT_BEFORE =
+    ROSTER_NEW_PLAYER_MINUTES_PCT_BEFORE
+    + ROSTER_MINUTES_CONTINUITY_PCT_BEFORE
+    - 1
+
+ROSTER_NET_MINUTES_2M_PCT_BEFORE =
+    ROSTER_NEW_PLAYER_MINUTES_2M_PCT_BEFORE
+    + ROSTER_MINUTES_CONTINUITY_2M_PCT_BEFORE
+    - 1
+```
+
+A positive value means the team brought in more previous-team minutes than it
+lost, zero means the minute shares balance, and a negative value means it lost
+more than it brought in. This is deliberately a difference rather than a sum:
+a sum would measure total roster churn but would not preserve its direction.
+If continuity is unavailable because there is no valid prior-season baseline,
+the corresponding net value is also `NaN`.
+
+After the home/away merge, the four final columns are:
+
+- `ROSTER_NET_MINUTES_PCT_BEFORE_TEAM_HOME`
+- `ROSTER_NET_MINUTES_PCT_BEFORE_TEAM_AWAY`
+- `ROSTER_NET_MINUTES_2M_PCT_BEFORE_TEAM_HOME`
+- `ROSTER_NET_MINUTES_2M_PCT_BEFORE_TEAM_AWAY`
 
 ## All-Star Voting Features
 

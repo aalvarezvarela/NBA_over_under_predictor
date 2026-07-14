@@ -52,6 +52,9 @@ from nba_ou.data_processing.players.attach_player_features import (
     add_player_history_features,
     clear_player_statistics,
 )
+from nba_ou.data_processing.players.roster_continuity import (
+    add_roster_continuity_feature,
+)
 from nba_ou.data_processing.referees.add_referee_features import (
     add_referee_features_to_training_data,
 )
@@ -193,6 +196,8 @@ def process_player_statistics_for_training(
     injury_dict_scheduled=None,
     extra_game_ids=None,
     return_players: bool = False,
+    player_context_seasons=None,
+    df_team_context=None,
 ):
     """
     Process player statistics and prepare for training.
@@ -213,16 +218,23 @@ def process_player_statistics_for_training(
             with historical mode.
         injury_dict_scheduled (dict, optional): Dictionary of scheduled injury data
         extra_game_ids (list, optional): Extra game IDs to include
+        player_context_seasons (list[str], optional): Seasons retained in player
+            history. This may include one season before the team-output range so
+            first-season roster continuity has a prior-season baseline.
+        df_team_context (pd.DataFrame, optional): Game metadata covering
+            `player_context_seasons`, used to attach dates to those player rows.
 
     Returns:
         pd.DataFrame: Processed player DataFrame
     """
 
-    df_players = clear_player_statistics(df_players, df_team)
+    df_players = clear_player_statistics(
+        df_players, df_team_context if df_team_context is not None else df_team
+    )
     # Filter by season and upper date cap
     df_players = filter_by_seasons_with_extra_game_ids(
         df_players,
-        seasons=seasons,
+        seasons=player_context_seasons or seasons,
         recent_limit_to_include=recent_limit_to_include,
         extra_game_ids=extra_game_ids,
     )
@@ -338,8 +350,13 @@ def create_df_to_predict(
         season_start_date = pd.to_datetime("2017-10-01")
 
     seasons = get_seasons_between_dates(season_start_date, recent_limit_to_include)
+    player_context_start_date = season_start_date - pd.DateOffset(years=1)
+    player_context_seasons = get_seasons_between_dates(
+        player_context_start_date, recent_limit_to_include
+    )
 
     extra_game_ids = []
+    scheduled_game_ids = []
     if todays_prediction:
         home_away_pairs = extract_home_away_pairs_from_scheduled_games(scheduled_games)
         scheduled_game_ids = (
@@ -358,14 +375,26 @@ def create_df_to_predict(
         )
 
     # Load game and player data from database
-    print(f"Loading games and players data for seasons: {seasons}")
+    print(
+        "Loading games and players data for output seasons "
+        f"{seasons} plus roster context {player_context_seasons[0]}"
+    )
     df, df_players = load_all_nba_data_from_db(
-        seasons=seasons, extra_game_ids=extra_game_ids
+        seasons=player_context_seasons, extra_game_ids=extra_game_ids
     )
     print(f"✓ Loaded {len(df)} games and {len(df_players)} player records")
 
     # Ensure GAME_DATE column is pandas Timestamp for df (df_players doesn't have it yet)
     df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
+
+    # Preserve the extra season only as player/injury membership context. It is
+    # excluded from team feature rows and therefore from the returned dataset.
+    df_team_player_context = filter_by_seasons_with_extra_game_ids(
+        df,
+        seasons=player_context_seasons,
+        recent_limit_to_include=recent_limit_to_include,
+        extra_game_ids=extra_game_ids,
+    )
 
     # Filter df to seasons and upper date cap; lower bound set by seasons loaded from DB
     df = filter_by_seasons_with_extra_game_ids(
@@ -404,7 +433,9 @@ def create_df_to_predict(
 
     # Load injury data from database
     print("Loading injury data...")
-    df_injuries = get_injury_data_from_db(seasons, extra_game_ids=extra_game_ids)
+    df_injuries = get_injury_data_from_db(
+        player_context_seasons, extra_game_ids=extra_game_ids
+    )
     print(f"✓ Loaded {len(df_injuries)} injury records")
 
     # Add Players Statistics
@@ -419,6 +450,15 @@ def create_df_to_predict(
         injury_dict_scheduled=injury_dict_scheduled if todays_prediction else None,
         extra_game_ids=extra_game_ids,
         return_players=True,
+        player_context_seasons=player_context_seasons,
+        df_team_context=df_team_player_context,
+    )
+    df = add_roster_continuity_feature(
+        df,
+        df_players,
+        injured_dict,
+        df_game_context=df_team_player_context,
+        scheduled_game_ids=scheduled_game_ids,
     )
     print("✓ Player statistics processed")
 
@@ -577,7 +617,7 @@ if __name__ == "__main__":
         "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/train_data"
     )
     # Create training data up to a specific date
-    date_to_train = "2026-05-10"
+    date_to_train = "2026-06-10"
     n_seasons = 3  # Optional: specify number of seasons to include
     # from nba_ou.config.settings import SETTINGS
     # from nba_ou.create_training_data.get_all_info_for_scheduled_games import (
