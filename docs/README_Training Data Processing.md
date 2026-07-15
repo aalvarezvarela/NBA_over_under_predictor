@@ -50,6 +50,7 @@ df_to_predict = create_df_to_predict(
     todays_prediction=True,
     scheduled_data=scheduled_data,
     strict_mode=30,
+    normalize_total_lines=True,
 )
 ```
 
@@ -597,7 +598,23 @@ The raw Yahoo and Sportsbook Review data is merged in
 - Missing BetMGM total, spread, and moneyline values are filled from Yahoo when
   available.
 - American odds prices are converted to decimal odds.
+- By default, asymmetrically priced total markets are converted in place to an
+  estimated 50/50 line and decimal `-110/-110` prices. No columns are added.
 - Yahoo public betting percentages are retained when available.
+
+Total-line normalization is controlled by the `normalize_total_lines` argument
+of `create_df_to_predict()` and defaults to `True` for both historical data and
+today's scheduled games. The conversion removes the two-way vig, assumes NBA
+total points have a standard deviation of `15.7`, and rounds the estimated fair
+center to the nearest `0.5`. For example, a `209.5` line priced at `1.62/2.20`
+becomes `212.5` priced at `1.91/1.91`. Total prices are rounded to two decimal
+places before comparison so insignificant price differences are ignored. Quotes
+where either side is already priced at `-110` (`1.91` decimal) are treated as
+main-market-like and are not normalized. Quotes that are already symmetric,
+incomplete, invalid, or whose over and under sides use different lines remain
+unchanged. Set `normalize_total_lines=False` to preserve the source values; the
+live prediction script exposes the same choice as
+`--no-normalize-total-lines`.
 
 `engineer_odds_features()` creates `odds_*` features, including:
 

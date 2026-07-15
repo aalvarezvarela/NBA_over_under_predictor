@@ -273,6 +273,7 @@ def create_df_to_predict(
     older_season_limit: int = None,
     strict_mode: int = 2,
     categorical_team_encoding: bool = False,
+    normalize_total_lines: bool = True,
 ) -> pd.DataFrame:
     """
     Create prediction dataset for NBA over/under prediction models.
@@ -296,8 +297,8 @@ def create_df_to_predict(
         categorical_team_encoding (bool, optional): If True, encode home/away team identity as two
             pandas Categorical columns for native categorical handling in gradient-boosted models.
             If False (default), add 60 binary one-hot columns.
-        include_ref_trio_features (bool, optional): Whether to compute exact
-            referee-trio features. Defaults to False.
+        normalize_total_lines (bool, optional): If True (default), convert
+            asymmetrically priced bookmaker totals to estimated 50/50 lines.
 
     Returns:
         pd.DataFrame: Complete training dataset with all features
@@ -408,11 +409,16 @@ def create_df_to_predict(
     df_odds = load_and_merge_odds_yahoo_sportsbookreview(
         season_years=seasons,
         extra_game_ids=extra_game_ids,
+        normalize_total_lines=normalize_total_lines,
     )
 
     if todays_prediction:
         df_odds = merge_and_validate_scheduled_odds(
-            df_odds, df_odds_yahoo, df_odds_sportsbook, strict_mode=strict_mode
+            df_odds,
+            df_odds_yahoo,
+            df_odds_sportsbook,
+            strict_mode=strict_mode,
+            normalize_total_lines=normalize_total_lines,
         )
 
     original_columns = df.columns.tolist()
@@ -617,7 +623,7 @@ if __name__ == "__main__":
         "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/train_data"
     )
     # Create training data up to a specific date
-    date_to_train = "2026-06-10"
+    date_to_train = "2026-06-11"
     n_seasons = 3  # Optional: specify number of seasons to include
     # from nba_ou.config.settings import SETTINGS
     # from nba_ou.create_training_data.get_all_info_for_scheduled_games import (

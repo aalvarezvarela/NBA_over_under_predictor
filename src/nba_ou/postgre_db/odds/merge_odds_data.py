@@ -9,6 +9,9 @@ This module provides functions to:
 
 import numpy as np
 import pandas as pd
+from nba_ou.data_processing.odds.normalize_total_lines import (
+    normalize_total_lines_inplace,
+)
 from nba_ou.postgre_db.odds_sportsbook.fetch_data_from_db.fetch_data_from_odds_sportsbook_db import (
     load_odds_sportsbook_from_db,
 )
@@ -20,6 +23,7 @@ from nba_ou.postgre_db.odds_yahoo.fetch_data_from_db.fetch_data_from_odds_yahoo_
 def merge_yahoo_sportsbook_odds(
     df_yahoo: pd.DataFrame,
     df_sportsbook: pd.DataFrame,
+    normalize_total_lines: bool = True,
 ) -> pd.DataFrame:
     """
     Merge Yahoo and Sportsbook odds data.
@@ -37,6 +41,8 @@ def merge_yahoo_sportsbook_odds(
     Args:
         df_yahoo (pd.DataFrame): Yahoo odds data
         df_sportsbook (pd.DataFrame): Sportsbook odds data
+        normalize_total_lines (bool): If True, replace asymmetrically priced
+            total markets with their estimated 50/50 line and -110/-110 prices.
 
     Returns:
         pd.DataFrame: Merged odds dataframe
@@ -46,11 +52,17 @@ def merge_yahoo_sportsbook_odds(
 
     if df_yahoo.empty:
         print("Yahoo odds data is empty, returning sportsbook data only")
-        return df_sportsbook
+        return _convert_prices_and_normalize_totals(
+            df_sportsbook.copy(),
+            normalize_total_lines=normalize_total_lines,
+        )
 
     if df_sportsbook.empty:
         print("Sportsbook odds data is empty, returning yahoo data only")
-        return df_yahoo
+        return _convert_prices_and_normalize_totals(
+            df_yahoo.copy(),
+            normalize_total_lines=normalize_total_lines,
+        )
 
     # Select all relevant columns from yahoo for merging
     # Include all Yahoo columns except duplicate team name columns
@@ -178,12 +190,10 @@ def merge_yahoo_sportsbook_odds(
     if cols_to_drop_existing:
         df_merged = df_merged.drop(columns=cols_to_drop_existing)
 
-    # convert odds to numeric, coerce errors to NaN
-    price_cols = [c for c in df_merged.columns if "_price" in c]
-    for col in price_cols:
-        df_merged[col] = american_to_decimal_series(df_merged[col])
-    
-    return df_merged
+    return _convert_prices_and_normalize_totals(
+        df_merged,
+        normalize_total_lines=normalize_total_lines,
+    )
 
 
 def american_to_decimal_series(odds: pd.Series) -> pd.Series:
@@ -205,9 +215,28 @@ def american_to_decimal_series(odds: pd.Series) -> pd.Series:
     return pd.Series(dec, index=odds.index)
 
 
+def _convert_prices_and_normalize_totals(
+    df_odds: pd.DataFrame,
+    *,
+    normalize_total_lines: bool,
+) -> pd.DataFrame:
+    """Convert raw American prices, then optionally center total markets."""
+    price_cols = [column for column in df_odds.columns if "_price" in column]
+    for column in price_cols:
+        df_odds[column] = american_to_decimal_series(df_odds[column])
+
+    normalize_total_lines_inplace(
+        df_odds,
+        enabled=normalize_total_lines,
+        odds_format="decimal",
+    )
+    return df_odds
+
+
 def load_and_merge_odds_yahoo_sportsbookreview(
     season_years: list[str] | None = None,
     extra_game_ids=None,
+    normalize_total_lines: bool = True,
 ) -> pd.DataFrame:
     """
     Load odds data from Yahoo and Sportsbook databases, merge them, and merge with games.
@@ -221,6 +250,8 @@ def load_and_merge_odds_yahoo_sportsbookreview(
 
     Args:
         season_years (list[str], optional): List of seasons to load (e.g., ["2023-24", "2024-25"])
+        normalize_total_lines (bool): Whether to center asymmetrically priced
+            total markets. Defaults to True.
 
     Returns:
         pd.DataFrame: Complete merged odds dataframe with game_id, all odds columns
@@ -247,7 +278,11 @@ def load_and_merge_odds_yahoo_sportsbookreview(
         return pd.DataFrame()
 
     # Merge Yahoo and Sportsbook odds
-    df_odds_merged = merge_yahoo_sportsbook_odds(df_yahoo, df_sportsbook)
+    df_odds_merged = merge_yahoo_sportsbook_odds(
+        df_yahoo,
+        df_sportsbook,
+        normalize_total_lines=normalize_total_lines,
+    )
 
     print(f"Final merged odds: {len(df_odds_merged)} rows")
 
@@ -262,7 +297,7 @@ if __name__ == "__main__":
     if not df_merged.empty:
         print(f"\nMerged odds shape: {df_merged.shape}")
         print(f"Columns: {df_merged.columns.tolist()}")
-        print(f"\nFirst few rows:")
+        print("\nFirst few rows:")
         print(df_merged.head())
     else:
         print("\nNo merged odds data available")

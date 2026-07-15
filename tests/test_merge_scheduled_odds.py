@@ -187,7 +187,11 @@ def test_regular_season_game_passes_strict_mode_2(monkeypatch):
 
     import nba_ou.data_processing.odds.merge_scheduled_odds as mod
 
-    monkeypatch.setattr(mod, "merge_yahoo_sportsbook_odds", lambda y, s: merged)
+    monkeypatch.setattr(
+        mod,
+        "merge_yahoo_sportsbook_odds",
+        lambda y, s, **kwargs: merged,
+    )
 
     result = merge_and_validate_scheduled_odds(df_odds, df_yahoo, df_sportsbook, strict_mode=2)
 
@@ -237,7 +241,11 @@ def test_play_in_game_no_public_pcts_warns_but_does_not_raise(monkeypatch, capsy
 
     import nba_ou.data_processing.odds.merge_scheduled_odds as mod
 
-    monkeypatch.setattr(mod, "merge_yahoo_sportsbook_odds", lambda y, s: merged)
+    monkeypatch.setattr(
+        mod,
+        "merge_yahoo_sportsbook_odds",
+        lambda y, s, **kwargs: merged,
+    )
 
     # Should NOT raise even though all 12 public-betting % cols are NaN (> strict_mode=2)
     result = merge_and_validate_scheduled_odds(
@@ -327,7 +335,11 @@ def test_strict_mode_drops_partial_nan_rows_keeps_clean_rows(monkeypatch):
 
     import nba_ou.data_processing.odds.merge_scheduled_odds as mod
 
-    monkeypatch.setattr(mod, "merge_yahoo_sportsbook_odds", lambda y, s: merged)
+    monkeypatch.setattr(
+        mod,
+        "merge_yahoo_sportsbook_odds",
+        lambda y, s, **kwargs: merged,
+    )
 
     result = merge_and_validate_scheduled_odds(
         df_odds, pd.DataFrame(), pd.DataFrame(), strict_mode=2

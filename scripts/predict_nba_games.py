@@ -77,7 +77,10 @@ def configure_tqdm_for_environment() -> None:
         os.environ.setdefault("TQDM_DISABLE", "1")
 
 
-def predict_nba_games(run_tabpfn_client: bool = False) -> None:
+def predict_nba_games(
+    run_tabpfn_client: bool = False,
+    normalize_total_lines: bool = True,
+) -> None:
     """
     Main execution function for the NBA prediction pipeline.
 
@@ -148,6 +151,7 @@ def predict_nba_games(run_tabpfn_client: bool = False) -> None:
             todays_prediction=True,
             scheduled_data=scheduled_data,
             strict_mode=30,
+            normalize_total_lines=normalize_total_lines,
         )
         df_to_predict = df_to_predict_total[
             df_to_predict_total["GAME_DATE"] == date_to_predict
@@ -301,6 +305,14 @@ if __name__ == "__main__":
         action="store_true",
         help="Disable TabPFN predictions",
     )
+    parser.add_argument(
+        "--no-normalize-total-lines",
+        action="store_true",
+        help="Keep the original asymmetrically priced total lines",
+    )
     args = parser.parse_args()
 
-    predict_nba_games(run_tabpfn_client=not args.no_tabpfn)
+    predict_nba_games(
+        run_tabpfn_client=not args.no_tabpfn,
+        normalize_total_lines=not args.no_normalize_total_lines,
+    )
