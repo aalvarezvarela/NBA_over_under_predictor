@@ -63,6 +63,29 @@ COLS_FOR_SHORT_WINDOWS = [
 ]
 
 
+def _is_total_over_under_price_column(column: str) -> bool:
+    """Return whether a column is a raw total-market over/under price."""
+    return column.startswith("total_") and column.endswith(
+        ("_price_over", "_price_under")
+    )
+
+
+def _get_rolling_price_columns(columns) -> list[str]:
+    """Find price columns eligible for historical rolling features.
+
+    Current total-market over/under prices remain in the dataset, but their
+    historical rolling/season aggregates are intentionally excluded. Spread
+    and moneyline prices continue to receive rolling features.
+    """
+    return [
+        column
+        for column in columns
+        if "_price" in column
+        and column.startswith(("total_", "spread_", "ml_"))
+        and not _is_total_over_under_price_column(column)
+    ]
+
+
 def compute_trend_slope(
     df,
     parameter="PTS",
@@ -196,7 +219,8 @@ def compute_trend_slope(
 def compute_all_rolling_statistics(df, exclude_yahoo=False):
     """
     Compute rolling statistics, weighted averages, and seasonal standard deviations,
-    dynamically including new DIFF_FROM_* columns, TOTAL_LINE_* columns, and all odds data.
+    dynamically including new DIFF_FROM_* columns, TOTAL_LINE_* columns, and
+    selected odds data.
 
     Args:
         df (pd.DataFrame): DataFrame with game statistics
@@ -205,7 +229,8 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
 
     Includes all total line columns (TOTAL_LINE_*) and their
     corresponding DIFF_FROM_* columns in rolling stats, weighted stats, and season std.
-    Also includes odds percentages, prices, and other betting data.
+    Also includes odds percentages and spread/moneyline prices. Raw total-market
+    over/under prices are retained without historical rolling derivatives.
     """
     original_columns = set(df.columns)
 
@@ -237,19 +262,12 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
         )
     ]
 
-    # 5) Dynamically discover price columns (odds prices for totals, spreads, moneylines)
-    # Note: spread/ml prices are now team-specific (without _home/_away suffix after merge)
-    price_cols = [
-        c
-        for c in df.columns
-        if "_price" in c
-        and (c.startswith("total_") or c.startswith("spread_") or c.startswith("ml_"))
-    ]
+    # 5) Dynamically discover rolling-eligible prices. Current total over/under
+    # prices stay as raw game-level inputs and are deliberately not rolled.
+    # Spread/ml prices are team-specific (without _home/_away suffix after merge).
+    price_cols = _get_rolling_price_columns(df.columns)
 
-    # 6) Dynamically discover IS_OVER_* columns (excluding legacy IS_OVER_LINE)
-
-
-    # 7) Optional: ensure we only include diffs that correspond to totals lines
+    # 6) Optional: ensure we only include diffs that correspond to totals lines
     # (keeps things tight if you have other DIFF_FROM_* features in the future)
     total_line_cols = {c for c in df.columns if c.startswith("TOTAL_LINE_")}
     allowed_suffixes = set()
@@ -261,7 +279,7 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
         c for c in new_diff_cols if c.replace("DIFF_FROM_", "") in allowed_suffixes
     ]
 
-    # 8) Build local versions of lists (do not mutate module-level constants)
+    # 7) Build local versions of lists (do not mutate module-level constants)
     cols_to_average_odds = (
         COLS_TO_AVERAGE_ODDS
         + new_diff_cols
@@ -286,14 +304,14 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
     )
     cols_for_season_std = list(dict.fromkeys(cols_for_season_std))
 
-    # 9) Rolling stats loop
+    # 8) Rolling stats loop
     for col in tqdm(
         COLS_TO_AVERAGE + cols_to_average_odds, desc="Computing rolling stats"
     ):
         df = compute_rolling_stats(
             df, col, window=5, add_extra_season_avg=True, group_by_season=False
         )
-        
+
         if col in COLS_FOR_SHORT_WINDOWS + new_total_line_cols + new_diff_cols + consensus_pct_cols:
             df = compute_rolling_stats(
                 df,
@@ -334,11 +352,11 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
                 add_relative_column=False,
             )
 
-    # 10) Seasonal std loop
+    # 9) Seasonal std loop
     for param in tqdm(cols_for_season_std, desc="Computing seasonal std"):
         df = compute_season_std(df, param=param)
 
-    # 11) Compute trend slopes for teams
+    # 10) Compute trend slopes for teams
     print("Computing team performance trends...")
     df = compute_trend_slope(df, parameter="PTS", window=5, shift_current_game=True)
     df = compute_trend_slope(
@@ -350,13 +368,16 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
         relative_to_window=5,
     )
 
-    # 12) Diff-from-line columns (post-game): exclude current game
-    diff_cols = [c for c in df.columns if c.startswith("DIFF_FROM_")]
-    for col in tqdm(diff_cols, desc="Computing diff-from-line trends"):
+    # 11) Diff-from-line source columns (post-game): exclude current game.
+    # Use the list captured before rolling features were created. Rediscovering
+    # from df here would also match derived columns such as LAST/SEASON/WMA and
+    # recursively create trends of already-derived features.
+    for col in tqdm(new_diff_cols, desc="Computing diff-from-line trends"):
         df = compute_trend_slope(df, parameter=col, window=5, shift_current_game=True)
 
-    # 13) Total line columns (pre-game known): trends shift based on column
-    total_line_trend_cols = [c for c in df.columns if c.startswith("TOTAL_LINE_")]
+    # 12) Total-line source columns (pre-game known). As above, only use columns
+    # discovered at function entry so rolling/season features are not trended.
+    total_line_trend_cols = new_total_line_cols.copy()
     if MAIN_TOTAL_LINE_COL in total_line_trend_cols:
         total_line_trend_cols = [MAIN_TOTAL_LINE_COL] + [
             c for c in total_line_trend_cols if c != MAIN_TOTAL_LINE_COL
@@ -367,14 +388,14 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
                 df, parameter=col, window=5, shift_current_game=True
             )
 
-    # 14) Consensus percentage trends (pre-game known): shift current game
+    # 13) Consensus percentage trends (pre-game known): shift current game
     for col in tqdm(consensus_pct_cols, desc="Computing consensus % trends"):
         if col in df.columns:
             df = compute_trend_slope(
                 df, parameter=col, window=5, shift_current_game=True
             )
 
-    # 15) Yahoo percentage trends (if included)
+    # 14) Yahoo percentage trends (if included)
     if not exclude_yahoo:
         for col in tqdm(yahoo_cols, desc="Computing Yahoo % trends"):
             if col in df.columns:
@@ -382,7 +403,7 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
                     df, parameter=col, window=5, shift_current_game=True
                 )
 
-    # 16) Enforce naming convention: all newly computed rolling/stat columns must contain _BEFORE
+    # 15) Enforce naming convention: all newly computed rolling/stat columns must contain _BEFORE
     # Only apply to columns created inside this function (keep source columns untouched).
     new_columns = set(df.columns) - original_columns
     rename_map = {}

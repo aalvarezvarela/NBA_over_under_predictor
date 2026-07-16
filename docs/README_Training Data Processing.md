@@ -237,7 +237,12 @@ Betting-related rolling inputs include:
 - `DIFF_FROM_*` columns.
 - Public betting percentages from Yahoo.
 - Consensus percentages.
-- Price columns for totals, spreads, and moneylines.
+- Price columns for spreads and moneylines.
+
+Raw total-market over/under prices remain available as current-game features,
+but are intentionally excluded from rolling windows and season averages. This
+avoids creating historical price derivatives such as last-five and
+season-before price features.
 
 Feature patterns include:
 
@@ -258,9 +263,13 @@ Feature patterns include:
   `*_TREND_SLOPE_LAST_5_MINUS_LAST_10_GAMES_BEFORE`: trend comparison features.
 
 `compute_all_rolling_statistics()` dynamically discovers new `TOTAL_LINE_*`,
-`DIFF_FROM_*`, percentage, consensus, and price columns, so adding a new book can
-automatically expand the rolling feature set when the column naming convention
-matches the existing patterns.
+`DIFF_FROM_*`, percentage, consensus, and eligible spread/moneyline price
+columns, so adding a new book can automatically expand the rolling feature set
+when the column naming convention matches the existing patterns. Total-market
+over/under prices are the deliberate exception. Trend slopes for total lines and
+`DIFF_FROM_*` inputs are calculated only from the original source columns;
+rolling averages, weighted averages, and season statistics are never fed back
+into trend calculation.
 
 ## Player And Injury Features
 
@@ -750,8 +759,13 @@ Aggregate outputs include:
 - Home and away mean effects on total points.
 - Home and away mean effects on difference from line.
 - Home and away max absolute effects.
-- Counts of injured, present, and total games used.
-- Counts and flags for players with enough history to compute an effect.
+- Home and away total historical sample sizes.
+
+This compact default creates 10 columns per call (20 across active and injured
+players), down from the previous 18 per call. The redundant injured/present
+count split, player counts, and boolean flags are omitted. They remain available
+for diagnostics through `include_detailed_sample_size_features=True`, but the
+training and prediction pipeline explicitly keeps the compact schema.
 
 ## Travel And Schedule Features
 

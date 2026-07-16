@@ -561,6 +561,7 @@ def create_df_to_predict(
         out_prefix="TOP3_AVAILABILITY_EFFECT",
         shrinkage_k=10.0,
         include_per_player_columns=False,
+        include_detailed_sample_size_features=False,
     )
 
     df_training = add_top3_availability_effect_features_for_columns(
@@ -582,6 +583,7 @@ def create_df_to_predict(
         out_prefix="TOP3_INJURED_AVAILABILITY_EFFECT",
         shrinkage_k=10.0,
         include_per_player_columns=False,
+        include_detailed_sample_size_features=False,
     )
     print("✓ Injury availability effects computed")
 
