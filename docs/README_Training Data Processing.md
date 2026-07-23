@@ -271,6 +271,42 @@ over/under prices are the deliberate exception. Trend slopes for total lines and
 rolling averages, weighted averages, and season statistics are never fed back
 into trend calculation.
 
+### Style-matchup features
+
+`add_team_style_source_features()` derives attempt and possession rates from
+completed team box scores already present in the database:
+
+- Three-point attempts and free-throw attempts per field-goal attempt.
+- Turnovers and offensive rebounds per possession.
+- Field-goal attempts per possession, used to convert attempt rates into
+  expected counts.
+- The corresponding opponent values observed in each game, representing what
+  that team's defense allowed or forced.
+
+These same-game values are history sources, not prediction features. The
+rolling stage creates a season-to-date-before-game estimate for each source. A
+previous-five-games value is used internally as an early-season fallback and
+then removed. It deliberately does not create style-specific home/away deltas,
+weighted averages, standard deviations, or trends.
+
+After home and away rows are merged, `add_style_matchup_features()` combines
+each team's season-before offensive tendency with the opponent's season-before
+allowed tendency. It creates expected home and away rates for threes, free
+throws, turnovers, and offensive rebounds; game-level expected counts scaled
+by `EXPECTED_POSS_FROM_PACE_BEFORE`; and a free-throw-rate interaction with
+`REF_AVG_TOTAL_PF_DIFF_BEFORE`.
+
+The home/away historical source columns are removed after those interactions
+are built. Only the 13 compact matchup features remain in the final model
+table, rather than exposing the 20 intermediate home/away source columns as
+additional predictors.
+
+All model-facing style columns end in `_BEFORE`. Every rolling calculation uses
+`shift(1)`, the referee calculation uses games with dates strictly earlier than
+the game being scored, and scheduled rows retain missing current-game box-score
+sources. Therefore neither a historical game's result nor a scheduled game's
+unknown statistics can enter that game's style-matchup features.
+
 ## Player And Injury Features
 
 Player processing is handled by `process_player_statistics_for_training()` and

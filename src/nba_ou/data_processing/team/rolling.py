@@ -8,6 +8,7 @@ from nba_ou.data_processing.statistics.statistics import (
     compute_rolling_weighted_stats,
     compute_season_std,
 )
+from nba_ou.data_processing.team.style_matchups import STYLE_SOURCE_COLUMNS
 
 MAIN_TOTAL_LINE_COL = total_line_col()
 MAIN_SPREAD_COL = spread_col()
@@ -305,12 +306,29 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
     cols_for_season_std = list(dict.fromkeys(cols_for_season_std))
 
     # 8) Rolling stats loop
-    for col in tqdm(
-        COLS_TO_AVERAGE + cols_to_average_odds, desc="Computing rolling stats"
-    ):
+    rolling_columns = list(
+        dict.fromkeys(COLS_TO_AVERAGE + cols_to_average_odds + list(STYLE_SOURCE_COLUMNS))
+    )
+    for col in tqdm(rolling_columns, desc="Computing rolling stats"):
+        is_style_source = col in STYLE_SOURCE_COLUMNS
         df = compute_rolling_stats(
-            df, col, window=5, add_extra_season_avg=True, group_by_season=False
+            df,
+            col,
+            window=5,
+            add_extra_season_avg=True,
+            group_by_season=False,
+            add_relative_column=not is_style_source,
         )
+
+        # Style history is an intermediate input for the matchup layer. Keep
+        # only the stable season-before estimate; the last-five column is used
+        # as its early-season fallback inside compute_rolling_stats and then
+        # removed to avoid exposing a large parallel family of raw features.
+        if is_style_source:
+            df = df.drop(
+                columns=[f"{col}_LAST_ALL_5_MATCHES_BEFORE"],
+                errors="ignore",
+            )
 
         if col in COLS_FOR_SHORT_WINDOWS + new_total_line_cols + new_diff_cols + consensus_pct_cols:
             df = compute_rolling_stats(

@@ -93,6 +93,18 @@ def merge_and_validate_scheduled_odds(
             )
             _log_nan_columns(df_odds_predict)
 
+            if num_rows_exceeding == len(df_odds_predict):
+                print(
+                    "WARNING: Strict mode would remove every scheduled odds "
+                    "row; retaining them so predictions can still be generated."
+                )
+            else:
+                print(
+                    f"Dropping {num_rows_exceeding} scheduled odds row(s) that "
+                    "exceed the strict-mode threshold."
+                )
+                df_odds_predict = df_odds_predict.loc[~rows_exceeding].copy()
+
     # Concatenate and sort
     df_odds_combined = pd.concat([df_odds, df_odds_predict], ignore_index=True)
     df_odds_combined.sort_values(by="game_date", inplace=True, ascending=False)

@@ -75,6 +75,10 @@ from nba_ou.data_processing.team.records import (
     compute_rest_days_before_match,
 )
 from nba_ou.data_processing.team.rolling import compute_all_rolling_statistics
+from nba_ou.data_processing.team.style_matchups import (
+    add_style_matchup_features,
+    add_team_style_source_features,
+)
 from nba_ou.data_processing.team.totals import compute_total_points_features
 from nba_ou.data_processing.travel.travel_processing import compute_travel_features
 from nba_ou.postgre_db import load_all_nba_data_from_db
@@ -170,6 +174,10 @@ def process_team_statistics_for_training(
     df = add_team_record_before_game(df)
 
     df = compute_rest_days_before_match(df)
+
+    # Convert completed team box scores into offensive and opponent-allowed
+    # style observations. Only shifted rolling versions are selected later.
+    df = add_team_style_source_features(df)
 
     # Merge odds percentages and prices BEFORE computing rolling stats
     df = merge_odds_percentages_and_prices_by_game_id(
@@ -590,6 +598,7 @@ def create_df_to_predict(
     print("Adding travel and temporal features...")
     df_training = compute_travel_features(df_training, log_scale=True)
     df_training = add_high_value_features_for_team_points(df_training)
+    df_training = add_style_matchup_features(df_training)
     df_training = add_game_date_features(df_training)
     print("✓ Travel and temporal features added")
 
