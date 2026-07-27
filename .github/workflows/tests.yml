@@ -43,4 +43,4 @@ jobs:
           python -m pip install pytest==9.0.2 optuna==4.7.0
 
       - name: Run tests
-        run: python -m pytest -q
+        run: python -m pytest tests/ -q
