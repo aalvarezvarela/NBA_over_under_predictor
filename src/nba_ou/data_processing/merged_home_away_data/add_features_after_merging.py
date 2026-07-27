@@ -425,22 +425,18 @@ def add_high_value_features_for_team_points(df: pd.DataFrame) -> pd.DataFrame:
         )
         _add("PTS_FORM_Z_AWAY_LAST5_VS_SEASON", z_away)
 
-    # Trend slopes already exist for last 5 games; compress them into combined deltas
-    if _has(
-        [
-            "PTS_TEAM_HOME_TREND_SLOPE_LAST_5_GAMES_BEFORE",
-            "PTS_TEAM_AWAY_TREND_SLOPE_LAST_5_GAMES_BEFORE",
-        ]
-    ):
+    # Trend slopes already exist for the previous five games. The home/away
+    # suffix is appended to the complete source name during merge_home_away_data.
+    trend_home_col = "PTS_TREND_SLOPE_LAST_5_GAMES_BEFORE_TEAM_HOME"
+    trend_away_col = "PTS_TREND_SLOPE_LAST_5_GAMES_BEFORE_TEAM_AWAY"
+    if _has([trend_home_col, trend_away_col]):
         _add(
             "PTS_TREND_SLOPE_DIFF_HOME_MINUS_AWAY",
-            out["PTS_TEAM_HOME_TREND_SLOPE_LAST_5_GAMES_BEFORE"]
-            - out["PTS_TEAM_AWAY_TREND_SLOPE_LAST_5_GAMES_BEFORE"],
+            out[trend_home_col] - out[trend_away_col],
         )
         _add(
             "PTS_TREND_SLOPE_SUM_HOME_PLUS_AWAY",
-            out["PTS_TEAM_HOME_TREND_SLOPE_LAST_5_GAMES_BEFORE"]
-            + out["PTS_TEAM_AWAY_TREND_SLOPE_LAST_5_GAMES_BEFORE"],
+            out[trend_home_col] + out[trend_away_col],
         )
 
     # ---------------------------------------------------------------------

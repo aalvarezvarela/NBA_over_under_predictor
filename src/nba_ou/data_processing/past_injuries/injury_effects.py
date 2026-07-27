@@ -160,6 +160,7 @@ def add_top3_availability_effect_features_for_columns(
     out_prefix: str,
     shrinkage_k: float = 10.0,
     include_per_player_columns: bool = False,
+    include_detailed_sample_size_features: bool = False,
 ) -> pd.DataFrame:
     """
     Compute player availability impact features from past games only (< current game date).
@@ -169,8 +170,10 @@ def add_top3_availability_effect_features_for_columns(
         total_line_book (or configured main book from config).
       - Effects are shrunk toward zero with:
         eff_shrunk = eff_raw * n_eff/(n_eff + k), where n_eff=min(n_inj, n_present).
-      - Sample size signals are produced (inj/present/total game counts).
-      - Aggregate summaries include mean and max-abs effects plus count sums.
+      - Compact aggregate summaries include mean and max-abs effects plus total
+        sample size. This is the default training schema.
+      - Redundant diagnostic counts/flags can be restored with
+        include_detailed_sample_size_features=True.
       - Per-player columns can be disabled via include_per_player_columns=False.
     """
     df = df_games.copy()
@@ -395,24 +398,26 @@ def add_top3_availability_effect_features_for_columns(
     df[f"{out_prefix}_AWAY_MAX_ABS_TOTAL_POINTS"] = _nanmaxabs_axis1(away_tp)
     df[f"{out_prefix}_HOME_MAX_ABS_{diff_from_line_col}"] = _nanmaxabs_axis1(home_dfl)
     df[f"{out_prefix}_AWAY_MAX_ABS_{diff_from_line_col}"] = _nanmaxabs_axis1(away_dfl)
-    df[f"{out_prefix}_HOME_SUM_N_INJ_GAMES"] = home_n_inj.sum(axis=1)
-    df[f"{out_prefix}_AWAY_SUM_N_INJ_GAMES"] = away_n_inj.sum(axis=1)
-    df[f"{out_prefix}_HOME_SUM_N_PRESENT_GAMES"] = home_n_present.sum(axis=1)
-    df[f"{out_prefix}_AWAY_SUM_N_PRESENT_GAMES"] = away_n_present.sum(axis=1)
     df[f"{out_prefix}_HOME_SUM_N_TOTAL_GAMES"] = home_n_total.sum(axis=1)
     df[f"{out_prefix}_AWAY_SUM_N_TOTAL_GAMES"] = away_n_total.sum(axis=1)
-    df[f"{out_prefix}_HOME_N_PLAYERS_WITH_EFFECT"] = (
-        (home_n_inj > 0) & (home_n_present > 0)
-    ).sum(axis=1)
-    df[f"{out_prefix}_AWAY_N_PLAYERS_WITH_EFFECT"] = (
-        (away_n_inj > 0) & (away_n_present > 0)
-    ).sum(axis=1)
-    df[f"{out_prefix}_HOME_HAS_PLAYER_EFFECT"] = (
-        df[f"{out_prefix}_HOME_N_PLAYERS_WITH_EFFECT"] > 0
-    ).astype(int)
-    df[f"{out_prefix}_AWAY_HAS_PLAYER_EFFECT"] = (
-        df[f"{out_prefix}_AWAY_N_PLAYERS_WITH_EFFECT"] > 0
-    ).astype(int)
+
+    if include_detailed_sample_size_features:
+        df[f"{out_prefix}_HOME_SUM_N_INJ_GAMES"] = home_n_inj.sum(axis=1)
+        df[f"{out_prefix}_AWAY_SUM_N_INJ_GAMES"] = away_n_inj.sum(axis=1)
+        df[f"{out_prefix}_HOME_SUM_N_PRESENT_GAMES"] = home_n_present.sum(axis=1)
+        df[f"{out_prefix}_AWAY_SUM_N_PRESENT_GAMES"] = away_n_present.sum(axis=1)
+        df[f"{out_prefix}_HOME_N_PLAYERS_WITH_EFFECT"] = (
+            (home_n_inj > 0) & (home_n_present > 0)
+        ).sum(axis=1)
+        df[f"{out_prefix}_AWAY_N_PLAYERS_WITH_EFFECT"] = (
+            (away_n_inj > 0) & (away_n_present > 0)
+        ).sum(axis=1)
+        df[f"{out_prefix}_HOME_HAS_PLAYER_EFFECT"] = (
+            df[f"{out_prefix}_HOME_N_PLAYERS_WITH_EFFECT"] > 0
+        ).astype(int)
+        df[f"{out_prefix}_AWAY_HAS_PLAYER_EFFECT"] = (
+            df[f"{out_prefix}_AWAY_N_PLAYERS_WITH_EFFECT"] > 0
+        ).astype(int)
 
     # Cleanup internal helper column.
     if internal_diff_col in df.columns:

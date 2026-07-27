@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 from scipy.stats import linregress
 from tqdm import tqdm
 
@@ -8,6 +9,7 @@ from nba_ou.data_processing.statistics.statistics import (
     compute_rolling_weighted_stats,
     compute_season_std,
 )
+from nba_ou.data_processing.team.style_matchups import STYLE_SOURCE_COLUMNS
 
 MAIN_TOTAL_LINE_COL = total_line_col()
 MAIN_SPREAD_COL = spread_col()
@@ -16,6 +18,7 @@ MAIN_MONEYLINE_COL = moneyline_col()
 # Module-level constants for rolling statistics computation
 COLS_TO_AVERAGE = [
     "PTS",
+    "PTS_PER_40",
     "TOTAL_POINTS",
     "OFF_RATING",
     "DEF_RATING",
@@ -46,21 +49,162 @@ COLS_TO_AVERAGE_ODDS = [
 
 COLS_FOR_WEIGHTED_STATS = [
     "PTS",
+    "PTS_PER_40",
     "TOTAL_POINTS",
     MAIN_TOTAL_LINE_COL,
 ]
 
 COLS_FOR_SEASON_STD = [
     "PTS",
+    "PTS_PER_40",
     "TOTAL_POINTS",
     MAIN_TOTAL_LINE_COL,
 ]
 
 COLS_FOR_SHORT_WINDOWS = [
     "PTS",
+    "PTS_PER_40",
     "DIFF_FROM_LINE_bet365",
     MAIN_TOTAL_LINE_COL,
 ]
+
+IS_OVERTIME_LAST_GAME_BEFORE = "IS_OVERTIME_LAST_GAME_BEFORE"
+OVERTIME_FREQUENCY_LAST_5_GAMES_BEFORE = (
+    "OVERTIME_FREQUENCY_LAST_5_GAMES_BEFORE"
+)
+OVERTIME_FREQUENCY_SEASON_YEAR_BEFORE = (
+    "OVERTIME_FREQUENCY_SEASON_YEAR_BEFORE"
+)
+OVERTIME_HISTORY_FEATURE_COLUMNS = (
+    IS_OVERTIME_LAST_GAME_BEFORE,
+    OVERTIME_FREQUENCY_LAST_5_GAMES_BEFORE,
+    OVERTIME_FREQUENCY_SEASON_YEAR_BEFORE,
+)
+
+
+def add_overtime_history_features(df):
+    """Add strictly pre-game overtime history for each team.
+
+    Last-game and last-five history continue across season boundaries. The
+    season frequency resets for each ``SEASON_YEAR``. Rows without a completed
+    game outcome (for example, scheduled games with a null ``IS_OVERTIME``)
+    receive the latest available history but never enter that history.
+    """
+    required_columns = {
+        "TEAM_ID",
+        "GAME_DATE",
+        "SEASON_YEAR",
+        "IS_OVERTIME",
+    }
+    missing_columns = required_columns.difference(df.columns)
+    if missing_columns:
+        missing = ", ".join(sorted(missing_columns))
+        raise ValueError(
+            f"Cannot compute overtime history; missing required columns: {missing}"
+        )
+
+    original_order_column = "__OVERTIME_HISTORY_ORIGINAL_ORDER"
+    parsed_date_column = "__OVERTIME_HISTORY_GAME_DATE"
+    source_column = "__OVERTIME_HISTORY_SOURCE"
+    temporary_columns = {
+        original_order_column,
+        parsed_date_column,
+        source_column,
+    }
+    collisions = temporary_columns.intersection(df.columns)
+    if collisions:
+        names = ", ".join(sorted(collisions))
+        raise ValueError(
+            f"Cannot compute overtime history; reserved columns already exist: {names}"
+        )
+
+    result = df.copy()
+    result[original_order_column] = np.arange(len(result))
+    result[parsed_date_column] = pd.to_datetime(
+        result["GAME_DATE"], errors="coerce"
+    )
+    if result[parsed_date_column].isna().any():
+        raise ValueError(
+            "Cannot compute overtime history; GAME_DATE contains missing or invalid values"
+        )
+
+    result[source_column] = pd.to_numeric(result["IS_OVERTIME"], errors="coerce")
+    non_numeric_overtime = (
+        result["IS_OVERTIME"].notna() & result[source_column].isna()
+    )
+    invalid_overtime = result[source_column].notna() & ~result[source_column].isin(
+        [0, 1]
+    )
+    if non_numeric_overtime.any() or invalid_overtime.any():
+        raise ValueError(
+            "Cannot compute overtime history; IS_OVERTIME must contain only 0, 1, or null"
+        )
+
+    sort_columns = ["TEAM_ID", parsed_date_column]
+    if "GAME_ID" in result.columns:
+        sort_columns.append("GAME_ID")
+    result = result.sort_values(sort_columns, kind="mergesort")
+
+    team_histories = {}
+    season_histories = {}
+    last_game_values = []
+    last_five_frequencies = []
+    season_frequencies = []
+
+    history_columns = ["TEAM_ID", "SEASON_YEAR", source_column]
+    for team_id, season_year, overtime_value in result[history_columns].itertuples(
+        index=False, name=None
+    ):
+        team_history = team_histories.setdefault(team_id, [])
+        season_history = season_histories.setdefault((team_id, season_year), [])
+
+        last_game_values.append(int(team_history[-1]) if team_history else 0)
+        last_five = team_history[-5:]
+        last_five_frequencies.append(
+            float(sum(last_five) / len(last_five)) if last_five else 0.0
+        )
+        season_frequencies.append(
+            float(sum(season_history) / len(season_history))
+            if season_history
+            else 0.0
+        )
+
+        if pd.notna(overtime_value):
+            overtime_value = int(overtime_value)
+            team_history.append(overtime_value)
+            season_history.append(overtime_value)
+
+    result[IS_OVERTIME_LAST_GAME_BEFORE] = last_game_values
+    result[OVERTIME_FREQUENCY_LAST_5_GAMES_BEFORE] = last_five_frequencies
+    result[OVERTIME_FREQUENCY_SEASON_YEAR_BEFORE] = season_frequencies
+
+    return (
+        result.sort_values(original_order_column, kind="mergesort")
+        .drop(columns=list(temporary_columns))
+    )
+
+
+def _is_total_over_under_price_column(column: str) -> bool:
+    """Return whether a column is a raw total-market over/under price."""
+    return column.startswith("total_") and column.endswith(
+        ("_price_over", "_price_under")
+    )
+
+
+def _get_rolling_price_columns(columns) -> list[str]:
+    """Find price columns eligible for historical rolling features.
+
+    Current total-market over/under prices remain in the dataset, but their
+    historical rolling/season aggregates are intentionally excluded. Spread
+    and moneyline prices continue to receive rolling features.
+    """
+    return [
+        column
+        for column in columns
+        if "_price" in column
+        and column.startswith(("total_", "spread_", "ml_"))
+        and not _is_total_over_under_price_column(column)
+    ]
 
 
 def compute_trend_slope(
@@ -196,7 +340,8 @@ def compute_trend_slope(
 def compute_all_rolling_statistics(df, exclude_yahoo=False):
     """
     Compute rolling statistics, weighted averages, and seasonal standard deviations,
-    dynamically including new DIFF_FROM_* columns, TOTAL_LINE_* columns, and all odds data.
+    dynamically including new DIFF_FROM_* columns, TOTAL_LINE_* columns, and
+    selected odds data.
 
     Args:
         df (pd.DataFrame): DataFrame with game statistics
@@ -205,7 +350,8 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
 
     Includes all total line columns (TOTAL_LINE_*) and their
     corresponding DIFF_FROM_* columns in rolling stats, weighted stats, and season std.
-    Also includes odds percentages, prices, and other betting data.
+    Also includes odds percentages and spread/moneyline prices. Raw total-market
+    over/under prices are retained without historical rolling derivatives.
     """
     original_columns = set(df.columns)
 
@@ -237,19 +383,12 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
         )
     ]
 
-    # 5) Dynamically discover price columns (odds prices for totals, spreads, moneylines)
-    # Note: spread/ml prices are now team-specific (without _home/_away suffix after merge)
-    price_cols = [
-        c
-        for c in df.columns
-        if "_price" in c
-        and (c.startswith("total_") or c.startswith("spread_") or c.startswith("ml_"))
-    ]
+    # 5) Dynamically discover rolling-eligible prices. Current total over/under
+    # prices stay as raw game-level inputs and are deliberately not rolled.
+    # Spread/ml prices are team-specific (without _home/_away suffix after merge).
+    price_cols = _get_rolling_price_columns(df.columns)
 
-    # 6) Dynamically discover IS_OVER_* columns (excluding legacy IS_OVER_LINE)
-
-
-    # 7) Optional: ensure we only include diffs that correspond to totals lines
+    # 6) Optional: ensure we only include diffs that correspond to totals lines
     # (keeps things tight if you have other DIFF_FROM_* features in the future)
     total_line_cols = {c for c in df.columns if c.startswith("TOTAL_LINE_")}
     allowed_suffixes = set()
@@ -261,7 +400,7 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
         c for c in new_diff_cols if c.replace("DIFF_FROM_", "") in allowed_suffixes
     ]
 
-    # 8) Build local versions of lists (do not mutate module-level constants)
+    # 7) Build local versions of lists (do not mutate module-level constants)
     cols_to_average_odds = (
         COLS_TO_AVERAGE_ODDS
         + new_diff_cols
@@ -286,14 +425,31 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
     )
     cols_for_season_std = list(dict.fromkeys(cols_for_season_std))
 
-    # 9) Rolling stats loop
-    for col in tqdm(
-        COLS_TO_AVERAGE + cols_to_average_odds, desc="Computing rolling stats"
-    ):
+    # 8) Rolling stats loop
+    rolling_columns = list(
+        dict.fromkeys(COLS_TO_AVERAGE + cols_to_average_odds + list(STYLE_SOURCE_COLUMNS))
+    )
+    for col in tqdm(rolling_columns, desc="Computing rolling stats"):
+        is_style_source = col in STYLE_SOURCE_COLUMNS
         df = compute_rolling_stats(
-            df, col, window=5, add_extra_season_avg=True, group_by_season=False
+            df,
+            col,
+            window=5,
+            add_extra_season_avg=True,
+            group_by_season=False,
+            add_relative_column=not is_style_source,
         )
-        
+
+        # Style history is an intermediate input for the matchup layer. Keep
+        # only the stable season-before estimate; the last-five column is used
+        # as its early-season fallback inside compute_rolling_stats and then
+        # removed to avoid exposing a large parallel family of raw features.
+        if is_style_source:
+            df = df.drop(
+                columns=[f"{col}_LAST_ALL_5_MATCHES_BEFORE"],
+                errors="ignore",
+            )
+
         if col in COLS_FOR_SHORT_WINDOWS + new_total_line_cols + new_diff_cols + consensus_pct_cols:
             df = compute_rolling_stats(
                 df,
@@ -334,11 +490,11 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
                 add_relative_column=False,
             )
 
-    # 10) Seasonal std loop
+    # 9) Seasonal std loop
     for param in tqdm(cols_for_season_std, desc="Computing seasonal std"):
         df = compute_season_std(df, param=param)
 
-    # 11) Compute trend slopes for teams
+    # 10) Compute trend slopes for teams
     print("Computing team performance trends...")
     df = compute_trend_slope(df, parameter="PTS", window=5, shift_current_game=True)
     df = compute_trend_slope(
@@ -349,14 +505,28 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
         include_home_away_relative=False,
         relative_to_window=5,
     )
+    df = compute_trend_slope(
+        df, parameter="PTS_PER_40", window=5, shift_current_game=True
+    )
+    df = compute_trend_slope(
+        df,
+        parameter="PTS_PER_40",
+        window=10,
+        shift_current_game=True,
+        include_home_away_relative=False,
+        relative_to_window=5,
+    )
 
-    # 12) Diff-from-line columns (post-game): exclude current game
-    diff_cols = [c for c in df.columns if c.startswith("DIFF_FROM_")]
-    for col in tqdm(diff_cols, desc="Computing diff-from-line trends"):
+    # 11) Diff-from-line source columns (post-game): exclude current game.
+    # Use the list captured before rolling features were created. Rediscovering
+    # from df here would also match derived columns such as LAST/SEASON/WMA and
+    # recursively create trends of already-derived features.
+    for col in tqdm(new_diff_cols, desc="Computing diff-from-line trends"):
         df = compute_trend_slope(df, parameter=col, window=5, shift_current_game=True)
 
-    # 13) Total line columns (pre-game known): trends shift based on column
-    total_line_trend_cols = [c for c in df.columns if c.startswith("TOTAL_LINE_")]
+    # 12) Total-line source columns (pre-game known). As above, only use columns
+    # discovered at function entry so rolling/season features are not trended.
+    total_line_trend_cols = new_total_line_cols.copy()
     if MAIN_TOTAL_LINE_COL in total_line_trend_cols:
         total_line_trend_cols = [MAIN_TOTAL_LINE_COL] + [
             c for c in total_line_trend_cols if c != MAIN_TOTAL_LINE_COL
@@ -367,14 +537,14 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
                 df, parameter=col, window=5, shift_current_game=True
             )
 
-    # 14) Consensus percentage trends (pre-game known): shift current game
+    # 13) Consensus percentage trends (pre-game known): shift current game
     for col in tqdm(consensus_pct_cols, desc="Computing consensus % trends"):
         if col in df.columns:
             df = compute_trend_slope(
                 df, parameter=col, window=5, shift_current_game=True
             )
 
-    # 15) Yahoo percentage trends (if included)
+    # 14) Yahoo percentage trends (if included)
     if not exclude_yahoo:
         for col in tqdm(yahoo_cols, desc="Computing Yahoo % trends"):
             if col in df.columns:
@@ -382,7 +552,7 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
                     df, parameter=col, window=5, shift_current_game=True
                 )
 
-    # 16) Enforce naming convention: all newly computed rolling/stat columns must contain _BEFORE
+    # 15) Enforce naming convention: all newly computed rolling/stat columns must contain _BEFORE
     # Only apply to columns created inside this function (keep source columns untouched).
     new_columns = set(df.columns) - original_columns
     rename_map = {}

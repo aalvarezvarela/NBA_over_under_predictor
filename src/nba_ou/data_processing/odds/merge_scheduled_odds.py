@@ -24,6 +24,7 @@ def merge_and_validate_scheduled_odds(
     df_odds_yahoo: pd.DataFrame,
     df_odds_sportsbook: pd.DataFrame,
     strict_mode: int = 0,
+    normalize_total_lines: bool = True,
 ) -> pd.DataFrame:
     """Merge and validate scheduled odds with historical odds data.
 
@@ -43,6 +44,8 @@ def merge_and_validate_scheduled_odds(
             Use 0 for no columns with nulls allowed, -1 or any negative value to disable the
             check entirely.  When ALL prediction rows would be removed the strict-mode filter is
             skipped with a warning so the pipeline can still produce predictions.  Default is 0.
+        normalize_total_lines (bool): Whether to center asymmetrically priced
+            scheduled total markets. Defaults to True.
 
     Returns:
         pd.DataFrame: Combined odds dataframe with historical and scheduled games
@@ -52,7 +55,11 @@ def merge_and_validate_scheduled_odds(
             in the historical odds).
     """
     # Merge Yahoo and Sportsbook scheduled odds
-    df_odds_predict = merge_yahoo_sportsbook_odds(df_odds_yahoo, df_odds_sportsbook)
+    df_odds_predict = merge_yahoo_sportsbook_odds(
+        df_odds_yahoo,
+        df_odds_sportsbook,
+        normalize_total_lines=normalize_total_lines,
+    )
 
     # Validate columns
     df_odds_cols = set(df_odds.columns)
@@ -85,6 +92,18 @@ def merge_and_validate_scheduled_odds(
                 f"\nStrict mode: Found {num_rows_exceeding} rows with NaNs in more than {strict_mode} columns"
             )
             _log_nan_columns(df_odds_predict)
+
+            if num_rows_exceeding == len(df_odds_predict):
+                print(
+                    "WARNING: Strict mode would remove every scheduled odds "
+                    "row; retaining them so predictions can still be generated."
+                )
+            else:
+                print(
+                    f"Dropping {num_rows_exceeding} scheduled odds row(s) that "
+                    "exceed the strict-mode threshold."
+                )
+                df_odds_predict = df_odds_predict.loc[~rows_exceeding].copy()
 
     # Concatenate and sort
     df_odds_combined = pd.concat([df_odds, df_odds_predict], ignore_index=True)

@@ -140,6 +140,11 @@ FORBIDDEN_COLUMNS = [
     "DIFF_FROM_LINE",
     "TOTAL_PF",
     "IS_OVER_LINE",
+    # PTS_PER_40 is a completed-game outcome. Only its shifted _BEFORE
+    # derivatives may be used as features; the raw home/away versions are
+    # target leakage.
+    "PTS_PER_40_TEAM_HOME",
+    "PTS_PER_40_TEAM_AWAY",
 ]
 
 

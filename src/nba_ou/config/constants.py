@@ -4,6 +4,7 @@ NBA Over/Under Predictor - Constants Module
 This module contains all constant values used throughout the application,
 including team mappings, season type definitions, and configuration values.
 """
+
 OUT_STATUSES = {"Out", "Doubtful"}
 
 # ==============================================================================
@@ -130,7 +131,7 @@ TEAM_NAME_STANDARDIZATION = {
     "LA Lakers": "Los Angeles Lakers",
     "L.A. Lakers": "Los Angeles Lakers",
     "Los Angeles Lakers": "Los Angeles Lakers",
-    "Los Angeles" : "Los Angeles Lakers",
+    "Los Angeles": "Los Angeles Lakers",
     # Memphis Grizzlies
     "MEM Grizzlies": "Memphis Grizzlies",
     "Memphis Grizzlies": "Memphis Grizzlies",
@@ -276,8 +277,11 @@ SEASON_TYPE_MAP = {
 # GAME CONFIGURATION
 # ==============================================================================
 
-# Standard NBA game duration in minutes (excluding overtime)
+# Aggregate team player-minutes in a 48-minute regulation game (5 * 48)
 REGULATION_GAME_MINUTES = 240
+
+# Aggregate team player-minutes corresponding to 40 game-clock minutes (5 * 40)
+TEAM_MINUTES_PER_40 = 200
 
 # Minimum minutes threshold for overtime detection
 OVERTIME_THRESHOLD_MINUTES = 259
@@ -319,7 +323,6 @@ TEAM_NAME_EQUIVALENT_DICT = TEAM_NAME_STANDARDIZATION  # Legacy name
 SEASON_TYPE_MAPPING = SEASON_TYPE_MAP  # Legacy name
 
 
-
 CITY_TO_LATLON = {
     # NBA / US & Canada (team "cities" as in your dataframe)
     "Atlanta": (33.7490, -84.3880),
@@ -333,13 +336,13 @@ CITY_TO_LATLON = {
     "Detroit": (42.3314, -83.0458),
     "Golden State": (37.7680, -122.3877),  # San Francisco area
     "Houston": (29.7604, -95.3698),
-    "Indiana": (39.7684, -86.1581),        # Indianapolis
+    "Indiana": (39.7684, -86.1581),  # Indianapolis
     "LA": (34.0522, -118.2437),
     "Los Angeles": (34.0522, -118.2437),
     "Memphis": (35.1495, -90.0490),
     "Miami": (25.7617, -80.1918),
     "Milwaukee": (43.0389, -87.9065),
-    "Minnesota": (44.9778, -93.2650),      # Minneapolis
+    "Minnesota": (44.9778, -93.2650),  # Minneapolis
     "New Orleans": (29.9511, -90.0715),
     "New York": (40.7128, -74.0060),
     "Oklahoma City": (35.4676, -97.5164),
@@ -350,13 +353,11 @@ CITY_TO_LATLON = {
     "Sacramento": (38.5816, -121.4944),
     "San Antonio": (29.4241, -98.4936),
     "Toronto": (43.6532, -79.3832),
-    "Utah": (40.7608, -111.8910),          # Salt Lake City
+    "Utah": (40.7608, -111.8910),  # Salt Lake City
     "Washington": (38.9072, -77.0369),
     "Seattle": (47.6062, -122.3321),
-    "New Jersey": (40.7357, -74.1724),      # Newark approximation
-
+    "New Jersey": (40.7357, -74.1724),  # Newark approximation
     "New Orleans/Oklahoma City": (35.4676, -97.5164),
-
     # International cities (preseason/exhibitions/etc.)
     "Adelaide": (-34.9285, 138.6007),
     "Athens": (37.9838, 23.7275),
@@ -366,7 +367,7 @@ CITY_TO_LATLON = {
     "Buenos Aires": (-34.6037, -58.3816),
     "Brisbane": (-27.4698, 153.0251),
     "Cairns": (-16.9186, 145.7781),
-    "Guangzhou": (23.1290, 113.2533),       # :contentReference[oaicite:0]{index=0}
+    "Guangzhou": (23.1290, 113.2533),  # :contentReference[oaicite:0]{index=0}
     "Haifa": (32.7940, 34.9896),
     "Istanbul": (41.0082, 28.9784),
     "Madrid": (40.4168, -3.7038),
@@ -377,16 +378,63 @@ CITY_TO_LATLON = {
     "Shanghai": (31.2304, 121.4737),
     "Sydney": (-33.8688, 151.2093),
     "Tel Aviv": (32.0853, 34.7818),
-    "Vitoria": (42.8500, -2.6833),          # Vitoria-Gasteiz :contentReference[oaicite:1]{index=1}
-    "Zalgiris Kaunas": (54.8985, 23.9036),  # Kaunas :contentReference[oaicite:2]{index=2}
-
+    "Vitoria": (
+        42.8500,
+        -2.6833,
+    ),  # Vitoria-Gasteiz :contentReference[oaicite:1]{index=1}
+    "Zalgiris Kaunas": (
+        54.8985,
+        23.9036,
+    ),  # Kaunas :contentReference[oaicite:2]{index=2}
     # Team/club labels -> map to their home cities
-    "Panathinaikos": (37.9838, 23.7275),    # Athens
-    "Flamengo": (-22.9083, -43.1964),       # Rio de Janeiro :contentReference[oaicite:3]{index=3}
-    "SESI/Franca": (-20.5393, -47.4013),    # Franca (SP), Brazil :contentReference[oaicite:4]{index=4}
-    "Ratiopharm": (48.4000, 9.9833),        # Ulm :contentReference[oaicite:5]{index=5}
-
+    "Panathinaikos": (37.9838, 23.7275),  # Athens
+    "Flamengo": (
+        -22.9083,
+        -43.1964,
+    ),  # Rio de Janeiro :contentReference[oaicite:3]{index=3}
+    "SESI/Franca": (
+        -20.5393,
+        -47.4013,
+    ),  # Franca (SP), Brazil :contentReference[oaicite:4]{index=4}
+    "Ratiopharm": (48.4000, 9.9833),  # Ulm :contentReference[oaicite:5]{index=5}
     # Ra'anana (Israel) as listed with punctuation variant too
-    "Ra'anana": (32.1844, 34.8708),         # :contentReference[oaicite:6]{index=6}
-    "Ra’anana": (32.1844, 34.8708),         # common apostrophe variant
+    "Ra'anana": (32.1844, 34.8708),  # :contentReference[oaicite:6]{index=6}
+    "Ra’anana": (32.1844, 34.8708),  # common apostrophe variant
+}
+
+CITY_TO_TIMEZONE = {
+    # NBA / US & Canada
+    "Atlanta": "America/New_York",
+    "Boston": "America/New_York",
+    "Brooklyn": "America/New_York",
+    "Charlotte": "America/New_York",
+    "Chicago": "America/Chicago",
+    "Cleveland": "America/New_York",
+    "Dallas": "America/Chicago",
+    "Denver": "America/Denver",
+    "Detroit": "America/New_York",
+    "Golden State": "America/Los_Angeles",
+    "Houston": "America/Chicago",
+    "Indiana": "America/Indiana/Indianapolis",
+    "LA": "America/Los_Angeles",
+    "Los Angeles": "America/Los_Angeles",
+    "Memphis": "America/Chicago",
+    "Miami": "America/New_York",
+    "Milwaukee": "America/Chicago",
+    "Minnesota": "America/Chicago",
+    "New Orleans": "America/Chicago",
+    "New York": "America/New_York",
+    "Oklahoma City": "America/Chicago",
+    "Orlando": "America/New_York",
+    "Philadelphia": "America/New_York",
+    "Phoenix": "America/Phoenix",
+    "Portland": "America/Los_Angeles",
+    "Sacramento": "America/Los_Angeles",
+    "San Antonio": "America/Chicago",
+    "Toronto": "America/Toronto",
+    "Utah": "America/Denver",
+    "Washington": "America/New_York",
+    "Seattle": "America/Los_Angeles",
+    "New Jersey": "America/New_York",
+    "New Orleans/Oklahoma City": "America/Chicago",
 }

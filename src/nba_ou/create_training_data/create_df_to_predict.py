@@ -17,6 +17,10 @@ from nba_ou.create_training_data.predict_data_utils import (
     filter_by_seasons_with_extra_game_ids,
     normalize_game_ids,
 )
+from nba_ou.data_processing.all_star_voting.attach_all_star_voting_features import (
+    add_all_star_voting_features,
+    all_star_season_year_for_game_date,
+)
 from nba_ou.data_processing.merged_home_away_data.add_features_after_merging import (
     add_betting_stats_differences,
     add_derived_features_after_computed_stats,
@@ -35,6 +39,9 @@ from nba_ou.data_processing.merged_home_away_data.odds_feature_engeneer import (
 from nba_ou.data_processing.merged_home_away_data.select_train_columns import (
     select_training_columns,
 )
+from nba_ou.data_processing.merged_home_away_data.team_one_hot_features import (
+    add_team_one_hot_features,
+)
 from nba_ou.data_processing.odds.merge_scheduled_odds import (
     merge_and_validate_scheduled_odds,
 )
@@ -45,6 +52,9 @@ from nba_ou.data_processing.players.attach_player_features import (
     add_player_history_features,
     clear_player_statistics,
 )
+from nba_ou.data_processing.players.roster_continuity import (
+    add_roster_continuity_feature,
+)
 from nba_ou.data_processing.referees.add_referee_features import (
     add_referee_features_to_training_data,
 )
@@ -52,7 +62,10 @@ from nba_ou.data_processing.scheduled_games.merge_scheduled_with_existing_data i
     standardize_and_merge_scheduled_games_to_players_data,
     standardize_and_merge_scheduled_games_to_team_data,
 )
-from nba_ou.data_processing.team.cleaning_teams import adjust_overtime, clean_team_data
+from nba_ou.data_processing.team.cleaning_teams import (
+    adjust_overtime,
+    clean_team_data,
+)
 from nba_ou.data_processing.team.filters import filter_valid_games
 from nba_ou.data_processing.team.merge_game_df_with_odds_by_game_id import (
     merge_odds_percentages_and_prices_by_game_id,
@@ -64,10 +77,20 @@ from nba_ou.data_processing.team.records import (
     add_team_record_before_game,
     compute_rest_days_before_match,
 )
-from nba_ou.data_processing.team.rolling import compute_all_rolling_statistics
+from nba_ou.data_processing.team.rolling import (
+    add_overtime_history_features,
+    compute_all_rolling_statistics,
+)
+from nba_ou.data_processing.team.style_matchups import (
+    add_style_matchup_features,
+    add_team_style_source_features,
+)
 from nba_ou.data_processing.team.totals import compute_total_points_features
 from nba_ou.data_processing.travel.travel_processing import compute_travel_features
 from nba_ou.postgre_db import load_all_nba_data_from_db
+from nba_ou.postgre_db.all_star_voting.fetch_data_from_db.fetch_all_star_voting_from_db import (
+    load_all_star_voting_from_db,
+)
 from nba_ou.postgre_db.games.fetch_data_from_db.fetch_data_from_games_db import (
     get_historical_game_ids_for_home_away_matchups,
 )
@@ -152,11 +175,17 @@ def process_team_statistics_for_training(
 
     df = filter_valid_games(df)
 
+    df = add_overtime_history_features(df)
+
     df = add_last_season_playoff_games(df)
 
     df = add_team_record_before_game(df)
 
     df = compute_rest_days_before_match(df)
+
+    # Convert completed team box scores into offensive and opponent-allowed
+    # style observations. Only shifted rolling versions are selected later.
+    df = add_team_style_source_features(df)
 
     # Merge odds percentages and prices BEFORE computing rolling stats
     df = merge_odds_percentages_and_prices_by_game_id(
@@ -182,6 +211,9 @@ def process_player_statistics_for_training(
     scheduled_games=None,
     injury_dict_scheduled=None,
     extra_game_ids=None,
+    return_players: bool = False,
+    player_context_seasons=None,
+    df_team_context=None,
 ):
     """
     Process player statistics and prepare for training.
@@ -202,16 +234,23 @@ def process_player_statistics_for_training(
             with historical mode.
         injury_dict_scheduled (dict, optional): Dictionary of scheduled injury data
         extra_game_ids (list, optional): Extra game IDs to include
+        player_context_seasons (list[str], optional): Seasons retained in player
+            history. This may include one season before the team-output range so
+            first-season roster continuity has a prior-season baseline.
+        df_team_context (pd.DataFrame, optional): Game metadata covering
+            `player_context_seasons`, used to attach dates to those player rows.
 
     Returns:
         pd.DataFrame: Processed player DataFrame
     """
 
-    df_players = clear_player_statistics(df_players, df_team)
+    df_players = clear_player_statistics(
+        df_players, df_team_context if df_team_context is not None else df_team
+    )
     # Filter by season and upper date cap
     df_players = filter_by_seasons_with_extra_game_ids(
         df_players,
-        seasons=seasons,
+        seasons=player_context_seasons or seasons,
         recent_limit_to_include=recent_limit_to_include,
         extra_game_ids=extra_game_ids,
     )
@@ -238,6 +277,8 @@ def process_player_statistics_for_training(
         injury_dict_scheduled=injury_dict_scheduled,
     )
 
+    if return_players:
+        return df, injured_dict, df_players
     return df, injured_dict
 
 
@@ -247,6 +288,8 @@ def create_df_to_predict(
     recent_limit_to_include: str = None,
     older_season_limit: int = None,
     strict_mode: int = 2,
+    categorical_team_encoding: bool = False,
+    normalize_total_lines: bool = True,
 ) -> pd.DataFrame:
     """
     Create prediction dataset for NBA over/under prediction models.
@@ -267,8 +310,11 @@ def create_df_to_predict(
             For todays_prediction=False, defaults to all seasons from 2017-18.
         strict_mode (int, optional): Maximum number of columns allowed to have NaN/None values
             when validating scheduled odds. Use a negative value to disable the check. Default is 2.
-        include_ref_trio_features (bool, optional): Whether to compute exact
-            referee-trio features. Defaults to False.
+        categorical_team_encoding (bool, optional): If True, encode home/away team identity as two
+            pandas Categorical columns for native categorical handling in gradient-boosted models.
+            If False (default), add 60 binary one-hot columns.
+        normalize_total_lines (bool, optional): If True (default), convert
+            asymmetrically priced bookmaker totals to estimated 50/50 lines.
 
     Returns:
         pd.DataFrame: Complete training dataset with all features
@@ -321,8 +367,13 @@ def create_df_to_predict(
         season_start_date = pd.to_datetime("2017-10-01")
 
     seasons = get_seasons_between_dates(season_start_date, recent_limit_to_include)
+    player_context_start_date = season_start_date - pd.DateOffset(years=1)
+    player_context_seasons = get_seasons_between_dates(
+        player_context_start_date, recent_limit_to_include
+    )
 
     extra_game_ids = []
+    scheduled_game_ids = []
     if todays_prediction:
         home_away_pairs = extract_home_away_pairs_from_scheduled_games(scheduled_games)
         scheduled_game_ids = (
@@ -341,14 +392,26 @@ def create_df_to_predict(
         )
 
     # Load game and player data from database
-    print(f"Loading games and players data for seasons: {seasons}")
+    print(
+        "Loading games and players data for output seasons "
+        f"{seasons} plus roster context {player_context_seasons[0]}"
+    )
     df, df_players = load_all_nba_data_from_db(
-        seasons=seasons, extra_game_ids=extra_game_ids
+        seasons=player_context_seasons, extra_game_ids=extra_game_ids
     )
     print(f"✓ Loaded {len(df)} games and {len(df_players)} player records")
 
     # Ensure GAME_DATE column is pandas Timestamp for df (df_players doesn't have it yet)
     df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
+
+    # Preserve the extra season only as player/injury membership context. It is
+    # excluded from team feature rows and therefore from the returned dataset.
+    df_team_player_context = filter_by_seasons_with_extra_game_ids(
+        df,
+        seasons=player_context_seasons,
+        recent_limit_to_include=recent_limit_to_include,
+        extra_game_ids=extra_game_ids,
+    )
 
     # Filter df to seasons and upper date cap; lower bound set by seasons loaded from DB
     df = filter_by_seasons_with_extra_game_ids(
@@ -362,11 +425,16 @@ def create_df_to_predict(
     df_odds = load_and_merge_odds_yahoo_sportsbookreview(
         season_years=seasons,
         extra_game_ids=extra_game_ids,
+        normalize_total_lines=normalize_total_lines,
     )
 
     if todays_prediction:
         df_odds = merge_and_validate_scheduled_odds(
-            df_odds, df_odds_yahoo, df_odds_sportsbook, strict_mode=strict_mode
+            df_odds,
+            df_odds_yahoo,
+            df_odds_sportsbook,
+            strict_mode=strict_mode,
+            normalize_total_lines=normalize_total_lines,
         )
 
     original_columns = df.columns.tolist()
@@ -387,12 +455,14 @@ def create_df_to_predict(
 
     # Load injury data from database
     print("Loading injury data...")
-    df_injuries = get_injury_data_from_db(seasons, extra_game_ids=extra_game_ids)
+    df_injuries = get_injury_data_from_db(
+        player_context_seasons, extra_game_ids=extra_game_ids
+    )
     print(f"✓ Loaded {len(df_injuries)} injury records")
 
     # Add Players Statistics
     print("Processing player statistics...")
-    df, injured_dict = process_player_statistics_for_training(
+    df, injured_dict, df_players = process_player_statistics_for_training(
         df_players,
         df,
         df_injuries,
@@ -401,11 +471,56 @@ def create_df_to_predict(
         scheduled_games=scheduled_games if todays_prediction else None,
         injury_dict_scheduled=injury_dict_scheduled if todays_prediction else None,
         extra_game_ids=extra_game_ids,
+        return_players=True,
+        player_context_seasons=player_context_seasons,
+        df_team_context=df_team_player_context,
+    )
+    df = add_roster_continuity_feature(
+        df,
+        df_players,
+        injured_dict,
+        df_game_context=df_team_player_context,
+        scheduled_game_ids=scheduled_game_ids,
     )
     print("✓ Player statistics processed")
 
+    required_all_star_season_years = sorted(
+        {all_star_season_year_for_game_date(d) for d in df["GAME_DATE"]}
+    )
+    all_star_voting_df = load_all_star_voting_from_db(
+        season_years=required_all_star_season_years
+    )
+    if all_star_voting_df is None:
+        raise RuntimeError(
+            "load_all_star_voting_from_db returned None for season_years="
+            f"{required_all_star_season_years}. Cannot build all-star features."
+        )
+
+    print("Adding all-star fan-vote share features...")
+    df = add_all_star_voting_features(
+        df_team=df,
+        df_players=df_players,
+        all_star_voting_df=all_star_voting_df,
+        injured_dict=injured_dict,
+    )
+    print("✓ All-star fan-vote share features added")
+
     print("Merging home/away data...")
     df_merged = merge_home_away_data(df, todays_prediction=todays_prediction)
+    df_merged = add_team_one_hot_features(
+        df_merged, categorical_team_encoding=categorical_team_encoding
+    )
+    all_star_aux_cols = [
+        col
+        for col in df_merged.columns
+        if col.startswith("ALL_STAR_")
+        and not col.startswith("ALL_STAR_FAN_VOTE_SHARE_BEFORE_")
+        and not col.startswith("ALL_STAR_MIN_SCORE_BEFORE_")
+        and not col.startswith("ALL_STAR_MAX_INJURED_FAN_VOTE_SHARE_BEFORE_")
+        and not col.startswith("ALL_STAR_MIN_INJURED_SCORE_BEFORE_")
+    ]
+    if all_star_aux_cols:
+        df_merged = df_merged.drop(columns=all_star_aux_cols)
     print(f"✓ Merged data: {len(df_merged)} games")
 
     # Merge remaining odds data - only additional spread/total lines not yet merged
@@ -462,6 +577,7 @@ def create_df_to_predict(
         out_prefix="TOP3_AVAILABILITY_EFFECT",
         shrinkage_k=10.0,
         include_per_player_columns=False,
+        include_detailed_sample_size_features=False,
     )
 
     df_training = add_top3_availability_effect_features_for_columns(
@@ -483,12 +599,14 @@ def create_df_to_predict(
         out_prefix="TOP3_INJURED_AVAILABILITY_EFFECT",
         shrinkage_k=10.0,
         include_per_player_columns=False,
+        include_detailed_sample_size_features=False,
     )
     print("✓ Injury availability effects computed")
 
     print("Adding travel and temporal features...")
     df_training = compute_travel_features(df_training, log_scale=True)
     df_training = add_high_value_features_for_team_points(df_training)
+    df_training = add_style_matchup_features(df_training)
     df_training = add_game_date_features(df_training)
     print("✓ Travel and temporal features added")
 
@@ -524,7 +642,7 @@ if __name__ == "__main__":
         "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/train_data"
     )
     # Create training data up to a specific date
-    date_to_train = "2026-01-10"
+    date_to_train = "2026-06-11"
     n_seasons = 3  # Optional: specify number of seasons to include
     # from nba_ou.config.settings import SETTINGS
     # from nba_ou.create_training_data.get_all_info_for_scheduled_games import (
