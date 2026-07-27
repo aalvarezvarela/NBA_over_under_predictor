@@ -99,6 +99,102 @@ def test_trade_in_adds_current_roster_player_from_other_all_star_team():
     assert result.loc[0, "ALL_STAR_FAN_VOTE_SHARE_BEFORE"] == 0.4
 
 
+def test_trade_moves_votes_on_first_recorded_new_team_game():
+    all_star = _all_star_df(
+        [
+            [2025, "p1", "Boston Celtics", 40, 1.5],
+            [2025, "p2", "Los Angeles Lakers", 60, 2.5],
+        ]
+    )
+    players = _players_df(
+        [
+            ["old-game", "p1", BOS_ID, "22025", 2025, "2026-03-10", 10, 5],
+            ["new-game", "p1", NYK_ID, "22025", 2025, "2026-03-20", 10, 5],
+        ]
+    )
+    team_rows = pd.DataFrame(
+        {
+            "GAME_ID": [
+                "before-old",
+                "before-new",
+                "transfer-old",
+                "new-game",
+                "after-old",
+                "after-new",
+            ],
+            "TEAM_ID": [BOS_ID, NYK_ID, BOS_ID, NYK_ID, BOS_ID, NYK_ID],
+            "SEASON_ID": ["22025"] * 6,
+            "SEASON_YEAR": [2025] * 6,
+            "GAME_DATE": pd.to_datetime(
+                [
+                    "2026-03-19",
+                    "2026-03-19",
+                    "2026-03-20",
+                    "2026-03-20",
+                    "2026-03-21",
+                    "2026-03-21",
+                ]
+            ),
+        }
+    )
+
+    result = add_all_star_voting_features(
+        team_rows, players, all_star, {}
+    ).set_index("GAME_ID")
+
+    assert result.loc["before-old", "ALL_STAR_FAN_VOTES_BEFORE"] == 40
+    assert result.loc["before-new", "ALL_STAR_FAN_VOTES_BEFORE"] == 0
+    assert result.loc["transfer-old", "ALL_STAR_FAN_VOTES_BEFORE"] == 0
+    assert result.loc["new-game", "ALL_STAR_FAN_VOTES_BEFORE"] == 40
+    assert result.loc["after-old", "ALL_STAR_FAN_VOTES_BEFORE"] == 0
+    assert result.loc["after-new", "ALL_STAR_FAN_VOTES_BEFORE"] == 40
+    assert np.isnan(result.loc["transfer-old", "ALL_STAR_MIN_SCORE_BEFORE"])
+    assert result.loc["new-game", "ALL_STAR_MIN_SCORE_BEFORE"] == 1.5
+
+
+def test_injury_assignment_moves_votes_before_first_new_team_box_score():
+    all_star = _all_star_df(
+        [
+            [2025, "p1", "Boston Celtics", 40, 1.5],
+            [2025, "p2", "Los Angeles Lakers", 60, 2.5],
+        ]
+    )
+    players = _players_df(
+        [
+            ["old-game", "p1", BOS_ID, "22025", 2025, "2026-03-10", 10, 5],
+        ]
+    )
+    injured_dict = {"predict-new": {NYK_ID: ["p1"]}}
+    team_rows = pd.DataFrame(
+        {
+            "GAME_ID": ["predict-old", "predict-new"],
+            "TEAM_ID": [BOS_ID, NYK_ID],
+            "SEASON_ID": ["22025", "22025"],
+            "SEASON_YEAR": [2025, 2025],
+            "GAME_DATE": pd.to_datetime(["2026-03-20", "2026-03-20"]),
+        }
+    )
+
+    result = add_all_star_voting_features(
+        team_rows,
+        players,
+        all_star,
+        injured_dict,
+    ).set_index("GAME_ID")
+
+    assert result.loc["predict-old", "ALL_STAR_FAN_VOTES_BEFORE"] == 0
+    assert result.loc["predict-new", "ALL_STAR_CANDIDATE_COUNT_BEFORE"] == 1
+    assert result.loc["predict-new", "ALL_STAR_FAN_VOTES_BEFORE"] == 40
+    assert result.loc["predict-new", "ALL_STAR_FAN_VOTE_SHARE_BEFORE"] == 0.4
+    assert (
+        result.loc[
+            "predict-new", "ALL_STAR_MAX_INJURED_FAN_VOTE_SHARE_BEFORE"
+        ]
+        == 0.4
+    )
+    assert result.loc["predict-new", "ALL_STAR_MIN_INJURED_SCORE_BEFORE"] == 1.5
+
+
 def test_denominator_is_league_wide_when_team_name_changes():
     players = _players_df()
     base = _all_star_df(

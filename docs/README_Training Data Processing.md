@@ -94,6 +94,14 @@ Season selection is based on the cutoff date:
 - For same-day prediction, the default is two seasons unless
   `older_season_limit` is provided.
 
+All date-based season utilities use the same boundary: January through July
+belong to the season that started in the previous calendar year, while August
+begins the next season bucket. Therefore, a July 23, 2026 cutoff belongs to
+`2025-26`; requesting two seasons produces exactly `["2024-25", "2025-26"]`
+and cannot introduce the future `2026-27` bucket. The delayed 2020-21 season is
+the explicit exception: dates through October 2020 remain assigned to
+`2019-20`.
+
 The team rows returned by the pipeline still follow that requested range, but
 player and injury loading includes one additional earlier season. That extra
 season is context-only: it supplies the March-15 roster baseline and prior-year
@@ -173,8 +181,20 @@ The major steps are:
 
 2. `adjust_overtime()`
    - Creates `IS_OVERTIME`.
-   - Normalizes most numeric stats from overtime games to a 48-minute equivalent.
-   - Leaves columns such as `MIN`, `PACE_PER40`, IDs, and `IS_OVERTIME` unchanged.
+   - Preserves raw `PTS`, so `TOTAL_POINTS` remains the actual final score,
+     including overtime.
+   - Creates `PTS_PER_40` as `PTS * 200 / MIN` only when
+     `0 < MIN < 240`. For every other minutes value—including missing, zero,
+     negative, non-finite, regulation, and overtime minutes—it keeps raw `PTS`
+     and performs no division.
+   - For overtime games only, overwrites additive counting statistics with their
+     48-minute regulation equivalents using `value * 240 / MIN`.
+   - The normalized allowlist is `FGM`, `FGA`, `FG3M`, `FG3A`, `FTM`, `FTA`,
+     `OREB`, `DREB`, `REB`, `AST`, `STL`, `BLK`, `TOV`, `PF`, `PLUS_MINUS`,
+     and `POSS`.
+   - Does not normalize `MIN`, identifiers, metadata, percentages, ratios,
+     ratings, pace fields, `PIE`, or the raw `PTS` target source.
+   - Keeps normalized counts as fractional estimates rather than rounding them.
 
 3. `merge_total_spread_moneyline_by_game_id()`
    - Merges the selected book's spread and moneyline by `GAME_ID`.
@@ -194,23 +214,34 @@ The major steps are:
    - Drops preseason and All-Star games.
    - Adds integer `SEASON_YEAR`.
 
-6. `add_last_season_playoff_games()`
+6. `add_overtime_history_features()`
+   - Adds the previous completed game's overtime indicator for each team.
+   - Adds the fraction of a team's previous five completed games that went to
+     overtime.
+   - Adds the fraction of a team's prior completed games in the current
+     `SEASON_YEAR` that went to overtime.
+   - Excludes the current game from all three calculations. Scheduled rows with
+     no result consume the latest history but do not enter it.
+
+7. `add_last_season_playoff_games()`
    - Counts each team's playoff games from the previous season.
 
-7. `add_team_record_before_game()`
+8. `add_team_record_before_game()`
    - Adds `GAME_NUMBER`, `WINS_BEFORE_THIS_GAME`, and
      `TEAM_RECORD_BEFORE_GAME`.
 
-8. `compute_rest_days_before_match()`
+9. `compute_rest_days_before_match()`
    - Adds `REST_DAYS_BEFORE_MATCH` within team and season.
+   - Uses seven days for the first game of each team-season, where no
+     within-season previous game exists.
 
-9. `merge_odds_percentages_and_prices_by_game_id()`
+10. `merge_odds_percentages_and_prices_by_game_id()`
    - Merges public betting percentages, consensus percentages, and price columns
      before rolling features are computed.
    - Total-market prices are game-level.
    - Spread and moneyline prices are converted to the current team's side.
 
-10. `compute_all_rolling_statistics()`
+11. `compute_all_rolling_statistics()`
     - Adds the bulk of team-form, betting-form, trend, weighted-average, and
       season-to-date features.
 
@@ -222,9 +253,31 @@ and `src/nba_ou/data_processing/statistics/statistics.py`.
 Most rolling features are explicitly shifted by one game, so they represent
 information available before the current game.
 
+Overtime history is also strictly pre-game and creates these team-level source
+features:
+
+- `IS_OVERTIME_LAST_GAME_BEFORE`: `1` when the team's latest completed game
+  went to overtime, otherwise `0`.
+- `OVERTIME_FREQUENCY_LAST_5_GAMES_BEFORE`: overtime games divided by the
+  number of available completed games among the previous five.
+- `OVERTIME_FREQUENCY_SEASON_YEAR_BEFORE`: overtime games divided by completed
+  games already played by that team in the current `SEASON_YEAR`; this is `0`
+  for the team's first game of the season.
+
+Last-game and last-five history continue across season boundaries. Only the
+season-year frequency resets. A scheduled game with no `IS_OVERTIME` result is
+not counted, so adding multiple future games cannot dilute or replace the most
+recent completed-game history. After the home/away merge, each feature receives
+the corresponding `_TEAM_HOME` or `_TEAM_AWAY` suffix.
+
 Core team stats rolled over recent games include:
 
 - Points and total points.
+- `PTS_PER_40`, using only shifted historical values. It receives the full
+  `PTS`-style rolling family: last-five all-games and same-location relative
+  averages, short 1/2/3/10 windows, 5-game weighted moving average,
+  season-before average and standard deviation, and 5- and 10-game trend
+  slopes (with the 5-minus-10 relative slope).
 - Offensive, defensive, and net rating.
 - Effective field goal percentage and true shooting percentage.
 - Pace, possessions, PIE.
@@ -270,6 +323,11 @@ over/under prices are the deliberate exception. Trend slopes for total lines and
 `DIFF_FROM_*` inputs are calculated only from the original source columns;
 rolling averages, weighted averages, and season statistics are never fed back
 into trend calculation.
+
+`PTS_PER_40` is treated as a first-class `PTS`-like source: it receives the
+full rolling family listed above. Its raw same-game home/away columns are
+excluded by the final feature-selection safety rules; only `_BEFORE`
+derivatives can reach the model.
 
 ### Style-matchup features
 
@@ -540,8 +598,8 @@ March 2, 2026 maps to `season_year=2025`.
 `add_all_star_voting_features()` combines:
 
 - Team-game rows.
-- Cleaned player rows, including roster movement inferred from latest team
-  before the game date.
+- Cleaned player rows, including roster movement inferred from the latest known
+  team on or before the game date.
 - All-Star voting rows with `season_year`, `player_id`, `team_name`,
   `fan_votes`, and optional `score`.
 - The same injury dictionary used by player features.
@@ -550,6 +608,13 @@ The function validates that every required voting season has usable rows. If a
 required season is missing or has zero total fan votes, the pipeline raises a
 `ValueError` and asks for the Basketball Reference voting data to be scraped,
 rebuilt, and uploaded.
+
+All-Star votes follow the player when they change teams. The old team stops
+receiving the player's votes and the new team starts receiving them on the
+first game date where the new assignment is known. Same-game player rows are
+used only for `PLAYER_ID`, `TEAM_ID`, and `GAME_DATE`; minutes, points, and
+other game outcomes are not used. A current pregame injury-report assignment
+can establish the new team before the player records a box score there.
 
 Team-level all-star columns initially include:
 
@@ -812,13 +877,19 @@ For each team, it identifies the city where the current game is played and the
 city of the previous game. It then computes great-circle distance with the
 Haversine formula. Two consecutive home games are treated as zero travel.
 
-Rolling travel sums are computed over prior calendar windows:
+Rolling travel sums are computed over calendar windows ending at the current
+game:
 
 - 1 day
 - 2 days
 - 5 days
 - 7 days
 - 14 days
+
+The trip from the previous game location to the current game location is
+included because it has already occurred before tipoff and is therefore valid
+pregame information. Trips exactly on the left edge of each window are also
+included.
 
 The final game-level columns are:
 
@@ -901,6 +972,12 @@ Examples include:
 These features are intentionally numeric and are designed to be useful for tree
 models such as XGBoost.
 
+The trend difference compares the direction and strength of the teams' recent
+scoring trends. The trend sum captures whether their combined scoring form is
+rising or falling. Both use the shifted
+`PTS_TREND_SLOPE_LAST_5_GAMES_BEFORE_TEAM_HOME/AWAY` inputs, so the current
+game's points are not involved.
+
 ## Final Column Selection
 
 Final column selection is handled by `select_training_columns()`.
@@ -943,6 +1020,9 @@ The primary target for total-points regression is:
 It is the actual combined score for the game. The codebase also creates many
 features based on differences from betting lines, but current final selection is
 careful to retain only prior-game or otherwise pre-game versions of those values.
+Overtime points remain part of this target. `TOTAL_POINTS` is always calculated
+from the untouched raw `PTS` columns, never from `PTS_PER_40` or another
+overtime-normalized statistic.
 
 For same-day prediction rows, `TOTAL_POINTS` may be missing or unavailable for
 future games. Downstream prediction code should treat it as absent target data
