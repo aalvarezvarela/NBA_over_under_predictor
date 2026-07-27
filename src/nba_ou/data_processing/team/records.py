@@ -1,6 +1,8 @@
 import numpy as np
 import pandas as pd
 
+FIRST_GAME_REST_DAYS = 7
+
 
 def add_last_season_playoff_games(df):
     """
@@ -105,7 +107,8 @@ def compute_rest_days_before_match(df):
     Compute the number of rest days before each match for each team.
 
     Rest days are computed within each SEASON_YEAR to avoid counting
-    off-season days between seasons.
+    off-season days between seasons. The first game for each team-season uses
+    a seven-day default because no prior game exists in that season.
 
     Args:
         df (pd.DataFrame): Team game statistics DataFrame with TEAM_ID,
@@ -118,7 +121,7 @@ def compute_rest_days_before_match(df):
     df["REST_DAYS_BEFORE_MATCH"] = (
         df.groupby(["TEAM_ID", "SEASON_YEAR"])["GAME_DATE"]
         .diff()
-        .dt.days.fillna(0)
+        .dt.days.fillna(FIRST_GAME_REST_DAYS)
         .astype(int)
     )
     df.sort_values(by="GAME_DATE", ascending=False, inplace=True)

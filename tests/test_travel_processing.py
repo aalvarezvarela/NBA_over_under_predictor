@@ -1,5 +1,9 @@
 import pandas as pd
-from nba_ou.data_processing.travel.travel_processing import compute_travel_features
+import pytest
+from nba_ou.data_processing.travel.travel_processing import (
+    add_rolling_distances,
+    compute_travel_features,
+)
 
 
 def test_compute_travel_features_adds_recent_jetlag_hours():
@@ -40,3 +44,21 @@ def test_compute_travel_features_adds_recent_jetlag_hours():
     assert result.loc[1, "JETLAG_HOURS_FROM_LAST_GAME_AWAY_TEAM"] == 3
     assert result.loc[2, "JETLAG_HOURS_FROM_LAST_GAME_HOME_TEAM"] == 0
     assert result.loc[2, "JETLAG_HOURS_FROM_LAST_GAME_AWAY_TEAM"] == 0
+
+
+def test_rolling_travel_includes_current_trip_and_left_boundary():
+    team_log = pd.DataFrame(
+        {
+            "GAME_ID": ["g1", "g2", "g3"],
+            "GAME_DATE": pd.to_datetime(
+                ["2026-01-01", "2026-01-02", "2026-01-03"]
+            ),
+            "TEAM_ID": ["team-1"] * 3,
+            "TRAVEL_KM": [0.0, 100.0, 200.0],
+        }
+    )
+
+    result = add_rolling_distances(team_log).set_index("GAME_ID")
+
+    assert result.loc["g2", "KM_LAST_1_DAYS"] == pytest.approx(100.0)
+    assert result.loc["g3", "KM_LAST_1_DAYS"] == pytest.approx(300.0)

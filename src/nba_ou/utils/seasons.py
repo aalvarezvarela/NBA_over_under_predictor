@@ -1,20 +1,12 @@
 import pandas as pd
 
+from nba_ou.config.constants import SEASON_TYPE_MAP
+from nba_ou.utils.general_utils import get_season_year_from_date
 
-def classify_season_type(game_id):
-    if game_id.startswith("001"):
-        return "Preseason"
-    elif game_id.startswith("002"):
-        return "Regular Season"
-    elif game_id.startswith("003"):
-        return "All Star"
-    elif game_id.startswith("004"):
-        return "Playoffs"
-    elif game_id.startswith("005"):
-        return "Playoffs"  # in reality, this should be "Play-In Tournament", but for simplicity we'll use "Playoffs"
-    elif game_id.startswith("006"):
-        return "In-Season Final Game"
-    return "Unknown"
+
+def classify_season_type(game_id: str) -> str:
+    """Return the canonical season type for an NBA game ID."""
+    return SEASON_TYPE_MAP.get(game_id[:3], "Unknown")
 
 
 def get_all_seasons_from_2006(date_to_train_until):
@@ -30,19 +22,7 @@ def get_all_seasons_from_2006(date_to_train_until):
     if isinstance(date_to_train_until, str):
         date_to_train_until = pd.to_datetime(date_to_train_until)
 
-    # Determine the season year for the target date
-    # NBA season runs from October (month 10) to June
-    # If date is Jan-Jun, it's part of season that started previous year
-    # If date is Jul-Dec, it's part of season that will start this year (or just ended)
-    target_year = date_to_train_until.year
-    target_month = date_to_train_until.month
-
-    if target_month <= 6:
-        # Jan-Jun: season started previous year
-        end_season_year = target_year - 1
-    else:
-        # Jul-Dec: season starts this year
-        end_season_year = target_year
+    end_season_year = get_season_year_from_date(date_to_train_until)
 
     # Generate all seasons from 2006 to end_season_year
     seasons = []
@@ -76,12 +56,7 @@ def get_season_start_date_n_seasons_back(
     if isinstance(reference_date, str):
         reference_date = pd.to_datetime(reference_date)
 
-    # Determine current season year
-    year = reference_date.year
-    month = reference_date.month
-    # If Jan-Jun, we're in season that started previous year
-    # If Jul-Dec, we're in (or about to start) season starting this year
-    current_season_start_year = year - 1 if month <= 6 else year
+    current_season_start_year = get_season_year_from_date(reference_date)
 
     # Go back n_seasons - 1 (since n_seasons=1 means current season only)
     target_season_start_year = current_season_start_year - (n_seasons - 1)
@@ -105,16 +80,8 @@ def get_seasons_between_dates(date_from, date_to):
     if isinstance(date_to, str):
         date_to = pd.to_datetime(date_to)
 
-    # Helper function to determine season year from a date
-    def get_season_year(date):
-        year = date.year
-        month = date.month
-        # If date is Jan-Jun, season started previous year
-        # If date is Jul-Dec, season starts this year
-        return year - 1 if month <= 6 else year
-
-    start_season_year = get_season_year(date_from)
-    end_season_year = get_season_year(date_to)
+    start_season_year = get_season_year_from_date(date_from)
+    end_season_year = get_season_year_from_date(date_to)
 
     # Generate all seasons between start and end
     seasons = []

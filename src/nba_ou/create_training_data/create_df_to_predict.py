@@ -62,7 +62,10 @@ from nba_ou.data_processing.scheduled_games.merge_scheduled_with_existing_data i
     standardize_and_merge_scheduled_games_to_players_data,
     standardize_and_merge_scheduled_games_to_team_data,
 )
-from nba_ou.data_processing.team.cleaning_teams import adjust_overtime, clean_team_data
+from nba_ou.data_processing.team.cleaning_teams import (
+    adjust_overtime,
+    clean_team_data,
+)
 from nba_ou.data_processing.team.filters import filter_valid_games
 from nba_ou.data_processing.team.merge_game_df_with_odds_by_game_id import (
     merge_odds_percentages_and_prices_by_game_id,
@@ -74,7 +77,10 @@ from nba_ou.data_processing.team.records import (
     add_team_record_before_game,
     compute_rest_days_before_match,
 )
-from nba_ou.data_processing.team.rolling import compute_all_rolling_statistics
+from nba_ou.data_processing.team.rolling import (
+    add_overtime_history_features,
+    compute_all_rolling_statistics,
+)
 from nba_ou.data_processing.team.style_matchups import (
     add_style_matchup_features,
     add_team_style_source_features,
@@ -168,6 +174,8 @@ def process_team_statistics_for_training(
     df = compute_total_points_features(df)
 
     df = filter_valid_games(df)
+
+    df = add_overtime_history_features(df)
 
     df = add_last_season_playoff_games(df)
 

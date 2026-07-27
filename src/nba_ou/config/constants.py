@@ -277,8 +277,11 @@ SEASON_TYPE_MAP = {
 # GAME CONFIGURATION
 # ==============================================================================
 
-# Standard NBA game duration in minutes (excluding overtime)
+# Aggregate team player-minutes in a 48-minute regulation game (5 * 48)
 REGULATION_GAME_MINUTES = 240
+
+# Aggregate team player-minutes corresponding to 40 game-clock minutes (5 * 40)
+TEAM_MINUTES_PER_40 = 200
 
 # Minimum minutes threshold for overtime detection
 OVERTIME_THRESHOLD_MINUTES = 259

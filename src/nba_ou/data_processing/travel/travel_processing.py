@@ -225,6 +225,10 @@ def add_rolling_distances(team_log):
     """
     Add rolling travel distance sums for multiple time windows.
 
+    Each window includes the trip to the current game's location because that
+    travel has already occurred before tipoff. It also retains trips exactly on
+    the left edge of the calendar window.
+
     For each game, computes:
     - Total kilometers traveled in last 1 day
     - Total kilometers traveled in last 2 days
@@ -251,7 +255,7 @@ def add_rolling_distances(team_log):
         col_name = f"KM_LAST_{window}_DAYS"
         team_log[col_name] = (
             team_log.groupby("TEAM_ID")["TRAVEL_KM"]
-            .rolling(f"{window}D", closed="left")
+            .rolling(f"{window}D", closed="both")
             .sum()
             .reset_index(level=0, drop=True)
         )

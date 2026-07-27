@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 from scipy.stats import linregress
 from tqdm import tqdm
 
@@ -17,6 +18,7 @@ MAIN_MONEYLINE_COL = moneyline_col()
 # Module-level constants for rolling statistics computation
 COLS_TO_AVERAGE = [
     "PTS",
+    "PTS_PER_40",
     "TOTAL_POINTS",
     "OFF_RATING",
     "DEF_RATING",
@@ -47,21 +49,139 @@ COLS_TO_AVERAGE_ODDS = [
 
 COLS_FOR_WEIGHTED_STATS = [
     "PTS",
+    "PTS_PER_40",
     "TOTAL_POINTS",
     MAIN_TOTAL_LINE_COL,
 ]
 
 COLS_FOR_SEASON_STD = [
     "PTS",
+    "PTS_PER_40",
     "TOTAL_POINTS",
     MAIN_TOTAL_LINE_COL,
 ]
 
 COLS_FOR_SHORT_WINDOWS = [
     "PTS",
+    "PTS_PER_40",
     "DIFF_FROM_LINE_bet365",
     MAIN_TOTAL_LINE_COL,
 ]
+
+IS_OVERTIME_LAST_GAME_BEFORE = "IS_OVERTIME_LAST_GAME_BEFORE"
+OVERTIME_FREQUENCY_LAST_5_GAMES_BEFORE = (
+    "OVERTIME_FREQUENCY_LAST_5_GAMES_BEFORE"
+)
+OVERTIME_FREQUENCY_SEASON_YEAR_BEFORE = (
+    "OVERTIME_FREQUENCY_SEASON_YEAR_BEFORE"
+)
+OVERTIME_HISTORY_FEATURE_COLUMNS = (
+    IS_OVERTIME_LAST_GAME_BEFORE,
+    OVERTIME_FREQUENCY_LAST_5_GAMES_BEFORE,
+    OVERTIME_FREQUENCY_SEASON_YEAR_BEFORE,
+)
+
+
+def add_overtime_history_features(df):
+    """Add strictly pre-game overtime history for each team.
+
+    Last-game and last-five history continue across season boundaries. The
+    season frequency resets for each ``SEASON_YEAR``. Rows without a completed
+    game outcome (for example, scheduled games with a null ``IS_OVERTIME``)
+    receive the latest available history but never enter that history.
+    """
+    required_columns = {
+        "TEAM_ID",
+        "GAME_DATE",
+        "SEASON_YEAR",
+        "IS_OVERTIME",
+    }
+    missing_columns = required_columns.difference(df.columns)
+    if missing_columns:
+        missing = ", ".join(sorted(missing_columns))
+        raise ValueError(
+            f"Cannot compute overtime history; missing required columns: {missing}"
+        )
+
+    original_order_column = "__OVERTIME_HISTORY_ORIGINAL_ORDER"
+    parsed_date_column = "__OVERTIME_HISTORY_GAME_DATE"
+    source_column = "__OVERTIME_HISTORY_SOURCE"
+    temporary_columns = {
+        original_order_column,
+        parsed_date_column,
+        source_column,
+    }
+    collisions = temporary_columns.intersection(df.columns)
+    if collisions:
+        names = ", ".join(sorted(collisions))
+        raise ValueError(
+            f"Cannot compute overtime history; reserved columns already exist: {names}"
+        )
+
+    result = df.copy()
+    result[original_order_column] = np.arange(len(result))
+    result[parsed_date_column] = pd.to_datetime(
+        result["GAME_DATE"], errors="coerce"
+    )
+    if result[parsed_date_column].isna().any():
+        raise ValueError(
+            "Cannot compute overtime history; GAME_DATE contains missing or invalid values"
+        )
+
+    result[source_column] = pd.to_numeric(result["IS_OVERTIME"], errors="coerce")
+    non_numeric_overtime = (
+        result["IS_OVERTIME"].notna() & result[source_column].isna()
+    )
+    invalid_overtime = result[source_column].notna() & ~result[source_column].isin(
+        [0, 1]
+    )
+    if non_numeric_overtime.any() or invalid_overtime.any():
+        raise ValueError(
+            "Cannot compute overtime history; IS_OVERTIME must contain only 0, 1, or null"
+        )
+
+    sort_columns = ["TEAM_ID", parsed_date_column]
+    if "GAME_ID" in result.columns:
+        sort_columns.append("GAME_ID")
+    result = result.sort_values(sort_columns, kind="mergesort")
+
+    team_histories = {}
+    season_histories = {}
+    last_game_values = []
+    last_five_frequencies = []
+    season_frequencies = []
+
+    history_columns = ["TEAM_ID", "SEASON_YEAR", source_column]
+    for team_id, season_year, overtime_value in result[history_columns].itertuples(
+        index=False, name=None
+    ):
+        team_history = team_histories.setdefault(team_id, [])
+        season_history = season_histories.setdefault((team_id, season_year), [])
+
+        last_game_values.append(int(team_history[-1]) if team_history else 0)
+        last_five = team_history[-5:]
+        last_five_frequencies.append(
+            float(sum(last_five) / len(last_five)) if last_five else 0.0
+        )
+        season_frequencies.append(
+            float(sum(season_history) / len(season_history))
+            if season_history
+            else 0.0
+        )
+
+        if pd.notna(overtime_value):
+            overtime_value = int(overtime_value)
+            team_history.append(overtime_value)
+            season_history.append(overtime_value)
+
+    result[IS_OVERTIME_LAST_GAME_BEFORE] = last_game_values
+    result[OVERTIME_FREQUENCY_LAST_5_GAMES_BEFORE] = last_five_frequencies
+    result[OVERTIME_FREQUENCY_SEASON_YEAR_BEFORE] = season_frequencies
+
+    return (
+        result.sort_values(original_order_column, kind="mergesort")
+        .drop(columns=list(temporary_columns))
+    )
 
 
 def _is_total_over_under_price_column(column: str) -> bool:
@@ -380,6 +500,17 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
     df = compute_trend_slope(
         df,
         parameter="PTS",
+        window=10,
+        shift_current_game=True,
+        include_home_away_relative=False,
+        relative_to_window=5,
+    )
+    df = compute_trend_slope(
+        df, parameter="PTS_PER_40", window=5, shift_current_game=True
+    )
+    df = compute_trend_slope(
+        df,
+        parameter="PTS_PER_40",
         window=10,
         shift_current_game=True,
         include_home_away_relative=False,

@@ -1,50 +1,93 @@
+import numpy as np
 import pandas as pd
+
+from nba_ou.config.constants import (
+    OVERTIME_THRESHOLD_MINUTES,
+    REGULATION_GAME_MINUTES,
+    TEAM_MINUTES_PER_40,
+)
+
+# Only additive box-score statistics are eligible for overtime normalization.
+# A positive allowlist prevents identifiers, ratings, percentages, ratios, and
+# other numeric metadata from being rescaled accidentally when schemas change.
+OVERTIME_NORMALIZED_COUNTING_STATS = (
+    "FGM",
+    "FGA",
+    "FG3M",
+    "FG3A",
+    "FTM",
+    "FTA",
+    "OREB",
+    "DREB",
+    "REB",
+    "AST",
+    "STL",
+    "BLK",
+    "TOV",
+    "PF",
+    "PLUS_MINUS",
+    "POSS",
+)
+
+PTS_PER_40_COLUMN = "PTS_PER_40"
 
 
 def adjust_overtime(df):
     """
-    Clean team game data and adjust statistics for overtime games.
+    Add points per 40 minutes and normalize additive overtime statistics.
 
     This function:
-    - Converts GAME_DATE to datetime and sorts by date
-    - Drops rows with missing PTS values
-    - Converts TEAM_ID to string
-    - Creates IS_OVERTIME flag for games with MIN >= 259
-    - Normalizes statistics to 48-minute equivalent for overtime games
+    - Preserves raw ``PTS`` so game targets remain actual final scores,
+      including overtime.
+    - Creates ``PTS_PER_40`` with an explicit valid-minutes guard. For
+      ``0 < MIN < 240``, it uses ``PTS * TEAM_MINUTES_PER_40 / MIN``. For
+      every other minutes value, including missing, zero, negative, non-finite,
+      regulation, and overtime minutes, it retains raw ``PTS``.
+    - Creates ``IS_OVERTIME`` using the shared overtime threshold.
+    - Normalizes only explicitly allowlisted additive counting statistics in
+      overtime games to a 48-minute regulation equivalent via ``240 / MIN``.
+    - Leaves percentages, ratios, ratings, pace fields, identifiers, metadata,
+      and ``MIN`` unchanged.
 
     Args:
-        df (pd.DataFrame): Team game statistics DataFrame with MIN column in seconds
+        df (pd.DataFrame): Team game statistics with aggregate player-minutes
+            in ``MIN``.
 
     Returns:
-        pd.DataFrame: Cleaned DataFrame with overtime-adjusted statistics
+        pd.DataFrame: DataFrame with raw points preserved, ``PTS_PER_40``
+            added, and eligible overtime counts normalized as floats.
     """
     df.sort_values(by="GAME_DATE", ascending=False, inplace=True)
-    # Handle overtime adjustments
-    df["IS_OVERTIME"] = df["MIN"].apply(lambda x: 1 if x >= 259 else 0)
-    mask_overtime = df["MIN"] >= 260
 
-    numeric_cols = df.select_dtypes(include=["number"]).columns
-    cols_to_adjust = [
-        col
-        for col in numeric_cols
-        if col
-        not in ["MIN", "PACE_PER40", "SEASON_ID", "TEAM_ID", "GAME_ID", "IS_OVERTIME"]
-    ]
-    int_cols = df[cols_to_adjust].select_dtypes(include=["int64"]).columns.tolist()
+    minutes = pd.to_numeric(df["MIN"], errors="coerce")
+    points = pd.to_numeric(df["PTS"], errors="coerce")
+    valid_minutes = minutes.gt(0) & np.isfinite(minutes)
+    overtime_mask = valid_minutes & minutes.ge(OVERTIME_THRESHOLD_MINUTES)
 
-    df[int_cols] = df[int_cols].astype(float)
+    df["IS_OVERTIME"] = overtime_mask.astype(int)
 
-    df.loc[mask_overtime, cols_to_adjust] = (
-        df.loc[mask_overtime, cols_to_adjust]
-        .astype(float)
-        .apply(lambda x: x * (240 / df.loc[mask_overtime, "MIN"]), axis=0)
+    points_per_40 = points.astype(float).copy()
+    below_regulation_mask = valid_minutes & minutes.lt(REGULATION_GAME_MINUTES)
+    points_per_40.loc[below_regulation_mask] = (
+        points.loc[below_regulation_mask]
+        * TEAM_MINUTES_PER_40
+        / minutes.loc[below_regulation_mask]
     )
-    for col in cols_to_adjust:
-        if df[col].dtype == "float64" and col in int_cols:
-            df[col] = df[col].round().astype(int)
+    df[PTS_PER_40_COLUMN] = points_per_40
 
-    df[int_cols] = df[int_cols].round().astype(int)
-    print("Overtime adjustments completed.")
+    regulation_factor = REGULATION_GAME_MINUTES / minutes.loc[overtime_mask]
+    normalized_columns = [
+        column for column in OVERTIME_NORMALIZED_COUNTING_STATS if column in df.columns
+    ]
+    for column in normalized_columns:
+        values = pd.to_numeric(df[column], errors="coerce").astype(float)
+        values.loc[overtime_mask] = values.loc[overtime_mask] * regulation_factor
+        df[column] = values
+
+    print(
+        "Overtime adjustments completed: raw PTS preserved; "
+        f"{len(normalized_columns)} additive statistic(s) normalized."
+    )
     df.sort_values(by="GAME_DATE", ascending=False, inplace=True)
 
     return df
