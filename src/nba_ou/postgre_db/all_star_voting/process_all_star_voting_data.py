@@ -614,6 +614,14 @@ class AllStarVotingPlayerMatcher:
             filtered_ids = self._filter_ids_by_global_full_name(full_ids, full_keys)
             if len(filtered_ids) == 1:
                 return next(iter(filtered_ids)), None
+            recent_id = self._select_most_recent_candidate(
+                season,
+                player_name,
+                filtered_ids or full_ids,
+                "full-name",
+            )
+            if recent_id is not None:
+                return recent_id, None
             return None, PlayerMatchErrorDetail(
                 season=season,
                 player_name=player_name,
@@ -628,6 +636,14 @@ class AllStarVotingPlayerMatcher:
             filtered_ids = self._filter_ids_by_global_full_name(display_ids, full_keys)
             if len(filtered_ids) == 1:
                 return next(iter(filtered_ids)), None
+            recent_id = self._select_most_recent_candidate(
+                season,
+                player_name,
+                filtered_ids or display_ids,
+                "display-name",
+            )
+            if recent_id is not None:
+                return recent_id, None
             return None, PlayerMatchErrorDetail(
                 season=season,
                 player_name=player_name,
@@ -641,6 +657,14 @@ class AllStarVotingPlayerMatcher:
         if len(reversed_ids) == 1:
             return next(iter(reversed_ids)), None
         if len(reversed_ids) > 1:
+            recent_id = self._select_most_recent_candidate(
+                season,
+                player_name,
+                reversed_ids,
+                "reversed full-name",
+            )
+            if recent_id is not None:
+                return recent_id, None
             return None, PlayerMatchErrorDetail(
                 season=season,
                 player_name=player_name,
@@ -652,6 +676,14 @@ class AllStarVotingPlayerMatcher:
         if len(nba_static_ids) == 1:
             return next(iter(nba_static_ids)), None
         if len(nba_static_ids) > 1:
+            recent_id = self._select_most_recent_candidate(
+                season,
+                player_name,
+                nba_static_ids,
+                "NBA API fallback",
+            )
+            if recent_id is not None:
+                return recent_id, None
             return None, PlayerMatchErrorDetail(
                 season=season,
                 player_name=player_name,
@@ -671,6 +703,59 @@ class AllStarVotingPlayerMatcher:
                 "or known overrides"
             ),
         )
+
+    def _select_most_recent_candidate(
+        self,
+        season: str,
+        player_name: str,
+        player_ids: set[str],
+        match_source: str,
+    ) -> str | None:
+        if len(player_ids) != 2 or not all(
+            player_id.isdecimal() for player_id in player_ids
+        ):
+            return None
+
+        target_season_year = season_start_year(season)
+        candidate_rows = self.players_df[
+            self.players_df["player_id"].isin(player_ids)
+        ].copy()
+        candidate_rows["season_year"] = pd.to_numeric(
+            candidate_rows["season_year"], errors="coerce"
+        )
+        candidate_rows = candidate_rows.dropna(subset=["season_year"])
+
+        selection_reason = "the highest numeric player_id"
+        selected_id: str | None = None
+        if not candidate_rows.empty:
+            candidate_rows["season_distance"] = (
+                candidate_rows["season_year"] - target_season_year
+            ).abs()
+            distance_by_id = candidate_rows.groupby("player_id")[
+                "season_distance"
+            ].min()
+            closest_distance = distance_by_id.min()
+            closest_ids = set(
+                distance_by_id[distance_by_id.eq(closest_distance)].index
+            )
+            if len(closest_ids) == 1:
+                selected_id = next(iter(closest_ids))
+                selection_reason = "the candidate observed closest to the season"
+
+        if selected_id is None:
+            selected_id = max(player_ids, key=int)
+
+        logger.warning(
+            "Resolved ambiguous %s match for %r in %s by selecting %s: %s "
+            "from candidates %s",
+            match_source,
+            player_name,
+            season,
+            selection_reason,
+            selected_id,
+            sorted(player_ids, key=int),
+        )
+        return selected_id
 
     def _filter_ids_by_global_full_name(
         self, player_ids: set[str], full_keys: list[str]

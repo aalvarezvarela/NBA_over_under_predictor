@@ -110,6 +110,91 @@ def test_matcher_uses_nba_api_static_fallback_when_supabase_cannot_match():
     assert result.tolist() == ["1642850"]
 
 
+def test_matcher_selects_highest_numeric_id_from_two_fallback_candidates(
+    monkeypatch,
+):
+    players_df = pd.DataFrame(
+        {
+            "season_year": [2016],
+            "player_id": ["1"],
+            "player_name": ["A. Player"],
+            "firstname": [None],
+            "familyname": [None],
+        }
+    )
+    voting_df = pd.DataFrame(
+        {
+            "season": ["2016-17"],
+            "player_name": ["Fallback Candidate"],
+        }
+    )
+    matcher = AllStarVotingPlayerMatcher(players_df)
+    monkeypatch.setattr(
+        matcher,
+        "_lookup_nba_static_ids",
+        lambda _player_name: {"201945", "76993"},
+    )
+
+    result = matcher.match_voting_players(voting_df)
+
+    assert result.tolist() == ["201945"]
+
+
+def test_matcher_prefers_candidate_observed_closest_to_voting_season(monkeypatch):
+    players_df = pd.DataFrame(
+        {
+            "season_year": [2016],
+            "player_id": ["2399"],
+            "player_name": ["M. Player"],
+            "firstname": [None],
+            "familyname": [None],
+        }
+    )
+    voting_df = pd.DataFrame(
+        {
+            "season": ["2016-17"],
+            "player_name": ["Mike Dunleavy"],
+        }
+    )
+    matcher = AllStarVotingPlayerMatcher(players_df)
+    monkeypatch.setattr(
+        matcher,
+        "_lookup_nba_static_ids",
+        lambda _player_name: {"2399", "76616"},
+    )
+
+    result = matcher.match_voting_players(voting_df)
+
+    assert result.tolist() == ["2399"]
+
+
+def test_matcher_keeps_more_than_two_fallback_candidates_ambiguous(monkeypatch):
+    players_df = pd.DataFrame(
+        {
+            "season_year": [2016],
+            "player_id": ["1"],
+            "player_name": ["A. Player"],
+            "firstname": [None],
+            "familyname": [None],
+        }
+    )
+    voting_df = pd.DataFrame(
+        {
+            "season": ["2016-17"],
+            "player_name": ["Fallback Candidate"],
+        }
+    )
+    matcher = AllStarVotingPlayerMatcher(players_df)
+    monkeypatch.setattr(
+        matcher,
+        "_lookup_nba_static_ids",
+        lambda _player_name: {"100", "200", "300"},
+    )
+
+    with pytest.raises(PlayerMatchError, match="ambiguous NBA API fallback match"):
+        matcher.match_voting_players(voting_df)
+
+
 def test_matcher_normalizes_serbian_dj_transliteration():
     players_df = pd.DataFrame(
         {

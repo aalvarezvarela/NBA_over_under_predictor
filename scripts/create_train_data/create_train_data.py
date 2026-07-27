@@ -31,7 +31,7 @@ def main(
     output_path = (
         "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/train_data"
     )
-    output_name = f"{output_path}/all_odds_training_data_until_{pd.to_datetime(limit_date_to_train).strftime('%Y%m%d')}.csv"
+    output_name = f"{output_path}/tranining_data_2_0_{pd.to_datetime(limit_date_to_train).strftime('%Y%m%d')}.csv"
 
     # Save to CSV
     df_train.to_csv(output_name, index=False)
@@ -48,8 +48,8 @@ if __name__ == "__main__":
         "--limit",
         "-l",
         dest="limit",
-        default="2026-03-04",
-        help="Limit date to train (YYYY-MM-DD). Defaults to 2026-03-04",
+        default="2026-01-10",
+        help="Limit date to train (YYYY-MM-DD). Defaults to 2026-01-10",
     )
     parser.add_argument(
         "--n-seasons",
