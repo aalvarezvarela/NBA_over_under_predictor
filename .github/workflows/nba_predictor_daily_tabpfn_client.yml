@@ -2,12 +2,12 @@ name: Daily NBA Predictor TABPFN Client (Local Runner)
 
 on:
     workflow_dispatch:
-    schedule:
-        # Every day at 21:01 UTC
-        - cron: "01 19 * * *"
-        # Every day at 21:01 UTC
-        - cron: "01 21 * * *"
-        - cron: "01 18 * * *"
+    # schedule:
+    #     # Every day at 21:01 UTC
+    #     - cron: "01 19 * * *"
+    #     # Every day at 21:01 UTC
+    #     - cron: "01 21 * * *"
+    #     - cron: "01 18 * * *"
 
 concurrency:
     group: daily-nba-predictor-tabpfn-client
