@@ -1,0 +1,159 @@
+# Shared defaults for every experiment.
+#
+# Experiment files in this directory are DEFINITIONS: they describe a run you
+# want to be able to reproduce. The `config.json` written into each run
+# directory under artifacts/experiments/ is the RECORD of what actually ran.
+#
+# Every file here is deep-merged on top of this one, so an experiment only
+# needs to state what it changes. Anything omitted falls back to these values,
+# and anything omitted here falls back to the pydantic defaults in
+# training_pipeline/config.py.
+#
+# Run one with:
+#   poetry run python -m training_pipeline.cli experiments/total_points/3_seasons.yaml
+#   poetry run python -m training_pipeline.cli <file> --dry-run   # print resolved config
+
+# --- research log -----------------------------------------------------------
+# Set these per experiment; they are labels only and never affect results.
+#   training_version:  the training approach behind the run ("2.1-style-features")
+#   comparison_group:  runs sharing this value are meant to be read against
+#                      each other -- same data, same holdout, one deliberate
+#                      difference. The leaderboard can group by it.
+#   hypothesis:        what this run is supposed to tell you.
+#   tags:              free-form filters.
+
+# --- data -------------------------------------------------------------------
+data:
+  csv_path: data/train_data/all_odds_training_data_until_20260318.csv
+  data_version: "20260318-all-odds"
+  # Pin the dataset's sha256 to be told loudly if the CSV is regenerated in
+  # place. Get it with:
+  #   python -c "from training_pipeline.data import compute_file_checksum as c; \
+  #              print(c('data/train_data/all_odds_training_data_until_20260318.csv'))"
+  expected_checksum: "sha256:78404a0cfab28b7b"
+  season_year_floor: 2021
+  # Playoff basketball is a different distribution: in this dataset playoff
+  # games average ~11.6 fewer total points than regular-season games.
+  # Play-in games ARE kept (they are regular-season-like), which is why season
+  # type is resolved from the GAME_ID prefix -- the SEASON_TYPE text column
+  # mislabels play-in games as "Playoffs".
+  exclude_playoffs: true
+  allowed_season_types: ["Regular Season", "Play-In Tournament"]
+
+# --- cleaning ---------------------------------------------------------------
+cleaning:
+  nan_threshold: 50.0
+  max_na_per_row: 80
+  exclude_cols_containing: ["fanatics_sportsbook"]
+  verbose: 1
+
+# --- evaluation split -------------------------------------------------------
+holdout:
+  test_size: 0.05
+  test_games: null
+
+walk_forward:
+  strategy: test_anchored
+  test_games: 50
+  step_games_between_tests: 60
+  # THE training-window size. Used both by each CV fold and by the final
+  # refit, so the model you ship is fitted on the same amount of history the
+  # hyperparameters were selected for. There is deliberately no separate
+  # refit.train_games -- two knobs could silently disagree.
+  train_games: 2500
+  min_train_games: 1250
+  max_folds: 12
+
+# How the held-out test period is scored.
+#   daily_walk_forward (default) -- retrain once per test game-day on the games
+#     available strictly before it (dev + test days already played), predict
+#     only that day, then pool every day. This is how production actually runs.
+#     Costs one model fit per game-day (~35 for a 5% holdout).
+#   single_shot -- one model fitted on the dev window predicts the whole test
+#     period at once. Much cheaper; use it for smoke runs.
+holdout_evaluation: daily_walk_forward
+
+refit:
+  # The PRODUCTION model, fitted after evaluation on the last
+  # walk_forward.train_games games of the FULL dataset (dev + test, no split),
+  # because production holds nothing back. It is never itself scored -- the
+  # walk-forward above measures the procedure that produces it.
+  #   rolling_window (default) -- last walk_forward.train_games games
+  #   full_dataset            -- every available game
+  strategy: rolling_window
+  use_lexicographic_selection: true
+  # Off by default: most experiments only want the evaluation.
+  train_production_model: false
+
+# --- Optuna -----------------------------------------------------------------
+optuna:
+  n_trials: 80
+  timeout: 16200          # 4.5h
+  objective_name: reg:squarederror
+  mae_tolerance_abs: 0.10
+  persistent_storage: false
+
+  # XGBoost hyperparameter search space. These defaults reproduce the space
+  # hardcoded in nba_ou.modeling.optuna_*.py exactly (a test asserts identical
+  # draws under a seeded sampler), and are deliberately conservative: NBA
+  # totals are noisy, and deep, lightly-regularized trees overfit them badly.
+  #
+  # Widening any range changes the config fingerprint, so a persistent study
+  # will start fresh rather than mixing incomparable trials.
+  search_space:
+    max_depth:         {low: 2,       high: 4}
+    min_child_weight:  {low: 5.0,     high: 60.0,  log: true}
+    gamma:             {low: 0.1,     high: 3.0}
+    subsample:         {low: 0.55,    high: 0.95}
+    colsample_bytree:  {low: 0.35,    high: 0.8}
+    learning_rate:     {low: 0.0075,  high: 0.06,  log: true}
+    reg_alpha:         {low: 0.01,    high: 20.0,  log: true}
+    reg_lambda:        {low: 1.0,     high: 50.0,  log: true}
+    # Upper bound only -- early stopping picks the real number of rounds.
+    n_estimators: 1000
+    early_stopping_rounds: 70
+
+# --- recency weighting ------------------------------------------------------
+# Weight each training row by exp(-lambda * age_in_days). Available to BOTH
+# target families. Off by default; enable it per experiment.
+#
+#   lambda   half-life        weight of oldest game in a 2500-game window
+#   0.0005   1386 d (3.8 yr)  68%    gentle
+#   0.001     693 d (1.9 yr)  46%
+#   0.002     347 d (0.9 yr)  21%
+#   0.005     139 d (0.4 yr)   2%    the practical ceiling
+#   0.010      69 d            0.05% window effectively discarded
+#
+# A 2500-game window spans ~770 calendar days, so bounds stop at 0.005 --
+# beyond that the configured window stops meaning anything.
+sample_weight:
+  enabled: false
+  lambda_: null            # fixed decay rate when tune_lambda is false
+  tune_lambda: false       # let Optuna search the decay rate
+  lambda_bounds: [0.0005, 0.005]
+  # When tuning, also let Optuna decide WHETHER to weight at all, via a
+  # categorical `use_sample_weight`. A log-uniform range can never reach zero,
+  # so without this "no weighting" is not actually reachable; with it, "off"
+  # is a clean binary the sampler can evaluate, and you can count how many
+  # trials preferred it.
+  allow_unweighted: true
+
+# --- profit scoring ---------------------------------------------------------
+# Post-hoc only: changing these never invalidates a tuned study.
+betting:
+  edge_thresholds: [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+  primary_edge_threshold: 2.0
+  # 1.909091 == -110 American. Break-even win rate is 1/odds = 52.38%.
+  flat_decimal_odds: 1.9090909090909092
+
+# --- daily walk-forward backtest --------------------------------------------
+backtest:
+  test_games: 300         # ~6.5 weeks, ~40 daily retrains
+  train_games: null       # null = expanding window (all prior games)
+  show_progress: true
+
+# --- output -----------------------------------------------------------------
+save_experiment_artifacts: true
+experiment_root_dir: artifacts/experiments
+model_output_root: models
+overwrite_existing_model: false

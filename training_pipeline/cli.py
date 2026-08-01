@@ -1,0 +1,128 @@
+"""argparse CLI entry point: run one training_pipeline experiment from a YAML
+config file. Matches the repo's existing convention -- every script under
+scripts/ uses argparse, never click.
+"""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+from typing import Any
+
+import yaml  # type: ignore[import-untyped]
+
+from training_pipeline.config import ExperimentConfig
+from training_pipeline.pipeline import run_experiment
+
+#: Shared defaults every experiment file is merged on top of. Looked up by
+#: walking upwards from the experiment file, so nested directories such as
+#: experiments/total_points/ inherit experiments/_base.yaml.
+BASE_CONFIG_FILENAME = "_base.yaml"
+
+
+def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merge ``override`` onto ``base``.
+
+    Nested dicts merge key-by-key so an experiment can change one field of a
+    section (e.g. only ``optuna.mae_tolerance_abs``) without restating the rest
+    of it. Lists are replaced wholesale, not concatenated -- appending would
+    make it impossible to shrink a list such as ``edge_thresholds``.
+    """
+    merged = dict(base)
+    for key, value in override.items():
+        existing = merged.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            merged[key] = deep_merge(existing, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def find_base_config(config_path: Path) -> Path | None:
+    """Nearest ``_base.yaml`` at or above the experiment file's directory."""
+    for directory in config_path.resolve().parents:
+        candidate = directory / BASE_CONFIG_FILENAME
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def load_config(
+    config_path: str | Path, *, use_base: bool = True
+) -> ExperimentConfig:
+    """Load an experiment definition, layered on the shared defaults.
+
+    The experiment file states only what it changes; everything else falls back
+    to ``_base.yaml``, and anything absent there falls back to the pydantic
+    defaults. Pass ``use_base=False`` to load a file in isolation.
+    """
+    config_path = Path(config_path)
+    raw = yaml.safe_load(config_path.read_text()) or {}
+    if not isinstance(raw, dict):
+        raise TypeError(f"{config_path} must contain a YAML mapping.")
+
+    if use_base and config_path.name != BASE_CONFIG_FILENAME:
+        base_path = find_base_config(config_path)
+        if base_path is not None:
+            base_raw = yaml.safe_load(base_path.read_text()) or {}
+            raw = deep_merge(base_raw, raw)
+
+    return ExperimentConfig.model_validate(raw)
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Run a training_pipeline experiment from a YAML config file."
+    )
+    parser.add_argument("config_path", help="Path to a YAML experiment config file.")
+    parser.add_argument(
+        "--no-save-model",
+        action="store_true",
+        help="Skip saving the final model bundle to disk.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate and print the resolved config; do not train.",
+    )
+    return parser
+
+
+def main() -> None:
+    parser = _build_arg_parser()
+    args = parser.parse_args()
+
+    config = load_config(args.config_path)
+
+    if args.dry_run:
+        print(config.model_dump_json(indent=2))
+        return
+
+    result = run_experiment(config, save_model=not args.no_save_model)
+
+    print(f"Experiment: {config.experiment_name}")
+    print(f"Target: {config.target_family.value}")
+    evaluation = result.holdout_result or result.walk_forward_result
+    if evaluation is not None:
+        print(f"Evaluation mode: {config.holdout_evaluation.value}")
+        print(f"Test MAE: {evaluation.mae:.4f}")
+        baseline = (
+            result.holdout_result.baseline_holdout
+            if result.holdout_result is not None
+            else result.walk_forward_result.baseline  # type: ignore[union-attr]
+        )
+        print(f"Bookmaker-line baseline MAE: {baseline.mae:.4f}")
+        primary = evaluation.betting_primary
+        if primary.roi is not None:
+            print(
+                f"ROI @ edge>{primary.min_edge}: {primary.roi:+.2%} "
+                f"on {primary.n_bets} bets (significant: {primary.is_significant})"
+            )
+    if result.run_dir is not None:
+        print(f"Run directory: {result.run_dir}")
+    if result.model_path is not None:
+        print(f"Model saved to: {result.model_path}")
+
+
+if __name__ == "__main__":
+    main()
