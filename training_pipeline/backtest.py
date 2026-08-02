@@ -110,6 +110,7 @@ def _build_static_params(
     return {
         "booster": "gbtree",
         "tree_method": "hist",
+        "device": config.device,
         "objective": config.optuna.objective_name,
         "eval_metric": "logloss" if config.is_classifier else "mae",
         "random_state": config.random_state if random_state is None else random_state,

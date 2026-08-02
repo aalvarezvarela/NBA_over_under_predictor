@@ -97,6 +97,7 @@ def build_xgb_params(
     *,
     objective_name: str,
     random_state: int = 16,
+    device: str = "cpu",
 ) -> dict[str, Any]:
     """Sample XGBoost parameters from a configurable search space.
 
@@ -110,6 +111,7 @@ def build_xgb_params(
     return {
         "booster": "gbtree",
         "tree_method": "hist",
+        "device": device,
         "objective": objective_name,
         "eval_metric": "mae",
         "max_depth": trial.suggest_int(
@@ -240,6 +242,7 @@ def _build_static_params(
     return {
         "booster": "gbtree",
         "tree_method": "hist",
+        "device": config.device,
         "objective": config.optuna.objective_name,
         # Early stopping and Optuna both track the loss that matches the model
         # class. Leaving "mae" on a classifier would early-stop on a metric
@@ -300,6 +303,7 @@ def run_objective(
         config.optuna.search_space,
         objective_name=config.optuna.objective_name,
         random_state=config.random_state,
+        device=config.device,
     )
     weight_lambda = _resolve_trial_sample_weight_lambda(trial, config.sample_weight)
 
@@ -728,6 +732,7 @@ def run_classifier_objective(
         config.optuna.search_space,
         objective_name=config.optuna.objective_name,
         random_state=config.random_state,
+        device=config.device,
     )
     params["eval_metric"] = "logloss"
     weight_lambda = _resolve_trial_sample_weight_lambda(trial, config.sample_weight)
