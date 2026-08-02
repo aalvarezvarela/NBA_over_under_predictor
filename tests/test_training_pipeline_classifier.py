@@ -598,3 +598,135 @@ def test_promoting_a_classifier_is_refused_with_an_explanation(patched_classifie
 
     with pytest.raises(ValueError, match="cannot be promoted yet"):
         train_production_model_from_run(run_dir)
+
+
+# --- the search space must be measured in the objective's own units ---------
+
+
+def _space_config(tmp_path, **overrides) -> ExperimentConfig:
+    """A config that does NOT override optuna.search_space.
+
+    The shared _config helper shrinks the space (n_estimators=8) so the suite
+    runs fast -- which makes it useless here: a shrunken space is not the
+    default, so the classifier swap never fires and the regressor's space is not
+    the default either. Testing the search space needs a config that leaves it
+    alone.
+    """
+    kwargs = {
+        "experiment_name": "space",
+        "prediction_strategy": PredictionStrategy.OVER_UNDER_CLASSIFIER,
+        "line_col": "TOTAL_LINE_bet365",
+        "data": DataConfig(csv_path="x.csv"),
+        "save_experiment_artifacts": False,
+        "experiment_root_dir": tmp_path / "artifacts",
+    }
+    kwargs.update(overrides)
+    return ExperimentConfig(**kwargs)
+
+
+def test_classifier_gets_a_hessian_scaled_search_space(tmp_path):
+    """The defaults are reasoned in squared-error terms, where the hessian is 1
+    per sample. Logistic loss has hessian ~0.25 at a 50% base rate, so the same
+    numbers mean something else: min_child_weight 20-250 becomes 80-1000
+    SAMPLES per leaf, and a gamma floor of 1.0 exceeds the ~0.49 chance-level
+    split gain, pruning every split.
+    """
+    from training_pipeline.config import CLASSIFIER_SEARCH_SPACE, SearchSpaceConfig
+
+    classifier = _space_config(tmp_path)
+    regressor = _space_config(
+        tmp_path, prediction_strategy=PredictionStrategy.TOTAL_POINTS_REGRESSOR
+    )
+
+    assert classifier.optuna.search_space == CLASSIFIER_SEARCH_SPACE
+    assert regressor.optuna.search_space == SearchSpaceConfig()
+
+    # The two ratios the scaling is derived from, rounded to round numbers:
+    # hessian 0.25 puts min_child_weight at ~1/4 (62.5 -> 60), and the measured
+    # 387x gain-scale ratio puts gamma at ~1/387 (1.29 -> 2.0 / 0.0026 -> 0.002).
+    space = classifier.optuna.search_space
+    assert space.min_child_weight.high == 60.0
+    assert space.gamma.high == 2.0
+    assert space.gamma.low == 0.002
+
+
+def test_only_the_scale_dependent_parameters_move(tmp_path):
+    """max_depth, subsample, colsample_bytree and learning_rate are
+    dimensionless here; changing them would be unjustified churn.
+    """
+    from training_pipeline.config import SearchSpaceConfig
+
+    classifier = _space_config(tmp_path).optuna.search_space
+    regression = SearchSpaceConfig()
+
+    for unchanged in ("max_depth", "subsample", "colsample_bytree", "learning_rate"):
+        assert getattr(classifier, unchanged) == getattr(regression, unchanged), unchanged
+    for rescaled in ("min_child_weight", "gamma", "reg_alpha", "reg_lambda"):
+        assert getattr(classifier, rescaled) != getattr(regression, rescaled), rescaled
+
+
+def test_a_deliberate_search_space_is_never_overridden(tmp_path):
+    """The swap means "this space was inherited, not chosen". Anyone who states
+    one -- including deliberately reusing the regression ranges -- keeps it.
+    """
+    from training_pipeline.config import FloatRange, SearchSpaceConfig
+
+    chosen = SearchSpaceConfig(gamma=FloatRange(low=7.0, high=9.0, log=True))
+    config = _space_config(tmp_path, optuna=OptunaConfig(search_space=chosen))
+    assert config.optuna.search_space.gamma.low == 7.0
+
+
+def test_regressors_are_completely_unaffected(tmp_path):
+    from training_pipeline.config import SearchSpaceConfig
+
+    for strategy, line_col in (
+        (PredictionStrategy.TOTAL_POINTS_REGRESSOR, "TOTAL_LINE_bet365"),
+        (PredictionStrategy.LINE_ERROR_REGRESSOR, None),
+    ):
+        config = _space_config(
+            tmp_path, prediction_strategy=strategy, line_col=line_col
+        )
+        assert config.optuna.search_space == SearchSpaceConfig(), strategy.value
+
+
+def test_the_two_spaces_do_not_share_a_study(tmp_path):
+    """The search space is part of what a trial MEANS, so a classifier run must
+    not resume a study tuned under regression-scaled ranges.
+    """
+    classifier = _space_config(tmp_path)
+    regressor = _space_config(
+        tmp_path, prediction_strategy=PredictionStrategy.TOTAL_POINTS_REGRESSOR
+    )
+    assert classifier.fingerprint() != regressor.fingerprint()
+
+
+def test_the_scaled_space_can_actually_fit_a_signal(tmp_path):
+    """The regression space's upper half drives a classifier to a constant
+    prediction. This is the regression test for that: given a planted signal,
+    a model built at the CEILING of the classifier space must still separate
+    games, where the regression ceiling produces a flat 0.504.
+    """
+    from xgboost import XGBClassifier
+
+    rng = np.random.default_rng(0)
+    n = 2500  # the campaign's reference window
+    X = pd.DataFrame(rng.normal(size=(n, 60)).astype(np.float32))
+    logit = 0.30 * X[0] + 0.25 * X[1] + 0.20 * X[2]
+    y = pd.Series((rng.random(n) < 1 / (1 + np.exp(-logit))).astype(int))
+
+    space = _space_config(tmp_path).optuna.search_space
+    shared = dict(
+        objective="binary:logistic", tree_method="hist", n_estimators=200,
+        learning_rate=0.05, random_state=16, n_jobs=2, verbosity=0,
+    )
+    ceiling = XGBClassifier(
+        min_child_weight=space.min_child_weight.high,
+        gamma=space.gamma.high,
+        reg_lambda=space.reg_lambda.high,
+        **shared,
+    ).fit(X, y)
+    spread = np.ptp(ceiling.predict_proba(X)[:, 1])
+    assert spread > 0.10, (
+        f"even at its most conservative the classifier space must separate "
+        f"games; got a probability spread of {spread:.3f}"
+    )

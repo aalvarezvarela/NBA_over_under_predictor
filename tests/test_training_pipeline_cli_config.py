@@ -134,3 +134,76 @@ def test_base_yaml_search_space_matches_the_code_defaults():
 
     config = load_config(REPO_EXPERIMENTS / "total_points/3_seasons.yaml")
     assert config.optuna.search_space == SearchSpaceConfig()
+
+
+# --- the checked-in campaign must be correct as written ---------------------
+
+CAMPAIGN = REPO_EXPERIMENTS / "strategy_window_2026_08"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "total_points_2500", "total_points_3750",
+        "line_error_2500", "line_error_3750",
+        "classifier_2500", "classifier_3750",
+    ],
+)
+def test_campaign_configs_are_valid_and_share_their_controls(name):
+    """Everything except strategy and window is held fixed. A six-cell
+    comparison is only readable if one thing varies per axis.
+    """
+    config = load_config(CAMPAIGN / f"{name}.yaml")
+
+    assert config.comparison_group == "strategy_window_2026_08"
+    assert config.optuna.n_trials == 40
+    # Fixed trial count, no timeout: the previous A/B gave one side 2.4x the
+    # tuning because its timeout was larger, and a timeout also makes the trial
+    # count a function of the machine.
+    assert config.optuna.timeout is None
+    assert config.holdout.test_days == 60
+    assert config.evaluation_seeds == (101, 202)
+    assert config.data.exclude_overtime_from_training is False
+
+
+def test_campaign_classifiers_get_the_hessian_scaled_space():
+    """The regression space's upper half drives a classifier to a constant
+    prediction, so inheriting it would make both classifier runs uninformative.
+    """
+    from training_pipeline.config import CLASSIFIER_SEARCH_SPACE
+
+    for window in (2500, 3750):
+        config = load_config(CAMPAIGN / f"classifier_{window}.yaml")
+        assert config.optuna.search_space == CLASSIFIER_SEARCH_SPACE, window
+        assert config.optuna.objective_name == "binary:logistic"
+
+
+def test_campaign_regressors_keep_the_regression_space():
+    from training_pipeline.config import SearchSpaceConfig
+
+    for name in ("total_points_2500", "line_error_3750"):
+        config = load_config(CAMPAIGN / f"{name}.yaml")
+        assert config.optuna.search_space == SearchSpaceConfig(), name
+        assert config.optuna.objective_name == "reg:squarederror"
+
+
+def test_campaign_line_col_matches_each_strategy():
+    """line_error must NOT carry one (its target is already relative to the
+    line); the other two must, and for the classifier it defines the label.
+    """
+    assert load_config(CAMPAIGN / "line_error_2500.yaml").line_col is None
+    assert load_config(CAMPAIGN / "total_points_2500.yaml").line_col == "TOTAL_LINE_bet365"
+    assert load_config(CAMPAIGN / "classifier_2500.yaml").line_col == "TOTAL_LINE_bet365"
+
+
+def test_campaign_cells_are_pairwise_distinct_studies():
+    """Six configs, six fingerprints -- otherwise two cells could share a
+    persistent Optuna study and silently pool incomparable trials.
+    """
+    names = [
+        "total_points_2500", "total_points_3750",
+        "line_error_2500", "line_error_3750",
+        "classifier_2500", "classifier_3750",
+    ]
+    fingerprints = {load_config(CAMPAIGN / f"{n}.yaml").fingerprint() for n in names}
+    assert len(fingerprints) == len(names)

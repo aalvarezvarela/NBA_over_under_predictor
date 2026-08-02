@@ -452,6 +452,57 @@ UPSTREAM_SEARCH_SPACE = SearchSpaceConfig(
 )
 
 
+#: The same space rescaled for ``binary:logistic``. Applied automatically to
+#: classifier runs -- see ExperimentConfig._scale_search_space_to_the_objective.
+#:
+#: The regression defaults above were reasoned entirely in squared-error terms,
+#: where the hessian is 1 per sample. Logistic loss has hessian ``p(1-p)``,
+#: which at this problem's ~50% base rate is 0.25. Reusing the regression space
+#: therefore does not merely "regularise a bit differently" -- it changes what
+#: the numbers MEAN, by roughly a factor of 4 on leaf size and 387 on gain:
+#:
+#:   min_child_weight is a sum of hessians, so 20-250 becomes 80-1000 SAMPLES
+#:   per leaf instead of 20-250. Against a 2500-game window the upper end
+#:   permits at most two leaves.
+#:
+#:   Chance-level split gain is ~0.49 under logistic versus ~189 under squared
+#:   error (500-row node, lambda=1). A gamma FLOOR of 1.0 therefore prunes every
+#:   split, real or not -- and since gamma is sampled log-uniformly over 1-500,
+#:   its geometric midpoint of ~22 puts half the space beyond that cliff.
+#:
+#: Measured on synthetic data carrying a planted, known signal (true P(OVER)
+#: spanning 0.18-0.81):
+#:
+#:   space / region                  predicted p-range   log-loss improvement
+#:   regression floor  (mcw 20,  g 1)    0.118-0.866            +0.321
+#:   regression middle (mcw 125, g 22)   0.468-0.530            +0.006
+#:   regression ceiling(mcw 250, g 500)  0.504-0.504            -0.000  (constant!)
+#:   classifier floor  (mcw 5,   g .003) 0.083-0.923            +0.455
+#:   classifier middle (mcw 30,  g .06)  0.178-0.833            +0.241
+#:   classifier ceiling(mcw 60,  g 1.3)  0.329-0.707            +0.071
+#:
+#: The regression middle reproduces 0.468-0.530 -- almost exactly the 0.47-0.52
+#: seen in the first real classifier smoke run. That run's "no signal" reading
+#: was the search space strangling the model, not an absence of signal.
+#:
+#: Only the four scale-dependent parameters move. max_depth, subsample,
+#: colsample_bytree and learning_rate are dimensionless here and stay put.
+CLASSIFIER_SEARCH_SPACE = SearchSpaceConfig(
+    max_depth=IntRange(low=1, high=4),
+    # /4: keeps 20-240 actual samples per leaf, matching the regression intent.
+    min_child_weight=FloatRange(low=5.0, high=60.0, log=True),
+    # /387, the measured gain-scale ratio between the two objectives.
+    gamma=FloatRange(low=0.002, high=2.0, log=True),
+    subsample=FloatRange(low=0.55, high=0.95),
+    colsample_bytree=FloatRange(low=0.05, high=0.8, log=True),
+    learning_rate=FloatRange(low=0.0075, high=0.06, log=True),
+    # Leaf weights are log-odds, roughly 10x smaller than points-space weights.
+    reg_alpha=FloatRange(low=1e-3, high=2.0, log=True),
+    # Competes with H = 0.25n rather than n.
+    reg_lambda=FloatRange(low=0.5, high=150.0, log=True),
+)
+
+
 class OptunaConfig(BaseModel):
     """Optuna tuning knobs.
 
@@ -892,6 +943,29 @@ class ExperimentConfig(BaseModel):
             if leaking not in self.exclude_cols:
                 self.exclude_cols = [*self.exclude_cols, leaking]
 
+        return self
+
+    @model_validator(mode="after")
+    def _scale_search_space_to_the_objective(self) -> ExperimentConfig:
+        """Give a classifier a search space measured in ITS loss's units.
+
+        The default ranges are reasoned in squared-error terms, where the
+        hessian is 1 per sample. Under logistic loss the hessian is ~0.25, so
+        the same numbers mean something else entirely: min_child_weight becomes
+        80-1000 samples per leaf instead of 20-250, and a gamma floor of 1.0
+        exceeds the ~0.49 chance-level split gain, pruning every split. Measured
+        on a planted signal, the upper half of the regression space drives a
+        classifier to a literally constant prediction.
+
+        Fires ONLY when the space is exactly the regression default -- i.e. the
+        space was inherited rather than chosen. Any deliberate customisation,
+        including deliberately reusing the regression ranges, is left alone.
+        """
+        if not self.strategy.is_classifier:
+            return self
+        if self.optuna.search_space != SearchSpaceConfig():
+            return self
+        self.optuna.search_space = CLASSIFIER_SEARCH_SPACE.model_copy(deep=True)
         return self
 
     @model_validator(mode="after")

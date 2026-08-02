@@ -61,6 +61,17 @@
 #   - the closing-vs-opener comparison is unavailable: the label was defined
 #     against one specific line, so the same prediction cannot be re-scored
 #     against another.
+#   - the search space below is AUTOMATICALLY rescaled. Those ranges are
+#     reasoned in squared-error terms, where the hessian is 1 per sample;
+#     logistic loss has hessian p(1-p) ~ 0.25, so the same numbers mean
+#     something else. min_child_weight 20-250 would become 80-1000 SAMPLES per
+#     leaf, and chance-level split gain drops from ~189 to ~0.49, so a gamma
+#     FLOOR of 1.0 prunes every split. Measured on a planted signal, the upper
+#     half of the regression space drives a classifier to a literally constant
+#     prediction -- which is what produced the 0.47-0.52 probability range in
+#     the first smoke run. See config.CLASSIFIER_SEARCH_SPACE.
+#     The swap fires only when the space below is untouched; state your own
+#     optuna.search_space and it is left exactly as written.
 #
 # Deliberately NOT defaulted here. A shared default would be inherited by every
 # experiment and then contradict any that names a different target, and "what
@@ -184,6 +195,9 @@ optuna:
   #
   # Widening any range changes the config fingerprint, so a persistent study
   # will start fresh rather than mixing incomparable trials.
+  # NOTE these ranges are SQUARED-ERROR units. An over_under_classifier run
+  # replaces them automatically with config.CLASSIFIER_SEARCH_SPACE, because
+  # logistic loss has a different hessian and gain scale (see above).
   search_space:
     # Sized for this problem: ~2500 games vs 1400-2100 features (p/n ~ 0.6-0.8)
     # and a signal worth ~3% of baseline MAE. Differs from the legacy space in
