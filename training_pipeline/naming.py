@@ -24,7 +24,7 @@ DEFAULT_TRAINING_CODE_TAG = "training_pipeline-1.0"
 def resolve_model_output_dir(config: ExperimentConfig) -> Path:
     return (
         config.model_output_root
-        / config.target_family.value
+        / config.family.value
         / config.resolved_window_dir_label
     )
 
@@ -40,7 +40,7 @@ def build_model_name(config: ExperimentConfig, *, as_of: date) -> str:
     would make a model retrained on an old snapshot look freshly trained.
     """
     date_str = as_of.strftime("%d_%m_%y")
-    return f"{config.resolved_window_name_label}_xgb_{config.target_family.value}_{date_str}"
+    return f"{config.resolved_window_name_label}_xgb_{config.family.value}_{date_str}"
 
 
 def assert_model_bundle_is_writable(
@@ -104,7 +104,7 @@ def build_model_bundle_metadata(
         model_info=ModelInfo(
             name=model_name,
             model_version=train_date_max_dt.strftime("%d_%m_%y"),
-            model_type=f"{config.resolved_window_name_label}_{config.target_family.value}",
+            model_type=f"{config.resolved_window_name_label}_{config.family.value}",
             prediction_source=model_name,
             # ModelBundleMetadata's existing slot for "which training approach
             # produced this". Carry the user's label through when set so a

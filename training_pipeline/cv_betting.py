@@ -35,7 +35,18 @@ from training_pipeline.betting import (
     betting_threshold_sweep,
     evaluate_betting,
 )
-from training_pipeline.config import ExperimentConfig, TargetFamily
+from training_pipeline.calibration import (
+    CalibrationSummary,
+    calibration_summary,
+    calibration_table,
+)
+from training_pipeline.config import ExperimentConfig
+from training_pipeline.decisions import (
+    collect_prices,
+    predict_decisions,
+    primary_threshold,
+    threshold_sweep_values,
+)
 from training_pipeline.line_scoring import (
     build_line_comparison,
     collect_comparison_lines,
@@ -70,6 +81,10 @@ class CrossValidationBettingResult:
     line_comparison: pd.DataFrame | None
     n_profitable_folds: int
     random_state: int
+    #: Probability quality over the pooled folds. Classifier only, and the more
+    #: readable of the two measurements: ~5x the games of the holdout.
+    calibration: CalibrationSummary | None = None
+    calibration_buckets: pd.DataFrame | None = None
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -90,6 +105,19 @@ class CrossValidationBettingResult:
             "profit_units": self.betting_primary.profit_units,
             "n_profitable_folds": self.n_profitable_folds,
             "random_state": self.random_state,
+            **(
+                {}
+                if self.calibration is None
+                else {
+                    "log_loss": self.calibration.log_loss,
+                    "brier": self.calibration.brier,
+                    "log_loss_improvement": self.calibration.log_loss_improvement,
+                    "expected_calibration_error": (
+                        self.calibration.expected_calibration_error
+                    ),
+                    "mean_bias": self.calibration.mean_bias,
+                }
+            ),
         }
 
 
@@ -116,7 +144,7 @@ def evaluate_cv_betting(
     resolved_random_state = (
         config.random_state if random_state is None else random_state
     )
-    is_line_error = config.target_family == TargetFamily.LINE_ERROR
+    ev_threshold = primary_threshold(config)
 
     target_line_all = pd.to_numeric(
         df_dev[target_line_col], errors="coerce"
@@ -143,18 +171,30 @@ def evaluate_cv_betting(
         y_true = pd.to_numeric(y_dev.iloc[valid_idx], errors="coerce").to_numpy(
             dtype=float
         )
-        y_pred = np.asarray(model.predict(X_dev.iloc[valid_idx]), dtype=float)
-
         fold_line = target_line_all[valid_idx]
         fold_actual = actual_total_all[valid_idx]
-        fold_edge = y_pred if is_line_error else y_pred - fold_line
+
+        fold_over, fold_under = collect_prices(df_dev, config, positions=valid_idx)
+        fold_decisions = predict_decisions(
+            model,
+            X_dev.iloc[valid_idx],
+            config=config,
+            target_line=fold_line,
+            decimal_odds_over=fold_over,
+            decimal_odds_under=fold_under,
+        )
+        y_pred = fold_decisions.raw_prediction
+        fold_edge = fold_decisions.predicted_edge
 
         fold_betting = evaluate_betting(
             predicted_edge=fold_edge,
             actual_total=fold_actual,
             line=fold_line,
-            min_edge=config.betting.primary_edge_threshold,
+            min_edge=ev_threshold,
+            selection_score=fold_decisions.selection_score,
             flat_decimal_odds=config.betting.flat_decimal_odds,
+            decimal_odds_over=fold_over,
+            decimal_odds_under=fold_under,
         )
 
         fold_rows.append(
@@ -164,8 +204,13 @@ def evaluate_cv_betting(
                 "n_valid": int(len(valid_idx)),
                 "valid_start": pd.Timestamp(dates_dev.iloc[valid_idx].min()),
                 "valid_end": pd.Timestamp(dates_dev.iloc[valid_idx].max()),
-                "mae": float(mean_absolute_error(y_true, y_pred)),
-                "rmse": float(np.sqrt(mean_squared_error(y_true, y_pred))),
+                # NaN for the classifier: the "error" of a probability against
+                # a 0/1 label is not in points and must not be read next to a
+                # regressor's MAE.
+                "mae": float("nan") if config.is_classifier
+                else float(mean_absolute_error(y_true, y_pred)),
+                "rmse": float("nan") if config.is_classifier
+                else float(np.sqrt(mean_squared_error(y_true, y_pred))),
                 # The line's own error on the same rows, so each fold shows
                 # whether the model beat the market there or merely tracked it.
                 "line_mae": float(np.mean(np.abs(fold_actual - fold_line))),
@@ -187,6 +232,15 @@ def evaluate_cv_betting(
                     "target_line": fold_line,
                     "TOTAL_POINTS": fold_actual,
                     "predicted_edge": fold_edge,
+                    "selection_score": fold_decisions.selection_score,
+                    **(
+                        {}
+                        if fold_decisions.p_over is None
+                        else {
+                            "p_over": fold_decisions.p_over,
+                            "expected_value": fold_decisions.expected_value,
+                        }
+                    ),
                 }
             )
         )
@@ -198,23 +252,43 @@ def evaluate_cv_betting(
     pooled_line = predictions["target_line"].to_numpy(dtype=float)
     pooled_actual = predictions["TOTAL_POINTS"].to_numpy(dtype=float)
 
+    pooled_over, pooled_under = collect_prices(
+        df_dev, config, positions=predictions["row_in_dev"].to_numpy()
+    )
     betting_kwargs: dict[str, Any] = {
         "actual_total": pooled_actual,
         "line": pooled_line,
         "flat_decimal_odds": config.betting.flat_decimal_odds,
+        "decimal_odds_over": pooled_over,
+        "decimal_odds_under": pooled_under,
     }
+    pooled_score = predictions["selection_score"].to_numpy(dtype=float)
     betting_sweep = betting_threshold_sweep(
         predicted_edge=pooled_edge,
-        thresholds=config.betting.edge_thresholds,
+        thresholds=threshold_sweep_values(config),
+        selection_score=pooled_score,
         **betting_kwargs,
     )
     betting_primary = evaluate_betting(
         predicted_edge=pooled_edge,
-        min_edge=config.betting.primary_edge_threshold,
+        min_edge=ev_threshold,
+        selection_score=pooled_score,
         **betting_kwargs,
     )
 
-    line_comparison = build_line_comparison(
+    calibration: CalibrationSummary | None = None
+    calibration_buckets: pd.DataFrame | None = None
+    if config.is_classifier:
+        pooled_p = predictions["p_over"].to_numpy(dtype=float)
+        pooled_y = predictions["y_true"].to_numpy(dtype=float)
+        calibration = calibration_summary(
+            pooled_y, pooled_p, n_buckets=config.betting.calibration_buckets
+        )
+        calibration_buckets = calibration_table(
+            pooled_y, pooled_p, n_buckets=config.betting.calibration_buckets
+        )
+
+    line_comparison = None if config.is_classifier else build_line_comparison(
         y_pred=predictions["y_pred"].to_numpy(dtype=float),
         target_line=pooled_line,
         actual_total=pooled_actual,
@@ -231,10 +305,10 @@ def evaluate_cv_betting(
         n_folds=len(splits),
         n_games=int(len(predictions)),
         n_unique_games=int(predictions["row_in_dev"].nunique()),
-        mae=float(
+        mae=float("nan") if config.is_classifier else float(
             mean_absolute_error(predictions["y_true"], predictions["y_pred"])
         ),
-        rmse=float(
+        rmse=float("nan") if config.is_classifier else float(
             np.sqrt(mean_squared_error(predictions["y_true"], predictions["y_pred"]))
         ),
         mean_fold_mae=float(fold_metrics["mae"].mean()),
@@ -243,6 +317,12 @@ def evaluate_cv_betting(
         fold_metrics=fold_metrics,
         predictions=predictions,
         line_comparison=line_comparison,
-        n_profitable_folds=int((fold_metrics["roi"].fillna(0.0) > 0).sum()),
+        # to_numeric first: a fold that placed no bets reports roi=None, which
+        # makes the column object-dtype and fillna's downcast deprecated.
+        n_profitable_folds=int(
+            (pd.to_numeric(fold_metrics["roi"], errors="coerce").fillna(0.0) > 0).sum()
+        ),
         random_state=resolved_random_state,
+        calibration=calibration,
+        calibration_buckets=calibration_buckets,
     )

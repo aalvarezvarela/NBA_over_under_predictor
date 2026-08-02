@@ -248,3 +248,114 @@ def test_line_error_config_round_trips_through_json():
     config = ExperimentConfig(**kwargs)
     restored = ExperimentConfig.model_validate_json(config.model_dump_json())
     assert restored == config
+
+
+# --- holdout sizing: fixed calendar window ----------------------------------
+
+
+def test_exactly_one_holdout_sizing_rule_is_required():
+    from training_pipeline.config import HoldoutConfig
+
+    with pytest.raises(ValueError, match="exactly one"):
+        HoldoutConfig(test_size=0.05, test_days=60)
+    with pytest.raises(ValueError, match="exactly one"):
+        HoldoutConfig(test_size=None, test_games=None, test_days=None)
+
+    assert HoldoutConfig(test_size=None, test_days=60).test_days == 60
+
+
+def test_test_days_must_be_positive():
+    from training_pipeline.config import HoldoutConfig
+
+    with pytest.raises(ValueError, match="must be > 0"):
+        HoldoutConfig(test_size=None, test_days=0)
+
+
+def test_days_holdout_never_splits_a_game_day_across_the_boundary():
+    """A count-based cut can put some of a day's games in training and the rest
+    in test -- exactly the leak the daily walk-forward exists to avoid.
+    """
+    import pandas as pd
+
+    from training_pipeline.splits import split_latest_days_holdout
+
+    dates = pd.to_datetime(
+        ["2026-01-01"] * 5 + ["2026-01-02"] * 5 + ["2026-01-03"] * 5
+    )
+    df = pd.DataFrame({"GAME_DATE": dates, "x": range(15)})
+
+    df_dev, df_test = split_latest_days_holdout(df, date_col="GAME_DATE", test_days=1)
+
+    assert set(df_dev["GAME_DATE"]).isdisjoint(set(df_test["GAME_DATE"]))
+    assert df_dev["GAME_DATE"].max() < df_test["GAME_DATE"].min()
+    # Whole days, so sizes are multiples of the 5 games per day.
+    assert len(df_test) == 5 and len(df_dev) == 10
+
+
+def test_days_holdout_is_measured_from_the_last_game_not_from_today():
+    """Re-running an old config must reproduce its split."""
+    import pandas as pd
+
+    from training_pipeline.splits import split_latest_days_holdout
+
+    df = pd.DataFrame(
+        {"GAME_DATE": pd.date_range("2020-01-01", periods=100, freq="D")}
+    )
+    df_dev, df_test = split_latest_days_holdout(df, date_col="GAME_DATE", test_days=10)
+    assert df_test["GAME_DATE"].min() == pd.Timestamp("2020-03-31")
+    assert len(df_test) == 10
+
+
+def test_days_holdout_refuses_to_consume_the_whole_dataset():
+    import pandas as pd
+
+    from training_pipeline.splits import split_latest_days_holdout
+
+    df = pd.DataFrame({"GAME_DATE": pd.date_range("2026-01-01", periods=5, freq="D")})
+    with pytest.raises(ValueError, match="nothing left to train on"):
+        split_latest_days_holdout(df, date_col="GAME_DATE", test_days=999)
+
+
+def test_datasets_ending_on_the_same_day_get_the_identical_window():
+    """The reason for the change: a 5% fraction gave the 2026-07-04 A/B
+    different start dates (Mar 7 vs Mar 8) and game counts (293 vs 287),
+    quietly making its ROI columns non-comparable. Row count must not move the
+    window.
+    """
+    import pandas as pd
+
+    from training_pipeline.splits import split_latest_days_holdout
+
+    dates = pd.date_range("2026-01-01", periods=120, freq="D")
+    dense = pd.DataFrame({"GAME_DATE": dates.repeat(8)})
+    # Half the coverage in the middle, but the same first and last game.
+    sparse_dates = dates[::2].union(pd.DatetimeIndex([dates[-1]]))
+    sparse = pd.DataFrame({"GAME_DATE": sparse_dates})
+
+    _, test_dense = split_latest_days_holdout(dense, date_col="GAME_DATE", test_days=30)
+    _, test_sparse = split_latest_days_holdout(sparse, date_col="GAME_DATE", test_days=30)
+
+    assert test_dense["GAME_DATE"].min() == test_sparse["GAME_DATE"].min()
+    assert test_dense["GAME_DATE"].max() == test_sparse["GAME_DATE"].max()
+    # Different game counts are expected and are the honest signal: they mean
+    # the datasets genuinely cover the window differently.
+    assert len(test_dense) != len(test_sparse)
+
+
+def test_the_window_is_anchored_to_each_datasets_own_last_game():
+    """The alignment guarantee has one precondition worth knowing: two datasets
+    line up only if they END on the same date. A CSV rebuilt to a later date
+    shifts its whole window, so the cohort check in the comparison notebook
+    still earns its place.
+    """
+    import pandas as pd
+
+    from training_pipeline.splits import split_latest_days_holdout
+
+    early = pd.DataFrame({"GAME_DATE": pd.date_range("2026-01-01", periods=100)})
+    late = pd.DataFrame({"GAME_DATE": pd.date_range("2026-01-01", periods=110)})
+
+    _, test_early = split_latest_days_holdout(early, date_col="GAME_DATE", test_days=30)
+    _, test_late = split_latest_days_holdout(late, date_col="GAME_DATE", test_days=30)
+
+    assert test_early["GAME_DATE"].max() != test_late["GAME_DATE"].max()

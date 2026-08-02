@@ -101,7 +101,7 @@ def main() -> None:
     result = run_experiment(config, save_model=not args.no_save_model)
 
     print(f"Experiment: {config.experiment_name}")
-    print(f"Target: {config.target_family.value}")
+    print(f"Target: {config.family.value}")
     evaluation = result.holdout_result or result.walk_forward_result
     if evaluation is not None:
         print(f"Evaluation mode: {config.holdout_evaluation.value}")

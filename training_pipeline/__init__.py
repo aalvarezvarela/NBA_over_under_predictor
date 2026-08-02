@@ -19,11 +19,19 @@ from training_pipeline.betting import (
     evaluate_alternative_lines,
     evaluate_betting,
 )
+from training_pipeline.calibration import (
+    CalibrationSummary,
+    brier_score,
+    calibration_summary,
+    calibration_table,
+    log_loss,
+)
 from training_pipeline.config import (
     BacktestConfig,
     BettingConfig,
     CVStrategy,
     ExperimentConfig,
+    PredictionStrategy,
     RefitStrategy,
     TargetFamily,
 )
@@ -31,6 +39,7 @@ from training_pipeline.cv_betting import (
     CrossValidationBettingResult,
     evaluate_cv_betting,
 )
+from training_pipeline.decisions import Decisions, predict_decisions
 from training_pipeline.leaderboard import build_leaderboard, headline_leaderboard
 from training_pipeline.pipeline import ExperimentResult, run_experiment
 
@@ -61,6 +70,14 @@ __all__ = [
     "CrossValidationBettingResult",
     "evaluate_cv_betting",
     "CVStrategy",
+    "CalibrationSummary",
+    "brier_score",
+    "calibration_summary",
+    "calibration_table",
+    "log_loss",
+    "Decisions",
+    "predict_decisions",
+    "PredictionStrategy",
     "ExperimentConfig",
     "RefitStrategy",
     "TargetFamily",

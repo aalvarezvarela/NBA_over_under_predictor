@@ -11,6 +11,7 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from nba_ou.config.constants import SEASON_TYPE_MAP
 from nba_ou.config.odds_columns import resolve_main_total_line_col, total_line_col
@@ -26,7 +27,14 @@ from nba_ou.modeling.meta_learner_training_data import (
     _ensure_line_error_column as ensure_line_error_column,
 )
 
-from training_pipeline.config import BaselineConfig, CleaningConfig, ExperimentConfig
+from training_pipeline.config import (
+    LEAKING_TARGET_COLUMNS,
+    OVER_LABEL_COL,
+    BaselineConfig,
+    CleaningConfig,
+    ExperimentConfig,
+    PredictionStrategy,
+)
 
 # NOTE: "odds_total_line_books_median" (the engineered cross-book median total
 # line, per src/nba_ou/data_processing/merged_home_away_data/odds_feature_engeneer.py)
@@ -172,7 +180,7 @@ def _required_keep_columns(
     }
     if config.line_col:
         keep.add(config.line_col)
-    if config.target_family.value == "line_error":
+    if config.strategy == PredictionStrategy.LINE_ERROR_REGRESSOR:
         keep.add("LINE_ERROR")
     for price_col in (config.betting.over_price_col, config.betting.under_price_col):
         if price_col:
@@ -182,6 +190,10 @@ def _required_keep_columns(
     # the closing line, which is exactly why it would be dropped, and exactly
     # why the comparison is interesting.
     keep.update(config.betting.comparison_line_cols)
+    # Needed as a ROW attribute to filter training on, so it must survive
+    # cleaning even though it is never a feature.
+    if config.data.exclude_overtime_from_training:
+        keep.add(config.data.overtime_col)
     return sorted(keep)
 
 
@@ -230,6 +242,99 @@ def clean_for_training(
     return cleaned
 
 
+def training_eligible_mask(
+    df: pd.DataFrame, config: ExperimentConfig
+) -> np.ndarray:
+    """Boolean per row: may this game be used to FIT a model?
+
+    Evaluation ignores this entirely. Validation folds, the holdout and the
+    walk-forward's prediction days always score every game, because ~5.2% of
+    real games go to overtime and you are paid or not paid on those -- dropping
+    them from scoring would measure a world that does not exist.
+
+    Returns all-True when the filter is off, so callers need no branch.
+    """
+    if not config.data.exclude_overtime_from_training:
+        return np.ones(len(df), dtype=bool)
+
+    column = config.data.overtime_col
+    if column not in df.columns:
+        raise KeyError(
+            f"data.exclude_overtime_from_training is on but {column!r} is not in "
+            "the training data. It is dropped by training-data builds predating "
+            "this option -- regenerate the CSV with "
+            "scripts/create_train_data/create_train_data.py."
+        )
+    flag = pd.to_numeric(df[column], errors="coerce")
+    # NaN means "unknown", which for a scheduled game means "not yet played".
+    # Treat only a definite 1 as overtime so unknowns stay trainable.
+    return (flag != 1).to_numpy(dtype=bool)
+
+
+def assert_no_leaking_features(X: pd.DataFrame) -> None:
+    """Fail loudly if an outcome-derived column reached the feature matrix.
+
+    ``exclude_cols`` already lists these, but it is a config field a caller can
+    overwrite, and the columns only appear in some CSV snapshots -- exactly the
+    combination that produces a silent, spectacular-looking result rather than
+    an error. This mirrors the ``_BEFORE`` leakage guard that
+    ``select_training_columns`` already enforces upstream.
+
+    Exact matches only: ``DIFF_FROM_LINE_*_BEFORE_*`` are legitimate pre-game
+    rollups, and a substring check would discard hundreds of real features.
+    """
+    leaked = sorted(set(X.columns) & set(LEAKING_TARGET_COLUMNS))
+    if leaked:
+        raise ValueError(
+            f"Outcome-derived column(s) {leaked} reached the feature matrix. "
+            "These are functions of the final score, so a model trained on them "
+            "would look excellent and predict nothing. Add them to "
+            "config.exclude_cols. (Engineered *_BEFORE_* rollups are unaffected.)"
+        )
+
+
+def add_over_under_label(
+    df: pd.DataFrame, *, line_col: str
+) -> tuple[pd.DataFrame, int]:
+    """Attach the binary OVER label, dropping pushes.
+
+    ``1`` when the total beat the line, ``0`` when it fell short. Games landing
+    exactly on the line are removed: they have no OVER/UNDER answer, so a label
+    would have to be invented, and inventing one teaches the model a fiction on
+    the very rows where the market was most precisely right.
+
+    Dropping them costs almost nothing here -- measured on the 2.0 training
+    data, pushes are 1.175% of games, because 53.3% of lines end in .5 and
+    cannot push at all, and whole-number lines only push 2.52% of the time.
+    That also settles the question of whether a three-outcome model is worth
+    building: at this rate, it is not.
+
+    Pushes are dropped from TRAINING only. Betting evaluation keeps them, where
+    they are scored the way a sportsbook settles them -- stake returned,
+    excluded from the win rate -- so profitability stays honest.
+
+    Returns the frame and the number of pushes removed.
+    """
+    total = pd.to_numeric(df["TOTAL_POINTS"], errors="coerce")
+    line = pd.to_numeric(df[line_col], errors="coerce")
+    margin = total - line
+
+    is_push = margin == 0
+    n_pushes = int(is_push.sum())
+
+    labelled = df.loc[~is_push].copy()
+    labelled[OVER_LABEL_COL] = (
+        (pd.to_numeric(labelled["TOTAL_POINTS"], errors="coerce")
+         - pd.to_numeric(labelled[line_col], errors="coerce")) > 0
+    ).astype(int)
+
+    if labelled.empty:
+        raise ValueError(
+            f"No rows left after dropping pushes against {line_col!r}."
+        )
+    return labelled, n_pushes
+
+
 def build_feature_matrix(
     df: pd.DataFrame, *, target_col: str, exclude_cols: list[str]
 ) -> tuple[pd.DataFrame, pd.Series]:
@@ -254,6 +359,10 @@ class PreparedDataset:
     #: sha256 of the source CSV actually read, recorded in run metadata so a
     #: saved run can be tied back to the exact bytes it trained on.
     dataset_checksum: str | None = None
+    #: Games dropped because the total landed exactly on the line, which has no
+    #: OVER/UNDER answer to learn. Classifier only; 0 for the regressors, which
+    #: keep those rows (a push is a perfectly good regression target).
+    n_pushes_excluded: int = 0
 
 
 def prepare_dataset(config: ExperimentConfig) -> PreparedDataset:
@@ -280,16 +389,18 @@ def prepare_dataset(config: ExperimentConfig) -> PreparedDataset:
                 f"data.allowed_season_types={config.data.allowed_season_types}."
             )
 
-    if config.target_family.value == "line_error":
+    if config.strategy == PredictionStrategy.LINE_ERROR_REGRESSOR:
         df = ensure_line_error_column(df)
-        target_col = "LINE_ERROR"
         # _ensure_line_error_column subtracts the configured main book's line,
         # so that is the line bets must be settled into for this target.
         target_line_col = total_line_col()
     else:
-        target_col = "TOTAL_POINTS"
+        # Both the total-points regressor and the classifier settle into the
+        # explicitly configured line. For the classifier that line is part of
+        # the label's definition, not merely a scoring choice.
         assert config.line_col is not None  # enforced by ExperimentConfig validation
         target_line_col = config.line_col
+    target_col = config.target_col
 
     baseline_line_col = resolve_baseline_line_col(df, config.baseline)
 
@@ -302,6 +413,15 @@ def prepare_dataset(config: ExperimentConfig) -> PreparedDataset:
             "bets cannot be settled without it."
         )
 
+    # The label depends on TOTAL_POINTS and the line, so it must be derived
+    # after cleaning has guaranteed both survive, and before the target column
+    # is required to exist by the dropna below.
+    n_pushes_excluded = 0
+    if config.strategy == PredictionStrategy.OVER_UNDER_CLASSIFIER:
+        df, n_pushes_excluded = add_over_under_label(
+            df, line_col=target_line_col
+        )
+
     dropna_subset = sorted({target_col, target_line_col, baseline_line_col})
     df = df.dropna(subset=dropna_subset).copy()
 
@@ -309,6 +429,7 @@ def prepare_dataset(config: ExperimentConfig) -> PreparedDataset:
     df = df.sort_values(config.data.date_col).reset_index(drop=True)
 
     X, y = build_feature_matrix(df, target_col=target_col, exclude_cols=config.exclude_cols)
+    assert_no_leaking_features(X)
 
     return PreparedDataset(
         df_full=df,
@@ -318,4 +439,5 @@ def prepare_dataset(config: ExperimentConfig) -> PreparedDataset:
         target_line_col=target_line_col,
         feature_names=list(X.columns),
         dataset_checksum=dataset_checksum,
+        n_pushes_excluded=n_pushes_excluded,
     )

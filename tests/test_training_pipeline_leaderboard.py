@@ -283,15 +283,28 @@ def test_headline_leaderboard_is_a_subset_of_columns(tmp_path):
     full = build_leaderboard(root_dir=tmp_path)
     headline = headline_leaderboard(root_dir=tmp_path)
 
+    # prediction_strategy rather than target_family: it names the model class
+    # as well as the target, so "total_points" no longer identifies a run on its
+    # own now that a classifier can share a target with a regressor.
     assert list(headline.columns)[:5] == [
         "experiment_id",
         "comparison_group",
         "training_version",
-        "target_family",
+        "prediction_strategy",
         "window_dir_label",
     ]
     assert "roi" in headline.columns
     assert set(headline.columns).issubset(set(full.columns))
+
+
+def test_legacy_runs_without_prediction_strategy_get_one_inferred(tmp_path):
+    """Runs saved before the field existed must still be identifiable."""
+    _write_run(
+        tmp_path, "old_run", target_family="line_error",
+        final_mae=13.0, baseline_mae=13.5,
+    )
+    row = build_leaderboard(root_dir=tmp_path).iloc[0]
+    assert row["prediction_strategy"] == "line_error_regressor"
 
 
 def test_leaderboard_surfaces_training_version(tmp_path):

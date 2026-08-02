@@ -100,6 +100,24 @@ def train_production_model_from_run(
     config = load_run_config(run_dir)
     hyperparameters = load_run_hyperparameters(run_dir)
 
+    if config.is_classifier:
+        # Refused rather than half-supported. The serving path
+        # (nba_ou.prediction.prediction) calls model.predict() and reads the
+        # result as a points total; an XGBClassifier returns a 0/1 class there,
+        # so a promoted classifier bundle would not crash -- the daily job would
+        # quietly treat "1" as a one-point game. A loud stop beats that.
+        #
+        # Phase 2 territory: teach the serving path about predict_proba and give
+        # TrainingMetrics real log-loss/Brier fields (it currently requires
+        # cv_mae, which has no meaning for this strategy).
+        raise ValueError(
+            f"{run_dir.name} is an over_under_classifier run, which cannot be "
+            "promoted yet: the prediction service reads model.predict() as a "
+            "points total and would silently misinterpret a class label. "
+            "Evaluate classifiers with --no-save-model until the serving path "
+            "supports probabilities."
+        )
+
     updates: dict[str, Any] = {}
     if csv_path is not None:
         data = config.data.model_copy(
@@ -123,7 +141,10 @@ def train_production_model_from_run(
 
     prepared = prepare_dataset(config)
 
-    target_col = "LINE_ERROR" if config.target_family == "line_error" else "TOTAL_POINTS"
+    # config.target_col, not a two-way branch: the classifier trains on
+    # OVER_LABEL, and handing an XGBClassifier continuous point totals under a
+    # binary objective is a silent nonsense at best.
+    target_col = config.target_col
     from training_pipeline.data import build_feature_matrix
 
     X, y = build_feature_matrix(
@@ -215,7 +236,7 @@ def _build_metadata(
         model_info=ModelInfo(
             name=model_name,
             model_version=train_date_max.strftime("%d_%m_%y"),
-            model_type=f"{config.resolved_window_name_label}_{config.target_family.value}",
+            model_type=f"{config.resolved_window_name_label}_{config.family.value}",
             prediction_source=model_name,
             training_code_tag=f"{version}|from_run:{source_run.name}",
         ),
@@ -307,7 +328,7 @@ def main() -> None:
     print(f"  params       : {hyperparameters.params}")
     print(f"  n_estimators : {hyperparameters.n_estimators}")
     print(f"  weight lambda: {hyperparameters.sample_weight_lambda}")
-    print(f"Target         : {config.target_family.value}")
+    print(f"Target         : {config.family.value}")
     print(f"Training data  : {csv_path}")
     print(f"Window         : {config.walk_forward.train_games} games "
           f"({config.refit.strategy.value})")

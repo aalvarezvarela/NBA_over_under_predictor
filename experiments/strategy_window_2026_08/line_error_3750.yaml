@@ -1,0 +1,78 @@
+# Campaign: which prediction strategy, and how much history?
+#
+# Six runs = 3 strategies x 2 training windows. Everything else is held fixed:
+# the same regenerated 2.0 CSV, the same 60-day holdout, the same 40 Optuna
+# trials, and the same three evaluation seeds. One deliberate difference per
+# axis is the only way a 6-cell comparison stays readable.
+#
+# n_trials is FIXED and timeout is DISABLED on purpose. The previous A/B used
+# timeouts of 4500s and 12600s, which gave the two datasets 28 and 33 completed
+# trials -- 2.4x more tuning for one side. That confounded the result. A timeout
+# also makes trial count a function of the machine, so a 4-CPU box would
+# silently tune less than a bigger one and the runs would stop being comparable.
+#
+# Read the results in this order (see the comparison notebook):
+#   1. seed_roi_range  -- a gap smaller than one run's own seed spread is not a
+#                         result. Measured at 4.91pp on this data.
+#   2. cv_roi          -- ~600 games behind it, so this is the ranking metric.
+#   3. roi (holdout)   -- the out-of-sample sanity check, ~166 bets. It cannot
+#                         establish profitability and is not meant to.
+#   4. cv_minus_holdout_roi -- large and positive means selection overfitting.
+#
+# Pre-registered favourite: line_error_regressor. It is the only strategy with
+# prior evidence (+12.96% vs -6.11% ROI in the earlier daily backtest) and the
+# clearest mechanism. With six cells against a 4.9pp noise floor, roughly one
+# config will look good by luck -- writing the prior down now is what stops it
+# being chased later.
+
+experiment_name: line_error_3750
+training_version: "2.0"
+comparison_group: strategy_window_2026_08
+hypothesis: >
+  Predicting total-minus-line subtracts out the nuisance part, so the whole
+  target is the quantity being bet on. Pre-registered favourite: the earlier
+  daily backtest gave +12.96% ROI here versus -6.11% for total points.
+  .
+  Window: 3750 games is ~3 seasons and halves the p/n ratio to ~0.39, attacking the
+  near-p=n regime directly. 5000 was rejected: it leaves only 28 games of
+  headroom before the oldest CV fold, so any row-count change would
+  silently drop folds.
+tags: [line_error, 3750_games, strategy_window_campaign]
+
+prediction_strategy: line_error_regressor
+# line_col is deliberately absent: the target is already relative to the
+# line, so the scorers never take one.
+
+data:
+  csv_path: data/train_data/training_data_2_0_20260704.csv
+  data_version: "20260704-2_0-with-overtime-col"
+  # TODO after regenerating the CSV, paste the real checksum here so a silent
+  # rebuild cannot go unnoticed mid-campaign:
+  #   poetry run python -c "from training_pipeline.data import compute_file_checksum as c; print(c('data/train_data/training_data_2_0_20260704.csv'))"
+  # Left null because the value cannot be known until the file is rebuilt.
+  expected_checksum: null
+  # All games, overtime included. The overtime question is deliberately a
+  # SECOND campaign run on the winner: it changes ~130 of 2500 training rows
+  # (5.2%), which is very unlikely to clear a 4.9pp noise floor, so spending
+  # six more runs on it here would buy the least-likely signal at the highest
+  # price.
+  exclude_overtime_from_training: false
+
+walk_forward:
+  # Used by both the CV folds and the production refit, so the model that would
+  # ship is fitted on exactly the history the hyperparameters were chosen for.
+  train_games: 3750
+
+optuna:
+  # ~45 min per run on 4 CPUs after pruning. Both completed runs to date
+  # selected trial #7 and #24, so 40 attempts covers the region where the
+  # choice actually gets made. Tuning moves CV MAE by ~0.08 while seed noise
+  # moves ROI by 4.9pp -- compute is better spent on seeds and configurations
+  # than on more trials.
+  n_trials: 40
+  timeout: null
+
+# Two extra seeds on top of random_state. This is what turns each number into
+# a number-with-an-error-bar; without it a six-way comparison is unreadable.
+# Costs ~8 min per seed (one 55-day walk-forward).
+evaluation_seeds: [101, 202]

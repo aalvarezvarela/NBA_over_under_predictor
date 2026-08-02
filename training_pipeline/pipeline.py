@@ -34,11 +34,11 @@ from training_pipeline.baseline import (
     compute_line_error_bias,
 )
 from training_pipeline.betting import BettingMetrics
+from training_pipeline.calibration import CalibrationSummary
 from training_pipeline.config import (
     ExperimentConfig,
     HoldoutEvaluation,
     RefitStrategy,
-    TargetFamily,
 )
 from training_pipeline.cv_betting import (
     CrossValidationBettingResult,
@@ -48,6 +48,7 @@ from training_pipeline.data import (
     PreparedDataset,
     build_feature_matrix,
     prepare_dataset,
+    training_eligible_mask,
 )
 from training_pipeline.evaluation import (
     HoldoutEvaluationResult,
@@ -65,8 +66,9 @@ def _feature_target_subset(
     index on both halves it returns, so index-based alignment back to the
     full prepared frame would silently misalign rows.
     """
-    target_col = "LINE_ERROR" if config.target_family == TargetFamily.LINE_ERROR else "TOTAL_POINTS"
-    return build_feature_matrix(df_subset, target_col=target_col, exclude_cols=config.exclude_cols)
+    return build_feature_matrix(
+        df_subset, target_col=config.target_col, exclude_cols=config.exclude_cols
+    )
 
 
 @dataclass
@@ -87,6 +89,8 @@ class _EvaluationMetrics:
     betting_sweep: pd.DataFrame
     predictions: pd.DataFrame
     line_comparison: pd.DataFrame | None
+    calibration: CalibrationSummary | None
+    calibration_buckets: pd.DataFrame | None
 
 
 def _normalize_evaluation(
@@ -104,6 +108,8 @@ def _normalize_evaluation(
             betting_sweep=holdout_result.betting_sweep,
             predictions=holdout_result.predictions_df,
             line_comparison=holdout_result.line_comparison,
+            calibration=holdout_result.calibration,
+            calibration_buckets=holdout_result.calibration_buckets,
         )
 
     assert walk_forward_result is not None
@@ -119,6 +125,8 @@ def _normalize_evaluation(
         betting_sweep=walk_forward_result.betting_sweep,
         predictions=walk_forward_result.predictions,
         line_comparison=walk_forward_result.line_comparison,
+        calibration=walk_forward_result.calibration,
+        calibration_buckets=walk_forward_result.calibration_buckets,
     )
 
 
@@ -142,6 +150,12 @@ def _seed_metrics_row(
         "win_rate": evaluation.betting_primary.win_rate,
         "profit_units": evaluation.betting_primary.profit_units,
         "is_significant": evaluation.betting_primary.is_significant,
+        "log_loss": (
+            None if evaluation.calibration is None else evaluation.calibration.log_loss
+        ),
+        "brier": (
+            None if evaluation.calibration is None else evaluation.calibration.brier
+        ),
     }
 
 
@@ -367,8 +381,15 @@ def run_experiment(
     # that produces it.
     model: XGBRegressor | None = None
     if train_production:
-        X_full, y_full = _feature_target_subset(prepared.df_full, config)
-        dates_full = prepared.df_full[config.data.date_col]
+        # Same training regime the hyperparameters were selected under, so the
+        # shipped model matches what was evaluated.
+        df_production = prepared.df_full
+        eligible = training_eligible_mask(df_production, config)
+        if not eligible.all():
+            df_production = df_production.loc[eligible].copy()
+
+        X_full, y_full = _feature_target_subset(df_production, config)
+        dates_full = df_production[config.data.date_col]
         train_games = config.walk_forward.train_games
         if config.refit.strategy == RefitStrategy.ROLLING_WINDOW and train_games:
             X_full = X_full.tail(train_games)
@@ -388,11 +409,24 @@ def run_experiment(
     cv_mae: float | None = None
     cv_rmse = None
     cv_ou_acc = None
+    cv_extra: dict[str, Any] = {}
     if reporting_trial is not None:
-        reported_mae = reporting_trial.user_attrs.get("mean_mae", reporting_trial.value)
-        cv_mae = None if reported_mae is None else float(reported_mae)
-        cv_rmse = reporting_trial.user_attrs.get("mean_rmse")
-        cv_ou_acc = reporting_trial.user_attrs.get("mean_ou_acc")
+        attrs = reporting_trial.user_attrs
+        cv_ou_acc = attrs.get("mean_ou_acc")
+        if config.is_classifier:
+            # The classifier's trial value is LOG LOSS. Falling back to
+            # trial.value for a missing "mean_mae" would file it under cv_mae
+            # and report 0.69 as though it were a points error.
+            cv_extra = {
+                "log_loss": attrs.get("mean_logloss", reporting_trial.value),
+                "brier": attrs.get("mean_brier"),
+                "roi": attrs.get("mean_roi"),
+                "n_bets": attrs.get("mean_n_bets"),
+            }
+        else:
+            reported_mae = attrs.get("mean_mae", reporting_trial.value)
+            cv_mae = None if reported_mae is None else float(reported_mae)
+            cv_rmse = attrs.get("mean_rmse")
 
     # One metric surface regardless of evaluation mode, so artifacts and the
     # leaderboard read the same either way (see _normalize_evaluation).
@@ -436,7 +470,11 @@ def run_experiment(
                 "dataset_checksum": prepared.dataset_checksum,
                 "csv_path": str(config.data.csv_path),
                 "created_at": created_at.isoformat(),
-                "target_family": config.target_family.value,
+                "target_family": config.family.value,
+                "prediction_strategy": config.strategy.value,
+                # Games with no OVER/UNDER answer, removed before training the
+                # classifier. 0 for the regressors, which keep them.
+                "n_pushes_excluded": prepared.n_pushes_excluded,
                 # Resolved (not raw) labels, so the leaderboard can group runs
                 # even when these were auto-derived rather than set explicitly.
                 "window_dir_label": config.resolved_window_dir_label,
@@ -465,12 +503,22 @@ def run_experiment(
         tracking.save_final_test_artifacts(
             run_dir=run_dir,
             metrics={
-                "cv": {"mae": cv_mae, "rmse": cv_rmse, "ou_acc": cv_ou_acc},
+                "cv": {
+                    "mae": cv_mae,
+                    "rmse": cv_rmse,
+                    "ou_acc": cv_ou_acc,
+                    **cv_extra,
+                },
                 "holdout": {
                     "mae": test_mae,
                     "rmse": test_rmse,
                     "r2": test_r2,
                     "ou_acc": test_ou_acc,
+                    **(
+                        {}
+                        if evaluation.calibration is None
+                        else evaluation.calibration.model_dump()
+                    ),
                 },
             },
             predictions_df=test_predictions,
@@ -513,6 +561,16 @@ def run_experiment(
             tracking.save_seed_stability(run_dir, seed_stability)
         if evaluation.line_comparison is not None:
             tracking.save_line_comparison(run_dir, evaluation.line_comparison)
+        if evaluation.calibration is not None:
+            tracking.save_calibration(
+                run_dir,
+                summary=evaluation.calibration,
+                buckets_df=evaluation.calibration_buckets,
+                cv_summary=None if cv_betting is None else cv_betting.calibration,
+                cv_buckets_df=(
+                    None if cv_betting is None else cv_betting.calibration_buckets
+                ),
+            )
         if walk_forward_result is not None:
             tracking.save_backtest_artifacts(
                 run_dir,

@@ -81,6 +81,7 @@ def load_run_summary(run_dir: str | Path) -> dict[str, Any]:
     final_metrics = _read_json(run_dir / "final_test_metrics.json") or {}
     baseline_metrics = _read_json(run_dir / "baseline_metrics.json") or {}
     betting_metrics = _read_json(run_dir / "betting_metrics.json") or {}
+    calibration = _read_json(run_dir / "calibration.json") or {}
     cv_betting = _read_json(run_dir / "cv_betting_summary.json") or {}
     seed_stability = _read_seed_stability(run_dir)
     selected_trial_payload = _read_json(run_dir / "optuna_selected_trial.json")
@@ -132,6 +133,17 @@ def load_run_summary(run_dir: str | Path) -> dict[str, Any]:
         ),
         "created_at": created_at,
         "target_family": metadata.get("target_family") or config.get("target_family"),
+        # Names the model class as well as the target. Older runs predate it and
+        # fall back to the target family, which for them was unambiguous.
+        "prediction_strategy": (
+            metadata.get("prediction_strategy")
+            or config.get("prediction_strategy")
+            or (
+                f"{metadata.get('target_family')}_regressor"
+                if metadata.get("target_family") else None
+            )
+        ),
+        "n_pushes_excluded": metadata.get("n_pushes_excluded"),
         "window_dir_label": (
             metadata.get("window_dir_label") or config.get("window_dir_label")
         ),
@@ -187,6 +199,22 @@ def load_run_summary(run_dir: str | Path) -> dict[str, Any]:
         "cv_n_profitable_folds": cv_betting.get("n_profitable_folds"),
         "cv_n_folds": cv_betting.get("n_folds"),
         "cv_betting_mae": cv_betting.get("mae"),
+        # --- probability quality (classifier only; None for regressors) ---
+        # log_loss_improvement is the one to read: raw log loss looks flat
+        # because a coin flip already scores 0.693, so the meaningful quantity
+        # is how far it beats predicting the base rate for every game.
+        "log_loss": (calibration.get("holdout") or {}).get("log_loss"),
+        "brier": (calibration.get("holdout") or {}).get("brier"),
+        "log_loss_improvement": (
+            (calibration.get("holdout") or {}).get("log_loss_improvement")
+        ),
+        "cv_log_loss": (calibration.get("cv") or {}).get("log_loss"),
+        "cv_log_loss_improvement": (
+            (calibration.get("cv") or {}).get("log_loss_improvement")
+        ),
+        "expected_calibration_error": (
+            (calibration.get("holdout") or {}).get("expected_calibration_error")
+        ),
         # --- how much of this is just the seed? ---
         **seed_stability,
         # --- the harder "line + historical drift" null ---
@@ -208,7 +236,7 @@ HEADLINE_COLUMNS: tuple[str, ...] = (
     "experiment_id",
     "comparison_group",
     "training_version",
-    "target_family",
+    "prediction_strategy",
     "window_dir_label",
     "roi",
     "n_bets",
@@ -234,6 +262,11 @@ HEADLINE_COLUMNS: tuple[str, ...] = (
     "final_test_mae",
     "baseline_holdout_mae",
     "mae_improvement_over_baseline_pct",
+    # Blank for regressors, populated for classifiers. Their MAE columns are
+    # blank in turn -- point error against a 0/1 label is not a points error and
+    # must not be ranked beside one.
+    "cv_log_loss_improvement",
+    "expected_calibration_error",
     "created_at",
 )
 

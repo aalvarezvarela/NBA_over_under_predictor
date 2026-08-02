@@ -136,7 +136,22 @@ def apply_final_transformations(df_training):
         + df_training["TEAM_ABBREVIATION_TEAM_HOME"]
     )
 
-    df_training.drop(columns=["IS_OVERTIME"], inplace=True)
+    # IS_OVERTIME is deliberately RETAINED (it used to be dropped here).
+    #
+    # It is a post-game fact -- an overtime game has at least five extra minutes
+    # of scoring -- so it must never be used as a model feature. It is kept as a
+    # row attribute, like GAME_ID and SEASON_TYPE, so downstream code can FILTER
+    # on it: training_pipeline can exclude overtime games from the training rows
+    # while keeping them in validation and test, which is impossible once the
+    # column is gone.
+    #
+    # Safe to keep: select_train_columns lists IS_OVERTIME in STATIC_COLUMNS, so
+    # the leakage guard there already allows it through, and production
+    # retraining selects features by name from the saved
+    # schema_info.feature_names rather than by dropping an exclude list, so a new
+    # column cannot silently become a production feature.
+    # training_pipeline additionally names it in LEAKING_TARGET_COLUMNS and
+    # asserts it never reaches the feature matrix.
 
     # Move the configured main total line column to first position (when present)
     first_col = MAIN_TOTAL_LINE_COL

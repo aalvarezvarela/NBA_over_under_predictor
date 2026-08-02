@@ -34,7 +34,7 @@ from nba_ou.modeling.modeling import (
     split_latest_dates_holdout,
 )
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from xgboost import XGBRegressor
+from xgboost import XGBClassifier, XGBRegressor
 
 from training_pipeline.baseline import BaselineMetrics, compute_baseline_metrics
 from training_pipeline.betting import (
@@ -42,11 +42,23 @@ from training_pipeline.betting import (
     betting_threshold_sweep,
     evaluate_betting,
 )
-from training_pipeline.config import ExperimentConfig, TargetFamily
+from training_pipeline.calibration import (
+    CalibrationSummary,
+    calibration_summary,
+    calibration_table,
+)
+from training_pipeline.config import ExperimentConfig
 from training_pipeline.data import (
     PreparedDataset,
     build_feature_matrix,
     prepare_dataset,
+    training_eligible_mask,
+)
+from training_pipeline.decisions import (
+    collect_prices,
+    decisions_from_pooled_predictions,
+    primary_threshold,
+    threshold_sweep_values,
 )
 from training_pipeline.line_scoring import (
     build_line_comparison,
@@ -99,7 +111,7 @@ def _build_static_params(
         "booster": "gbtree",
         "tree_method": "hist",
         "objective": config.optuna.objective_name,
-        "eval_metric": "mae",
+        "eval_metric": "logloss" if config.is_classifier else "mae",
         "random_state": config.random_state if random_state is None else random_state,
         "n_jobs": -1,
         "verbosity": 0,
@@ -132,6 +144,12 @@ def _make_fit_and_predict(
     date_col = config.data.date_col
 
     def fit_and_predict(train_df: pd.DataFrame, test_df: pd.DataFrame) -> np.ndarray:
+        # Filter the day's TRAINING history only. test_df is never touched, so
+        # every game of the evaluation period is still predicted and scored.
+        eligible = training_eligible_mask(train_df, config)
+        if not eligible.all():
+            train_df = train_df.loc[eligible].copy()
+
         X_train, y_train = build_feature_matrix(
             train_df, target_col=target_col, exclude_cols=config.exclude_cols
         )
@@ -145,8 +163,14 @@ def _make_fit_and_predict(
                 train_df[date_col], lambda_=float(sample_weight_lambda)
             ).to_numpy(dtype=float)
 
-        model = XGBRegressor(**final_params)
+        estimator_cls = XGBClassifier if config.is_classifier else XGBRegressor
+        model = estimator_cls(**final_params)
         model.fit(X_train, y_train, sample_weight=sample_weight, verbose=False)
+        if config.is_classifier:
+            # P(OVER). The day-by-day loop only knows how to carry one number
+            # per game, so the probability travels as "y_pred" and is turned
+            # back into a side and an EV once the days are pooled.
+            return np.asarray(model.predict_proba(X_test), dtype=float)[:, 1]
         return np.asarray(model.predict(X_test), dtype=float)
 
     return fit_and_predict
@@ -178,8 +202,13 @@ class DailyBacktestResult:
     #: identifiable in the saved artifacts.
     random_state: int
     #: The same predictions re-scored against betting.comparison_line_cols.
-    #: None when none were configured or none survived into the data.
+    #: None when none were configured or none survived into the data, and
+    #: always None for the classifier, which has no predicted total to
+    #: re-express against another line.
     line_comparison: pd.DataFrame | None = None
+    #: Probability quality. Classifier only.
+    calibration: CalibrationSummary | None = None
+    calibration_buckets: pd.DataFrame | None = None
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -208,6 +237,19 @@ class DailyBacktestResult:
             "n_estimators": self.n_estimators,
             "sample_weight_lambda": self.sample_weight_lambda,
             "random_state": self.random_state,
+            **(
+                {}
+                if self.calibration is None
+                else {
+                    "log_loss": self.calibration.log_loss,
+                    "brier": self.calibration.brier,
+                    "log_loss_improvement": self.calibration.log_loss_improvement,
+                    "expected_calibration_error": (
+                        self.calibration.expected_calibration_error
+                    ),
+                    "mean_bias": self.calibration.mean_bias,
+                }
+            ),
         }
 
 
@@ -281,9 +323,7 @@ def run_walk_forward_evaluation(
     resolved_random_state = (
         config.random_state if random_state is None else random_state
     )
-    target_col = (
-        "LINE_ERROR" if config.target_family == TargetFamily.LINE_ERROR else "TOTAL_POINTS"
-    )
+    target_col = config.target_col
     resolved_params = xgb_params
     resolved_n_estimators = n_estimators
     # Deliberately NO config fallback here. The caller has already decided --
@@ -333,23 +373,35 @@ def run_walk_forward_evaluation(
     y_true = walk_forward.predictions["y_true"].to_numpy(dtype=float)
     y_pred = walk_forward.predictions["y_pred"].to_numpy(dtype=float)
 
-    predicted_edge = (
-        y_pred if config.target_family == TargetFamily.LINE_ERROR else y_pred - target_line
+    over_prices, under_prices = collect_prices(
+        df_backtest, config, positions=positions
     )
+    decisions = decisions_from_pooled_predictions(
+        y_pred,
+        target_line=target_line,
+        config=config,
+        decimal_odds_over=over_prices,
+        decimal_odds_under=under_prices,
+    )
+    predicted_edge = decisions.predicted_edge
 
     betting_kwargs: dict[str, Any] = {
         "actual_total": actual_total,
         "line": target_line,
         "flat_decimal_odds": config.betting.flat_decimal_odds,
+        "decimal_odds_over": over_prices,
+        "decimal_odds_under": under_prices,
     }
     betting_sweep = betting_threshold_sweep(
         predicted_edge=predicted_edge,
-        thresholds=config.betting.edge_thresholds,
+        thresholds=threshold_sweep_values(config),
+        selection_score=decisions.selection_score,
         **betting_kwargs,
     )
     betting_primary = evaluate_betting(
         predicted_edge=predicted_edge,
-        min_edge=config.betting.primary_edge_threshold,
+        min_edge=primary_threshold(config),
+        selection_score=decisions.selection_score,
         **betting_kwargs,
     )
 
@@ -359,17 +411,23 @@ def run_walk_forward_evaluation(
         line_col=prepared.baseline_line_col,
     )
 
-    line_comparison = build_line_comparison(
-        y_pred=y_pred,
-        target_line=target_line,
-        actual_total=actual_total,
-        lines=collect_comparison_lines(
-            df_backtest,
-            config,
-            target_line_col=prepared.target_line_col,
-            positions=positions,
-        ),
-        config=config,
+    # A classifier has no view on the total, so there is nothing to re-score
+    # against a different line: its label was defined relative to THIS one.
+    line_comparison = (
+        None
+        if decisions.predicted_total is None
+        else build_line_comparison(
+            y_pred=y_pred,
+            target_line=target_line,
+            actual_total=actual_total,
+            lines=collect_comparison_lines(
+                df_backtest,
+                config,
+                target_line_col=prepared.target_line_col,
+                positions=positions,
+            ),
+            config=config,
+        )
     )
 
     predictions = walk_forward.predictions.assign(
@@ -377,16 +435,37 @@ def run_walk_forward_evaluation(
         baseline_line=baseline_line,
         TOTAL_POINTS=actual_total,
         predicted_edge=predicted_edge,
+        selection_score=decisions.selection_score,
     )
+    calibration: CalibrationSummary | None = None
+    calibration_buckets: pd.DataFrame | None = None
+    if decisions.p_over is not None:
+        predictions = predictions.assign(
+            p_over=decisions.p_over,
+            expected_value=decisions.expected_value,
+            bets_over=decisions.bets_over,
+        )
+        calibration = calibration_summary(
+            y_true, decisions.p_over, n_buckets=config.betting.calibration_buckets
+        )
+        calibration_buckets = calibration_table(
+            y_true, decisions.p_over, n_buckets=config.betting.calibration_buckets
+        )
 
     return DailyBacktestResult(
         n_days=int(len(walk_forward.daily_results)),
         n_games=int(len(predictions)),
         backtest_start=pd.Timestamp(walk_forward.daily_results["date"].min()),
         backtest_end=pd.Timestamp(walk_forward.daily_results["date"].max()),
-        mae=float(mean_absolute_error(y_true, y_pred)),
-        rmse=float(np.sqrt(mean_squared_error(y_true, y_pred))),
-        r2=float(r2_score(y_true, y_pred)),
+        # Point-error metrics are meaningless against a 0/1 label: the "error"
+        # of a probability is not in points and is not comparable to a
+        # regressor's MAE. NaN rather than a number that invites the comparison.
+        mae=float("nan") if config.is_classifier
+        else float(mean_absolute_error(y_true, y_pred)),
+        rmse=float("nan") if config.is_classifier
+        else float(np.sqrt(mean_squared_error(y_true, y_pred))),
+        r2=float("nan") if config.is_classifier
+        else float(r2_score(y_true, y_pred)),
         mean_daily_mae=float(walk_forward.mean_metric),
         baseline=baseline,
         betting_primary=betting_primary,
@@ -398,4 +477,6 @@ def run_walk_forward_evaluation(
         sample_weight_lambda=resolved_lambda,
         random_state=resolved_random_state,
         line_comparison=line_comparison,
+        calibration=calibration,
+        calibration_buckets=calibration_buckets,
     )

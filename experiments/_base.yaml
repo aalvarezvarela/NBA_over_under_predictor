@@ -22,6 +22,50 @@
 #   hypothesis:        what this run is supposed to tell you.
 #   tags:              free-form filters.
 
+# --- what to predict, and with what -----------------------------------------
+# Set `prediction_strategy` per experiment. One field names both the target and
+# the model class, so every value is a configuration that actually exists:
+#
+#   total_points_regressor  predicts the total. Most of the loss goes on
+#                           reproducing the line, which the model can already
+#                           read off its features. Requires line_col.
+#   line_error_regressor    predicts total minus line. The nuisance part is
+#                           subtracted out, so the whole target is the part you
+#                           bet on. line_col must be OMITTED (the main book's
+#                           line is used).
+#   over_under_classifier   predicts P(OVER) directly. The same logic taken to
+#                           its limit, at the cost of discarding magnitude: a
+#                           game 30 points over and one 1 point over become the
+#                           same label. Requires line_col -- the label IS "did
+#                           the total beat this line", so which line is part of
+#                           the target's definition.
+#
+# `target_family` is derived from it. Setting target_family alone still works
+# and infers the matching regressor, so runs and configs written before this
+# field existed keep loading unchanged.
+#
+# Classifier specifics:
+#   - objective switches to binary:logistic automatically
+#   - Optuna optimises LOG LOSS, not accuracy: log loss scores the probability,
+#     so calling a loser at 51% is barely penalised while 95% is punished hard.
+#     Accuracy cannot tell those apart, and the bet rule depends on exactly
+#     that distinction.
+#   - pushes (total lands exactly on the line) are dropped from TRAINING -- they
+#     have no OVER/UNDER answer -- but kept in betting evaluation as returned
+#     stakes. It costs little: pushes are 1.175% of games, since 53.3% of lines
+#     end in .5 and cannot push at all.
+#   - bet selection uses EXPECTED VALUE (betting.ev_thresholds), not a points
+#     edge. A probability has no points scale.
+#   - MAE/RMSE/R2 are reported as null: point error against a 0/1 label is not
+#     a points error and must not be ranked beside a regressor's.
+#   - the closing-vs-opener comparison is unavailable: the label was defined
+#     against one specific line, so the same prediction cannot be re-scored
+#     against another.
+#
+# Deliberately NOT defaulted here. A shared default would be inherited by every
+# experiment and then contradict any that names a different target, and "what
+# am I predicting?" is the one question a run should always answer out loud.
+
 # --- data -------------------------------------------------------------------
 data:
   csv_path: data/train_data/all_odds_training_data_until_20260318.csv
@@ -40,6 +84,23 @@ data:
   exclude_playoffs: true
   allowed_season_types: ["Regular Season", "Play-In Tournament"]
 
+  # Drop overtime games from the TRAINING rows only. CV validation folds, the
+  # holdout and the walk-forward's prediction days always keep them.
+  #
+  # The asymmetry is the point. An overtime game's total is inflated by at least
+  # five minutes of basketball that no pre-game feature could have predicted, so
+  # those rows may be teaching the model noise -- but ~5.2% of real games go to
+  # overtime and you are paid or not paid on them. Excluding them from scoring
+  # too would measure a world that does not exist.
+  #
+  # Costs ~130 games out of a 2500-game window. Off by default, matching every
+  # run to date.
+  #
+  # Requires a CSV built AFTER the IS_OVERTIME column stopped being dropped:
+  #   poetry run python scripts/create_train_data/create_train_data.py
+  # Older CSVs raise a clear error rather than silently ignoring the setting.
+  exclude_overtime_from_training: false
+
 # --- cleaning ---------------------------------------------------------------
 cleaning:
   nan_threshold: 50.0
@@ -48,9 +109,32 @@ cleaning:
   verbose: 1
 
 # --- evaluation split -------------------------------------------------------
+# Exactly one of test_size / test_games / test_days.
+#
+# test_days is the default because the daily walk-forward retrains once per
+# game-day, so fixing days fixes how much production operation is simulated --
+# and because two datasets then get the IDENTICAL calendar window. A 5%
+# fraction did not: the 2026-07-04 A/B ended up with Mar 8 / 287 games on one
+# dataset and Mar 7 / 293 on the other, quietly making the numbers
+# non-comparable.
+#
+# 60 days on this data is ~55 game-days (retrains), ~417 games and ~166 bets,
+# for 6.8% of the rows -- about 45% more bets than the old 5% fraction cost
+# 1.8pp more data. ~9 minutes per evaluation.
+#
+# Do not read the holdout as proof of profitability; it cannot be. At -110 a
+# true 55% win rate needs ~1400 bets before its interval clears break-even, and
+# even a whole season (~1236 games) only reaches [50.4%, 59.2%]. This is the
+# sanity check that the CV number is not a fantasy. Statistical weight comes
+# from the CV folds (betting.evaluate_cv_folds) and from accumulating runs.
+#
+# 90 days is the reasonable upper end (~81 retrains, ~610 games, ~244 bets,
+# 9.9% of data, ~14 min/eval). Beyond that you are paying real training data
+# for an interval that still cannot clear break-even.
 holdout:
-  test_size: 0.05
+  test_size: null
   test_games: null
+  test_days: 60
 
 walk_forward:
   strategy: test_anchored

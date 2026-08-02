@@ -116,6 +116,19 @@ def _resolve_prices(
     return over, under
 
 
+def expected_value(win_probability: np.ndarray, decimal_odds: np.ndarray) -> np.ndarray:
+    """Expected profit per unit staked: ``p*d - 1``.
+
+    Positive exactly when ``p`` beats the break-even rate ``1/d``, which is what
+    makes EV the right selection score for a probability model: unlike a raw
+    probability it already accounts for the price, so it is directly comparable
+    between the OVER and UNDER sides and across books.
+    """
+    return np.asarray(win_probability, dtype=float) * np.asarray(
+        decimal_odds, dtype=float
+    ) - 1.0
+
+
 def evaluate_betting(
     *,
     predicted_edge: np.ndarray | pd.Series,
@@ -125,22 +138,44 @@ def evaluate_betting(
     flat_decimal_odds: float = DECIMAL_ODDS_MINUS_110,
     decimal_odds_over: np.ndarray | pd.Series | None = None,
     decimal_odds_under: np.ndarray | pd.Series | None = None,
+    selection_score: np.ndarray | pd.Series | None = None,
 ) -> BettingMetrics:
     """Score a bet-selection rule.
 
-    ``predicted_edge`` is the model's predicted points *relative to the line*
-    (positive => OVER). For a LINE_ERROR model that is the prediction itself;
-    for a TOTAL_POINTS model it is ``prediction - line``.
+    ``predicted_edge`` decides WHICH SIDE to bet: positive => OVER. For a
+    LINE_ERROR model that is the prediction itself; for a TOTAL_POINTS model it
+    is ``prediction - line``; for the classifier it is the difference in
+    expected value between the two sides.
 
-    A bet is placed when ``abs(predicted_edge) > min_edge``. Rows where the
-    actual total lands exactly on the line are pushes: stake returned, no
-    profit, and excluded from the win rate.
+    ``selection_score`` decides WHETHER to bet, compared against ``min_edge``.
+    It defaults to ``abs(predicted_edge)``, which is the natural magnitude for
+    a regressor and preserves the original behaviour exactly. A classifier
+    passes expected value instead, because the magnitude of a probability
+    difference is not in points and cannot be compared to a points threshold.
+    Separating the two is what lets one betting layer serve both.
+
+    A bet is placed when ``selection_score > min_edge``. Rows where the actual
+    total lands exactly on the line are pushes: stake returned, no profit, and
+    excluded from the win rate.
     """
     edge = np.asarray(pd.to_numeric(pd.Series(predicted_edge), errors="coerce"), dtype=float)
     actual = np.asarray(pd.to_numeric(pd.Series(actual_total), errors="coerce"), dtype=float)
     line_values = np.asarray(pd.to_numeric(pd.Series(line), errors="coerce"), dtype=float)
 
-    valid = np.isfinite(edge) & np.isfinite(actual) & np.isfinite(line_values)
+    score = (
+        np.abs(edge)
+        if selection_score is None
+        else np.asarray(
+            pd.to_numeric(pd.Series(selection_score), errors="coerce"), dtype=float
+        )
+    )
+
+    valid = (
+        np.isfinite(edge)
+        & np.isfinite(actual)
+        & np.isfinite(line_values)
+        & np.isfinite(score)
+    )
     n_candidates = int(valid.sum())
 
     over_prices, under_prices = _resolve_prices(
@@ -150,7 +185,7 @@ def evaluate_betting(
         flat_decimal_odds,
     )
 
-    placed = valid & (np.abs(edge) > min_edge)
+    placed = valid & (score > min_edge)
     n_bets = int(placed.sum())
 
     if n_bets == 0:
@@ -235,12 +270,16 @@ def betting_threshold_sweep(
     flat_decimal_odds: float = DECIMAL_ODDS_MINUS_110,
     decimal_odds_over: np.ndarray | pd.Series | None = None,
     decimal_odds_under: np.ndarray | pd.Series | None = None,
+    selection_score: np.ndarray | pd.Series | None = None,
 ) -> pd.DataFrame:
     """Betting metrics across a range of minimum-edge thresholds.
 
     This is the table to read when deciding whether a model is usable: a high
     win rate at a large threshold means nothing if ``n_bets`` is tiny, which is
     why volume and the CI are reported alongside the rate.
+
+    ``thresholds`` are in the units of ``selection_score`` -- points for a
+    regressor, expected value for the classifier.
     """
     rows = [
         evaluate_betting(
@@ -251,6 +290,7 @@ def betting_threshold_sweep(
             flat_decimal_odds=flat_decimal_odds,
             decimal_odds_over=decimal_odds_over,
             decimal_odds_under=decimal_odds_under,
+            selection_score=selection_score,
         ).model_dump()
         for threshold in thresholds
     ]

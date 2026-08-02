@@ -329,6 +329,42 @@ def save_line_comparison(run_dir: str | Path, line_comparison_df: pd.DataFrame) 
     return save_dataframe(line_comparison_df, Path(run_dir) / "line_comparison.csv")
 
 
+def save_calibration(
+    run_dir: str | Path,
+    *,
+    summary: Any,
+    buckets_df: pd.DataFrame | None,
+    cv_summary: Any | None = None,
+    cv_buckets_df: pd.DataFrame | None = None,
+) -> dict[str, Path]:
+    """Persist probability quality for a classifier run.
+
+    Both splits are written where available. The CV table is the one to read:
+    it pools ~5x the games, and a reliability curve built from ~115 holdout
+    games is mostly noise.
+
+    Phase 1 only measures this. Nothing here adjusts a probability -- the point
+    is to learn whether raw XGBoost output is trustworthy enough to bet against
+    an absolute threshold before paying to refit a calibrator inside the daily
+    walk-forward.
+    """
+    run_dir = Path(run_dir)
+    payload: dict[str, Any] = {"holdout": summary.model_dump()}
+    if cv_summary is not None:
+        payload["cv"] = cv_summary.model_dump()
+
+    artifacts = {"metrics": write_json(run_dir / "calibration.json", payload)}
+    if buckets_df is not None and not buckets_df.empty:
+        artifacts["buckets"] = save_dataframe(
+            buckets_df, run_dir / "calibration_buckets.csv"
+        )
+    if cv_buckets_df is not None and not cv_buckets_df.empty:
+        artifacts["cv_buckets"] = save_dataframe(
+            cv_buckets_df, run_dir / "cv_calibration_buckets.csv"
+        )
+    return artifacts
+
+
 def save_baseline_metrics(
     run_dir: str | Path,
     *,

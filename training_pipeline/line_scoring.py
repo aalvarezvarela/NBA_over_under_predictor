@@ -93,7 +93,7 @@ def build_line_comparison(
 
     return evaluate_alternative_lines(
         predicted_total_points=predicted_total_points(
-            y_pred, target_line=target_line, target_family=config.target_family
+            y_pred, target_line=target_line, target_family=config.family
         ),
         actual_total=actual_total,
         lines=lines,

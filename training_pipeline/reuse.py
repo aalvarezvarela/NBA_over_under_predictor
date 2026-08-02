@@ -30,6 +30,8 @@ class RunHyperparameters:
     source: str
     trial_number: int | None
     cv_mae: float | None = None
+    #: Set instead of cv_mae for classifier runs, whose trial value is log loss.
+    cv_logloss: float | None = None
     cv_ou_acc: float | None = None
     extras: dict[str, Any] = field(default_factory=dict)
 
@@ -39,7 +41,12 @@ class RunHyperparameters:
             f"# Recovered from {self.run_dir.name}"
             f" (trial {self.trial_number}, {self.source}).",
         ]
-        if self.cv_mae is not None:
+        if self.cv_logloss is not None:
+            summary = f"# CV log loss {self.cv_logloss:.5f}"
+            if self.cv_ou_acc is not None:
+                summary += f", CV OU accuracy {self.cv_ou_acc:.2%}"
+            lines.append(summary)
+        elif self.cv_mae is not None:
             summary = f"# CV MAE {self.cv_mae:.4f}"
             if self.cv_ou_acc is not None:
                 summary += f", CV OU accuracy {self.cv_ou_acc:.2%}"
@@ -126,7 +133,11 @@ def load_run_hyperparameters(
         sample_weight_lambda=float(lambda_) if lambda_ is not None else None,
         source=source,
         trial_number=payload.get("number"),
-        cv_mae=user_attrs.get("mean_mae", payload.get("value")),
+        # No blind fallback to payload["value"]: for a classifier that value is
+        # log loss, and filing it under cv_mae would print "CV MAE 0.6931" in
+        # the recovered-hyperparameter block.
+        cv_mae=user_attrs.get("mean_mae"),
+        cv_logloss=user_attrs.get("mean_logloss"),
         cv_ou_acc=user_attrs.get("mean_ou_acc"),
         extras=user_attrs,
     )

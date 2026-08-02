@@ -31,13 +31,14 @@ from nba_ou.modeling.scorers import (
 )
 from optuna.pruners import MedianPruner
 from optuna.samplers import TPESampler
-from xgboost import XGBRegressor
+from xgboost import XGBClassifier, XGBModel, XGBRegressor
 
+from training_pipeline.calibration import brier_score, log_loss
 from training_pipeline.config import (
     ExperimentConfig,
+    PredictionStrategy,
     SampleWeightConfig,
     SearchSpaceConfig,
-    TargetFamily,
 )
 
 
@@ -192,7 +193,7 @@ def fit_final_model(
     dates_dev: pd.Series | None = None,
     sample_weight_lambda: float | None = None,
     random_state: int | None = None,
-) -> XGBRegressor:
+) -> XGBModel:
     """Fit one model on fixed hyperparameters.
 
     Shared by both target families, which is what makes recency weighting
@@ -214,6 +215,10 @@ def fit_final_model(
     }
     if random_state is not None:
         final_params["random_state"] = random_state
+    # A trial's params were sampled under a regression eval_metric default in
+    # build_xgb_params; the static params above already hold the right one for
+    # this strategy, so re-assert it after the merge.
+    final_params["eval_metric"] = "logloss" if config.is_classifier else "mae"
     # No eval_set here, so early stopping cannot apply.
     final_params.pop("early_stopping_rounds", None)
 
@@ -223,7 +228,8 @@ def fit_final_model(
             dates_dev, lambda_=float(sample_weight_lambda)
         ).to_numpy(dtype=float)
 
-    model = XGBRegressor(**final_params)
+    estimator_cls = XGBClassifier if config.is_classifier else XGBRegressor
+    model = estimator_cls(**final_params)
     model.fit(X_dev, y_dev, sample_weight=sample_weight, verbose=False)
     return model
 
@@ -235,7 +241,10 @@ def _build_static_params(
         "booster": "gbtree",
         "tree_method": "hist",
         "objective": config.optuna.objective_name,
-        "eval_metric": "mae",
+        # Early stopping and Optuna both track the loss that matches the model
+        # class. Leaving "mae" on a classifier would early-stop on a metric
+        # that ignores probability quality entirely.
+        "eval_metric": "logloss" if config.is_classifier else "mae",
         "random_state": config.random_state if random_state is None else random_state,
         "n_jobs": -1,
         "verbosity": 0,
@@ -392,7 +401,7 @@ def _persistent_storage_url(config: ExperimentConfig) -> str:
     db_dir = config.experiment_root_dir / "_optuna_studies"
     db_dir.mkdir(parents=True, exist_ok=True)
     db_name = (
-        f"{config.experiment_name}_{config.target_family.value}"
+        f"{config.experiment_name}_{config.family.value}"
         f"_{config.fingerprint()}.db"
     )
     db_path = db_dir / db_name
@@ -629,8 +638,394 @@ class LineErrorStrategy:
         return evaluate_error_thresholds(model=model, X_test=X_test, y_test_error=y_test)
 
 
+@dataclass
+class ClassifierFoldMetrics:
+    """Per-fold classifier metrics, the analogue of upstream's fold objects."""
+
+    fold: int
+    n_train: int
+    n_valid: int
+    log_loss: float
+    brier: float
+    #: Fraction of validation games whose side the model called correctly. Every
+    #: row has a definite answer here -- pushes were removed when the label was
+    #: built -- so this needs no line and no push handling.
+    ou_accuracy: float
+    #: Outcome of actually betting the fold at the primary EV threshold.
+    n_bets: int
+    roi: float
+    best_iteration: int
+
+
+def _classifier_fold_metrics(
+    model: XGBClassifier,
+    X_valid: pd.DataFrame,
+    y_valid: pd.Series,
+    *,
+    fold: int,
+    n_train: int,
+    flat_decimal_odds: float,
+    ev_threshold: float,
+) -> ClassifierFoldMetrics:
+    y = pd.to_numeric(y_valid, errors="coerce").to_numpy(dtype=float)
+    p_over = np.asarray(model.predict_proba(X_valid), dtype=float)[:, 1]
+
+    ev_over = p_over * flat_decimal_odds - 1.0
+    ev_under = (1.0 - p_over) * flat_decimal_odds - 1.0
+    bet_over = ev_over >= ev_under
+    placed = np.maximum(ev_over, ev_under) > ev_threshold
+
+    # Pushes were dropped when the label was built, so a correct side is simply
+    # a correct label call.
+    correct = np.where(bet_over, y == 1.0, y == 0.0)
+
+    n_bets = int(placed.sum())
+    if n_bets:
+        wins = int(correct[placed].sum())
+        profit = wins * (flat_decimal_odds - 1.0) - (n_bets - wins)
+        roi = profit / n_bets
+    else:
+        roi = 0.0
+
+    best_iteration = int(getattr(model, "best_iteration", 0) or 0) + 1
+
+    return ClassifierFoldMetrics(
+        fold=fold,
+        n_train=n_train,
+        n_valid=int(len(y)),
+        log_loss=log_loss(y, p_over),
+        brier=brier_score(y, p_over),
+        ou_accuracy=float(correct.mean()) if len(correct) else float("nan"),
+        n_bets=n_bets,
+        roi=roi,
+        best_iteration=best_iteration,
+    )
+
+
+def run_classifier_objective(
+    trial: optuna.Trial,
+    *,
+    X: pd.DataFrame,
+    y: pd.Series,
+    splits: list[tuple[np.ndarray, np.ndarray]],
+    config: ExperimentConfig,
+    dates: pd.Series | None = None,
+) -> float:
+    """Mean validation LOG LOSS across time-aware folds, minimised by Optuna.
+
+    Log loss rather than accuracy because it scores the probability, not just
+    the side: calling a loser at 51% is barely penalised, calling it at 95% is
+    punished hard, and accuracy cannot tell those apart. The betting rule
+    compares the probability against a break-even rate, so probability quality
+    is exactly what needs optimising.
+
+    Keep the scale in mind when reading trial values: on a ~50/50 outcome a
+    perfectly calibrated 55% model scores 0.68814 against 0.69315 for a coin
+    flip. Differences between good and bad trials live in the third decimal.
+    """
+    params = build_xgb_params(
+        trial,
+        config.optuna.search_space,
+        objective_name=config.optuna.objective_name,
+        random_state=config.random_state,
+    )
+    params["eval_metric"] = "logloss"
+    weight_lambda = _resolve_trial_sample_weight_lambda(trial, config.sample_weight)
+
+    fold_metrics: list[ClassifierFoldMetrics] = []
+    for fold_num, (train_idx, valid_idx) in enumerate(splits, start=1):
+        X_train, X_valid = X.iloc[train_idx], X.iloc[valid_idx]
+        y_train, y_valid = y.iloc[train_idx], y.iloc[valid_idx]
+
+        sample_weight = None
+        if weight_lambda is not None and dates is not None:
+            sample_weight = build_recency_sample_weights(
+                dates.iloc[train_idx], lambda_=float(weight_lambda)
+            ).to_numpy(dtype=float)
+
+        model = XGBClassifier(**params)
+        model.fit(
+            X_train,
+            y_train,
+            sample_weight=sample_weight,
+            eval_set=[(X_valid, y_valid)],
+            verbose=False,
+        )
+        fold_metrics.append(
+            _classifier_fold_metrics(
+                model,
+                X_valid,
+                y_valid,
+                fold=fold_num,
+                n_train=len(X_train),
+                flat_decimal_odds=config.betting.flat_decimal_odds,
+                ev_threshold=config.betting.primary_ev_threshold,
+            )
+        )
+
+        trial.report(float(np.mean([m.log_loss for m in fold_metrics])), step=fold_num)
+        if trial.should_prune():
+            raise optuna.TrialPruned()
+
+    def _mean(attr: str) -> float:
+        return float(np.mean([getattr(m, attr) for m in fold_metrics]))
+
+    mean_logloss = _mean("log_loss")
+    if weight_lambda is not None:
+        trial.set_user_attr("sample_weight_lambda", float(weight_lambda))
+    trial.set_user_attr("mean_logloss", mean_logloss)
+    trial.set_user_attr("mean_brier", _mean("brier"))
+    trial.set_user_attr("mean_ou_acc", _mean("ou_accuracy"))
+    trial.set_user_attr("mean_roi", _mean("roi"))
+    trial.set_user_attr("mean_n_bets", _mean("n_bets"))
+    trial.set_user_attr(
+        "mean_best_iteration",
+        int(round(np.mean([m.best_iteration for m in fold_metrics]))),
+    )
+    trial.set_user_attr(
+        "median_best_iteration",
+        int(np.median([m.best_iteration for m in fold_metrics])),
+    )
+    trial.set_user_attr("fold_metrics", [vars(m) for m in fold_metrics])
+    return mean_logloss
+
+
+def _completed_classifier_trials(study: optuna.Study) -> list[optuna.trial.FrozenTrial]:
+    trials = [
+        trial
+        for trial in study.trials
+        if trial.state == optuna.trial.TrialState.COMPLETE and trial.value is not None
+    ]
+    if not trials:
+        raise ValueError("No completed trials to select from.")
+    return trials
+
+
+def select_best_classifier_trial_lexicographic(
+    study: optuna.Study,
+    *,
+    logloss_tolerance_abs: float | None = 0.002,
+) -> optuna.trial.FrozenTrial:
+    """Best log loss within tolerance, then the best betting outcome.
+
+    Mirrors the regressors' lexicographic selection, and matters more here.
+    Simulated at 600 validation games, log loss ranks a truly-53% trial above a
+    truly-52% one only 64% of the time -- barely better than chance. Trusting
+    that ordering outright would be selecting on noise, so the tolerance is
+    deliberately wide relative to the metric's range and the real choice is
+    made by the secondary criterion.
+    """
+    trials = _completed_classifier_trials(study)
+    best = min(float(t.value) for t in trials)  # type: ignore[arg-type]
+    cutoff = best + (logloss_tolerance_abs or 0.0)
+
+    candidates = [
+        t
+        for t in trials
+        if float(t.user_attrs.get("mean_logloss", t.value)) <= cutoff  # type: ignore[arg-type]
+    ]
+    if not candidates:
+        candidates = trials
+
+    def _key(trial: optuna.trial.FrozenTrial) -> tuple[float, float, float]:
+        return (
+            -float(trial.user_attrs.get("mean_ou_acc", 0.0)),
+            -float(trial.user_attrs.get("mean_roi", 0.0)),
+            float(trial.user_attrs.get("mean_logloss", trial.value)),  # type: ignore[arg-type]
+        )
+
+    return min(candidates, key=_key)
+
+
+def summarize_classifier_trials(study: optuna.Study) -> pd.DataFrame:
+    rows = [
+        {
+            "trial": trial.number,
+            "state": trial.state.name,
+            "value_logloss": trial.value,
+            **{
+                key: trial.user_attrs.get(key)
+                for key in (
+                    "mean_logloss",
+                    "mean_brier",
+                    "mean_ou_acc",
+                    "mean_roi",
+                    "mean_n_bets",
+                    "median_best_iteration",
+                    "sample_weight_lambda",
+                )
+            },
+            **trial.params,
+        }
+        for trial in study.trials
+    ]
+    return pd.DataFrame(rows).sort_values("trial").reset_index(drop=True)
+
+
+def summarize_classifier_candidates(
+    study: optuna.Study, *, logloss_tolerance_abs: float | None = 0.002
+) -> pd.DataFrame:
+    """The trials that survived the log-loss tolerance, ranked as selected."""
+    trials = _completed_classifier_trials(study)
+    best = min(float(t.value) for t in trials)  # type: ignore[arg-type]
+    cutoff = best + (logloss_tolerance_abs or 0.0)
+
+    rows = [
+        {
+            "trial": trial.number,
+            "mean_logloss": trial.user_attrs.get("mean_logloss", trial.value),
+            "mean_brier": trial.user_attrs.get("mean_brier"),
+            "mean_ou_acc": trial.user_attrs.get("mean_ou_acc"),
+            "mean_roi": trial.user_attrs.get("mean_roi"),
+            "mean_n_bets": trial.user_attrs.get("mean_n_bets"),
+            "within_tolerance": (
+                float(trial.user_attrs.get("mean_logloss", trial.value)) <= cutoff  # type: ignore[arg-type]
+            ),
+        }
+        for trial in trials
+    ]
+    frame = pd.DataFrame(rows)
+    return frame.sort_values(
+        ["within_tolerance", "mean_ou_acc"], ascending=[False, False]
+    ).reset_index(drop=True)
+
+
+@dataclass
+class OverUnderClassifierStrategy:
+    """Predicts P(OVER) directly instead of a total or an error.
+
+    Deliberately does NOT reuse upstream's optuna_total_points/optuna_error_line
+    helpers: those are regression-only throughout, from the objective down to
+    ``select_best_trial_lexicographic``, which reads ``mean_mae``.
+    """
+
+    line_col: str
+
+    def tune(
+        self,
+        *,
+        X: pd.DataFrame,
+        y: pd.Series,
+        splits: list[tuple[np.ndarray, np.ndarray]],
+        config: ExperimentConfig,
+        dates: pd.Series | None = None,
+    ) -> optuna.Study:
+        return _optimize(
+            _create_study(config),
+            lambda trial: run_classifier_objective(
+                trial,
+                X=X,
+                y=y,
+                splits=splits,
+                config=config,
+                dates=dates,
+            ),
+            config,
+        )
+
+    def select_best_trial(
+        self,
+        study: optuna.Study,
+        *,
+        mae_tolerance_abs: float | None,
+        mae_tolerance_pct: float | None,
+    ) -> optuna.trial.FrozenTrial:
+        # The MAE tolerances are ignored: this strategy is selected on log loss,
+        # whose scale is unrelated. The parameters stay in the signature so the
+        # strategy remains interchangeable with the regressors for callers.
+        del mae_tolerance_abs, mae_tolerance_pct
+        return select_best_classifier_trial_lexicographic(
+            study, logloss_tolerance_abs=self._logloss_tolerance
+        )
+
+    #: Set by get_strategy from the config so select_best_trial, which the
+    #: Protocol pins to MAE-shaped arguments, can still see the right tolerance.
+    _logloss_tolerance: float | None = 0.002
+
+    def summarize_trials(self, study: optuna.Study) -> pd.DataFrame:
+        return summarize_classifier_trials(study)
+
+    def summarize_candidates(
+        self,
+        study: optuna.Study,
+        *,
+        mae_tolerance_abs: float | None,
+        mae_tolerance_pct: float | None,
+    ) -> pd.DataFrame:
+        del mae_tolerance_abs, mae_tolerance_pct
+        return summarize_classifier_candidates(
+            study, logloss_tolerance_abs=self._logloss_tolerance
+        )
+
+    def fit_best(
+        self,
+        *,
+        X_dev: pd.DataFrame,
+        y_dev: pd.Series,
+        study: optuna.Study | None = None,
+        trial: optuna.trial.FrozenTrial | None = None,
+        config: ExperimentConfig,
+        dates_dev: pd.Series | None = None,
+    ) -> XGBModel:
+        selected = trial if trial is not None else study.best_trial  # type: ignore[union-attr]
+        params, n_estimators, lambda_ = resolve_final_params(selected, config)
+        return fit_final_model(
+            X_dev=X_dev,
+            y_dev=y_dev,
+            params=params,
+            n_estimators=n_estimators,
+            config=config,
+            dates_dev=dates_dev,
+            sample_weight_lambda=lambda_,
+        )
+
+    def evaluate_holdout(
+        self,
+        model: XGBModel,
+        X_test: pd.DataFrame,
+        y_test: pd.Series,
+        config: ExperimentConfig,
+    ) -> tuple[pd.DataFrame, np.ndarray]:
+        """EV-threshold sweep over the holdout.
+
+        Returns the same (table, predictions) shape as the regressors so the
+        holdout path stays uniform, but the threshold column is in EV units and
+        the returned array is P(OVER), not a points prediction.
+        """
+        y = pd.to_numeric(y_test, errors="coerce").to_numpy(dtype=float)
+        p_over = np.asarray(model.predict_proba(X_test), dtype=float)[:, 1]
+        odds = config.betting.flat_decimal_odds
+
+        ev_over = p_over * odds - 1.0
+        ev_under = (1.0 - p_over) * odds - 1.0
+        bet_over = ev_over >= ev_under
+        score = np.maximum(ev_over, ev_under)
+        correct = np.where(bet_over, y == 1.0, y == 0.0)
+
+        rows = []
+        for threshold in config.betting.ev_thresholds:
+            placed = score > threshold
+            n = int(placed.sum())
+            rows.append(
+                {
+                    "threshold_min_ev": threshold,
+                    "n_bets": n,
+                    "ou_betting_accuracy": (
+                        float(correct[placed].mean()) if n else float("nan")
+                    ),
+                }
+            )
+        return pd.DataFrame(rows), p_over
+
+
 def get_strategy(config: ExperimentConfig) -> TargetFamilyStrategy:
-    if config.target_family == TargetFamily.TOTAL_POINTS:
+    if config.strategy == PredictionStrategy.OVER_UNDER_CLASSIFIER:
+        assert config.line_col is not None  # enforced by ExperimentConfig validation
+        return OverUnderClassifierStrategy(
+            line_col=config.line_col,
+            _logloss_tolerance=config.optuna.logloss_tolerance_abs,
+        )
+    if config.strategy == PredictionStrategy.TOTAL_POINTS_REGRESSOR:
         assert config.line_col is not None  # enforced by ExperimentConfig validation
         return TotalPointsStrategy(line_col=config.line_col)
     return LineErrorStrategy(sample_weight=config.sample_weight)

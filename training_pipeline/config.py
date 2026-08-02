@@ -26,6 +26,88 @@ from training_pipeline.betting import DECIMAL_ODDS_MINUS_110, DEFAULT_EDGE_THRES
 class TargetFamily(StrEnum):
     TOTAL_POINTS = "total_points"
     LINE_ERROR = "line_error"
+    #: The binary "did the game go OVER this line" label. Not a regression
+    #: target -- kept in this enum only because artifact paths, the model
+    #: registry and the leaderboard all key off target_family.
+    OVER_UNDER = "over_under"
+
+
+class PredictionStrategy(StrEnum):
+    """What is predicted AND with which kind of model.
+
+    ``target_family`` alone conflates two things, which lets invalid
+    combinations be expressed (a "total_points classifier" is not a thing).
+    This enum names the whole approach in one field, so every value is a real,
+    supported configuration.
+
+    Every strategy ultimately answers the same betting question -- OVER or
+    UNDER this line -- but they differ in how much of the model's capacity goes
+    to the decision versus to reproducing the line:
+
+    - ``total_points_regressor``: predicts the total. Most of the loss is spent
+      reproducing the line, which the model can already read off its features.
+    - ``line_error_regressor``: predicts total minus line. The nuisance part is
+      subtracted out, so all of the target is the part you bet on.
+    - ``over_under_classifier``: predicts P(OVER) directly. Takes that logic to
+      its limit, at the cost of discarding magnitude -- a game 30 points over
+      the line and one 1 point over become the same label.
+    """
+
+    TOTAL_POINTS_REGRESSOR = "total_points_regressor"
+    LINE_ERROR_REGRESSOR = "line_error_regressor"
+    OVER_UNDER_CLASSIFIER = "over_under_classifier"
+
+    @property
+    def target_family(self) -> TargetFamily:
+        return _STRATEGY_TARGET_FAMILY[self]
+
+    @property
+    def is_classifier(self) -> bool:
+        return self is PredictionStrategy.OVER_UNDER_CLASSIFIER
+
+
+_STRATEGY_TARGET_FAMILY: dict[PredictionStrategy, TargetFamily] = {
+    PredictionStrategy.TOTAL_POINTS_REGRESSOR: TargetFamily.TOTAL_POINTS,
+    PredictionStrategy.LINE_ERROR_REGRESSOR: TargetFamily.LINE_ERROR,
+    PredictionStrategy.OVER_UNDER_CLASSIFIER: TargetFamily.OVER_UNDER,
+}
+
+#: The reverse map, used only to infer a strategy from a legacy config that
+#: sets target_family alone. OVER_UNDER is intentionally absent: it postdates
+#: target_family, so nothing can have been written with it and no legacy config
+#: needs to resolve to the classifier.
+_TARGET_FAMILY_STRATEGY: dict[TargetFamily, PredictionStrategy] = {
+    TargetFamily.TOTAL_POINTS: PredictionStrategy.TOTAL_POINTS_REGRESSOR,
+    TargetFamily.LINE_ERROR: PredictionStrategy.LINE_ERROR_REGRESSOR,
+}
+
+#: Column holding the binary label. Derived in training_pipeline.data, never
+#: present in a raw training CSV.
+OVER_LABEL_COL = "OVER_LABEL"
+
+#: Columns that are functions of the final score. Excluded from the feature
+#: matrix for every strategy, since any of them reaching X gives away the
+#: target regardless of which target is being trained.
+#:
+#: EXACT names only. The engineered ``DIFF_FROM_LINE_*_BEFORE_*`` rollups are
+#: leakage-safe pre-game features and must survive -- a substring match here
+#: would silently delete hundreds of legitimate columns.
+LEAKING_TARGET_COLUMNS: tuple[str, ...] = (
+    "TOTAL_POINTS",
+    "LINE_ERROR",
+    "OVER_LABEL",
+    "DIFF_FROM_LINE",
+    # A post-game fact, not a forecast: a game that reached overtime played at
+    # least five extra minutes and therefore scored more. It is retained in the
+    # CSV purely so training rows can be FILTERED on it (see
+    # DataConfig.exclude_overtime_from_training) -- never as a feature.
+    "IS_OVERTIME",
+)
+
+#: XGBoost objective for the classifier. Logistic loss is what makes the raw
+#: output a probability rather than an arbitrary score, which is the whole
+#: point -- the betting rule compares it against a break-even rate.
+DEFAULT_CLASSIFIER_OBJECTIVE = "binary:logistic"
 
 
 class CVStrategy(StrEnum):
@@ -78,6 +160,24 @@ class DataConfig(BaseModel):
     #: than from the SEASON_TYPE text column, which mislabels Play-In
     #: Tournament games as "Playoffs" (see training_pipeline.data).
     game_id_col: str = "GAME_ID"
+
+    #: Drop overtime games from the TRAINING rows only -- CV validation folds,
+    #: the holdout and the daily walk-forward's prediction days all keep them.
+    #:
+    #: The idea being tested: an overtime game's total is inflated by at least
+    #: five minutes of extra basketball that no pre-game feature could have
+    #: predicted, so those rows may be teaching the model noise. Removing them
+    #: from training while still being scored on them measures whether the model
+    #: learns the predictable part better without them.
+    #:
+    #: Deliberately asymmetric. Excluding them from evaluation too would be
+    #: scoring on a world that does not exist -- roughly 5.2% of real games go
+    #: to overtime and you are paid or not paid on those.
+    #:
+    #: Default False: every game is used, matching all runs to date. Costs about
+    #: 130 of a 2500-game window when enabled.
+    exclude_overtime_from_training: bool = False
+    overtime_col: str = "IS_OVERTIME"
     season_year_floor: int | None = None
     #: Drop games whose season type is not in ``allowed_season_types``.
     #: Defaults to True: regular season + play-in only.
@@ -124,15 +224,60 @@ class CleaningConfig(BaseModel):
 
 
 class HoldoutConfig(BaseModel):
+    """How much of the tail of the data is held back for final scoring.
+
+    Exactly one of the three must be set.
+
+    ``test_days`` is the one to prefer, for two reasons. The daily walk-forward
+    retrains once per game-day, so a fixed number of days fixes how much
+    production operation is actually being simulated. And two runs on different
+    datasets get the *identical calendar window*, which a fraction does not: a
+    5% holdout produced Mar 8 / 287 games on one dataset and Mar 7 / 293 on
+    another in the same A/B, quietly making the two numbers non-comparable.
+    Fixing games would equalise the count but could still shift the window;
+    fixing days compares the same games and surfaces coverage differences
+    instead of hiding them.
+
+    One precondition: the window is counted back from each dataset's own last
+    game, so two datasets align only if they END on the same date. A CSV
+    rebuilt to a later date shifts its whole window -- which is why the
+    comparison notebook's cohort check still earns its place.
+
+    On sizing: no holdout here can establish profitability. At -110 a true 55%
+    win rate needs ~1400 bets before its interval clears break-even, and even a
+    full season (~1236 games, ~494 bets) lands at [50.4%, 59.2%]. The holdout's
+    job is to be an honest out-of-sample check on the CV number and to run
+    enough retrains to be meaningful -- statistical power comes from the CV
+    folds and from accumulating results over time.
+    """
+
     test_size: float | None = 0.15
     test_games: int | None = None
+    #: Calendar days, counted back from the last game in the data. 60 days is
+    #: ~55 game-days (retrains), ~417 games and ~166 bets on this dataset, for
+    #: 6.8% of the rows.
+    test_days: int | None = None
 
     @model_validator(mode="after")
-    def _exactly_one_of_test_size_or_test_games(self) -> HoldoutConfig:
-        if (self.test_size is None) == (self.test_games is None):
-            raise ValueError(
-                "Provide exactly one of holdout.test_size or holdout.test_games."
+    def _exactly_one_sizing_rule(self) -> HoldoutConfig:
+        provided = [
+            name
+            for name, value in (
+                ("test_size", self.test_size),
+                ("test_games", self.test_games),
+                ("test_days", self.test_days),
             )
+            if value is not None
+        ]
+        if len(provided) != 1:
+            raise ValueError(
+                "Provide exactly one of holdout.test_size, holdout.test_games or "
+                f"holdout.test_days (got: {provided or 'none'}). Setting a "
+                "fraction in _base.yaml and days in an experiment counts as two "
+                "-- null out the one you are replacing."
+            )
+        if self.test_days is not None and self.test_days <= 0:
+            raise ValueError("holdout.test_days must be > 0.")
         return self
 
 
@@ -331,6 +476,19 @@ class OptunaConfig(BaseModel):
     load_if_exists: bool = True
     mae_tolerance_abs: float | None = 0.10
     mae_tolerance_pct: float | None = None
+    #: Lexicographic tolerance for the CLASSIFIER, in log-loss units. Two
+    #: orders of magnitude tighter than mae_tolerance_abs because log loss has
+    #: almost no dynamic range on a ~50/50 outcome: a perfectly calibrated 55%
+    #: model scores 0.68814 against 0.69315 for a coin flip, a total spread of
+    #: 0.005. 0.002 therefore admits trials within roughly half the distance
+    #: between "worthless" and "genuinely good", which is the same spirit as
+    #: 0.10 on a ~13.3 MAE.
+    #:
+    #: The tolerance matters more here than for the regressors: simulated at
+    #: 600 validation games, log loss ranks a truly-53% trial above a truly-52%
+    #: one only 64% of the time. The ordering is close to noise, so selection
+    #: leans on the secondary criterion (betting outcome) by design.
+    logloss_tolerance_abs: float | None = 0.002
     search_space: SearchSpaceConfig = Field(default_factory=SearchSpaceConfig)
 
     #: Skip tuning entirely and use these hyperparameters. Populate from a
@@ -415,6 +573,25 @@ class BettingConfig(BaseModel):
     #: out-of-sample estimate.
     evaluate_cv_folds: bool = True
 
+    #: Expected-value thresholds for the classifier: the probability-side
+    #: counterpart to edge_thresholds. At decimal odds d a win probability p
+    #: has EV = p*d - 1 per unit staked, positive exactly when p beats the
+    #: break-even rate 1/d (52.38% at -110). EV is the right common currency --
+    #: comparable across sides, across prices, and interpretable next to a
+    #: regressor's points edge, which a raw probability is not.
+    ev_thresholds: tuple[float, ...] = (0.0, 0.01, 0.02, 0.03, 0.05, 0.08, 0.12)
+    #: Headline EV threshold: "bet whenever the model thinks the price is wrong
+    #: at all". Starting at 0.0 rather than imposing a safety margin is
+    #: deliberate. The regressor's 2.0-point primary_edge_threshold was
+    #: measured to buy nothing -- the [0.0,0.5) edge bucket won 55.4% while
+    #: [3.5,4.0) won 47.8% -- yet it discarded more than half the bets.
+    #: Choosing a margin before seeing this model's own sweep repeats that
+    #: mistake. Read ev_thresholds first, then impose one if the data earns it.
+    primary_ev_threshold: float = 0.0
+    #: Buckets for the reliability table (predicted probability vs observed
+    #: frequency). 10 gives ~60 games per bucket across the CV folds.
+    calibration_buckets: int = 10
+
     #: Extra total-line columns to re-score the very same predictions against,
     #: for information only -- nothing about training or selection changes.
     #:
@@ -447,6 +624,15 @@ class BettingConfig(BaseModel):
                 f"betting.primary_edge_threshold ({self.primary_edge_threshold}) must "
                 f"be one of betting.edge_thresholds ({self.edge_thresholds})."
             )
+        if not self.ev_thresholds:
+            raise ValueError("betting.ev_thresholds must not be empty.")
+        if self.primary_ev_threshold not in self.ev_thresholds:
+            raise ValueError(
+                f"betting.primary_ev_threshold ({self.primary_ev_threshold}) must be "
+                f"one of betting.ev_thresholds ({self.ev_thresholds})."
+            )
+        if self.calibration_buckets < 2:
+            raise ValueError("betting.calibration_buckets must be >= 2.")
         return self
 
 
@@ -555,7 +741,13 @@ class ExperimentConfig(BaseModel):
     #: 2500 on ROI?". Costs one line now and saves guessing in six months.
     hypothesis: str | None = None
     tags: tuple[str, ...] = ()
-    target_family: TargetFamily
+    #: What to predict and with which kind of model. This is the field to set;
+    #: ``target_family`` is derived from it and kept only so that artifact
+    #: paths, the model registry and every run saved before this existed keep
+    #: working. Supplying ``target_family`` alone still works and infers the
+    #: matching regressor strategy; supplying both requires them to agree.
+    prediction_strategy: PredictionStrategy | None = None
+    target_family: TargetFamily | None = None
     line_col: str | None = None
 
     data: DataConfig
@@ -626,26 +818,139 @@ class ExperimentConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _reconcile_prediction_strategy(self) -> ExperimentConfig:
+        """Make ``prediction_strategy`` and ``target_family`` agree.
+
+        Both are accepted so that configs and saved runs written before
+        prediction_strategy existed keep loading unchanged, while new work can
+        name the strategy explicitly.
+        """
+        if self.prediction_strategy is None and self.target_family is None:
+            raise ValueError(
+                "Set prediction_strategy (one of: "
+                f"{', '.join(s.value for s in PredictionStrategy)})."
+            )
+
+        if self.prediction_strategy is None:
+            assert self.target_family is not None
+            inferred = _TARGET_FAMILY_STRATEGY.get(self.target_family)
+            if inferred is None:
+                raise ValueError(
+                    f"target_family={self.target_family.value!r} does not identify a "
+                    "prediction strategy on its own. Set prediction_strategy instead."
+                )
+            self.prediction_strategy = inferred
+        elif self.target_family is None:
+            self.target_family = self.prediction_strategy.target_family
+        elif self.target_family != self.prediction_strategy.target_family:
+            raise ValueError(
+                f"prediction_strategy={self.prediction_strategy.value!r} implies "
+                f"target_family={self.prediction_strategy.target_family.value!r}, but "
+                f"target_family={self.target_family.value!r} was given. Set one or "
+                "make them agree."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _validate_target_family_constraints(self) -> ExperimentConfig:
-        if self.target_family == TargetFamily.TOTAL_POINTS:
+        strategy = self.prediction_strategy
+        assert strategy is not None  # guaranteed by _reconcile_prediction_strategy
+
+        if strategy == PredictionStrategy.TOTAL_POINTS_REGRESSOR:
             if not self.line_col:
                 raise ValueError(
-                    "line_col is required when target_family == 'total_points' "
+                    "line_col is required for 'total_points_regressor' "
                     "(optuna_total_points.py scores against the betting line)."
                 )
-        else:  # LINE_ERROR
+        elif strategy == PredictionStrategy.LINE_ERROR_REGRESSOR:
             if self.line_col:
                 raise ValueError(
-                    "line_col must be omitted when target_family == 'line_error' "
+                    "line_col must be omitted for 'line_error_regressor' "
                     "(optuna_error_line.py never uses a line column)."
                 )
-            if "LINE_ERROR" not in self.exclude_cols:
-                self.exclude_cols = [*self.exclude_cols, "LINE_ERROR"]
+        else:  # OVER_UNDER_CLASSIFIER
+            if not self.line_col:
+                raise ValueError(
+                    "line_col is required for 'over_under_classifier'. The label "
+                    "IS 'did the total beat this line', so which line it refers to "
+                    "is part of the target's definition, not a scoring detail."
+                )
 
-        if "TOTAL_POINTS" not in self.exclude_cols:
-            self.exclude_cols = [*self.exclude_cols, "TOTAL_POINTS"]
+        # Excluded for EVERY strategy, not just the one that trains on each.
+        # All of these are functions of the final score, so any of them reaching
+        # X hands over the answer:
+        #   TOTAL_POINTS  the outcome itself
+        #   LINE_ERROR    TOTAL_POINTS - line; add back the line (which IS a
+        #                 feature) and you have the total, and its sign alone is
+        #                 the classifier's label exactly
+        #   OVER_LABEL    the classifier's label
+        # Three CSVs under data/train_data ship a raw LINE_ERROR column, so this
+        # is a live hazard rather than a theoretical one. Note that the
+        # engineered DIFF_FROM_LINE_*_BEFORE_* rollups are legitimate pre-game
+        # features and are deliberately NOT swept up here.
+        for leaking in LEAKING_TARGET_COLUMNS:
+            if leaking not in self.exclude_cols:
+                self.exclude_cols = [*self.exclude_cols, leaking]
 
         return self
+
+    @model_validator(mode="after")
+    def _default_objective_to_the_strategy(self) -> ExperimentConfig:
+        """Point XGBoost at a loss that matches the model class.
+
+        ``optuna.objective_name`` defaults to a regression loss. Silently
+        training a classifier under 'reg:squarederror' would fit and produce
+        numbers, just meaningless ones, so switch the default and reject an
+        explicit mismatch.
+        """
+        assert self.prediction_strategy is not None
+        is_classifier = self.prediction_strategy.is_classifier
+        objective = self.optuna.objective_name
+
+        if is_classifier and objective.startswith("reg:"):
+            if objective == OptunaConfig.model_fields["objective_name"].default:
+                self.optuna.objective_name = DEFAULT_CLASSIFIER_OBJECTIVE
+            else:
+                raise ValueError(
+                    f"optuna.objective_name={objective!r} is a regression objective "
+                    "but prediction_strategy is 'over_under_classifier'. Use "
+                    f"{DEFAULT_CLASSIFIER_OBJECTIVE!r}."
+                )
+        elif not is_classifier and objective.startswith("binary:"):
+            raise ValueError(
+                f"optuna.objective_name={objective!r} is a classification objective "
+                f"but prediction_strategy is {self.prediction_strategy.value!r}."
+            )
+        return self
+
+    @property
+    def strategy(self) -> PredictionStrategy:
+        """The resolved strategy, non-optional.
+
+        ``prediction_strategy`` is declared optional only so a config may set
+        ``target_family`` instead; validation always fills it in.
+        """
+        assert self.prediction_strategy is not None
+        return self.prediction_strategy
+
+    @property
+    def family(self) -> TargetFamily:
+        """The resolved target family, non-optional (see :attr:`strategy`)."""
+        assert self.target_family is not None
+        return self.target_family
+
+    @property
+    def is_classifier(self) -> bool:
+        return self.strategy.is_classifier
+
+    @property
+    def target_col(self) -> str:
+        """Column the model is trained against."""
+        if self.strategy == PredictionStrategy.LINE_ERROR_REGRESSOR:
+            return "LINE_ERROR"
+        if self.strategy == PredictionStrategy.OVER_UNDER_CLASSIFIER:
+            return OVER_LABEL_COL
+        return "TOTAL_POINTS"
 
     @property
     def resolved_window_dir_label(self) -> str:
@@ -664,7 +969,32 @@ class ExperimentConfig(BaseModel):
     def resolved_study_name(self) -> str:
         if self.optuna.study_name:
             return self.optuna.study_name
-        return f"xgb_{self.target_family.value}_{self.resolved_window_name_label}_mae"
+        return f"xgb_{self.family.value}_{self.resolved_window_name_label}_mae"
+
+    def _fingerprint_excluded_betting_fields(self) -> set[str] | bool:
+        """Which betting fields stay out of the fingerprint.
+
+        For the regressors, all of them: betting settings are applied after a
+        model exists, so changing a threshold must not throw away a study.
+
+        For the classifier, ``flat_decimal_odds`` and ``primary_ev_threshold``
+        feed the objective itself (they produce the ``mean_roi`` /
+        ``mean_n_bets`` attributes that lexicographic selection ranks on), so
+        they must be part of the identity of a trial. Everything else in
+        BettingConfig remains genuinely post-hoc for both.
+        """
+        if not self.is_classifier:
+            return True
+        return {
+            "edge_thresholds",
+            "primary_edge_threshold",
+            "over_price_col",
+            "under_price_col",
+            "evaluate_cv_folds",
+            "ev_thresholds",
+            "calibration_buckets",
+            "comparison_line_cols",
+        }
 
     def fingerprint(self) -> str:
         """Short stable hash of everything that changes what a trial *means*.
@@ -699,7 +1029,14 @@ class ExperimentConfig(BaseModel):
                 "evaluation_seeds": True,
                 # Post-hoc scoring settings; changing a bet threshold or a
                 # backtest window must not invalidate an existing study's trials.
-                "betting": True,
+                #
+                # EXCEPT for the classifier, where two of these stop being
+                # post-hoc: its objective records mean_roi and mean_n_bets from
+                # flat_decimal_odds and primary_ev_threshold, and lexicographic
+                # selection picks the final trial with them. Trials scored under
+                # different betting rules are therefore not comparable, and are
+                # re-included below so a persistent study cannot mix them.
+                "betting": self._fingerprint_excluded_betting_fields(),
                 "backtest": True,
                 # n_trials/timeout change how *long* tuning runs, not what a
                 # trial means, so resuming across them is legitimate.
