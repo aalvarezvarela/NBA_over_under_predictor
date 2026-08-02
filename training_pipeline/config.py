@@ -823,6 +823,11 @@ class ExperimentConfig(BaseModel):
     experiment_root_dir: Path = Path("artifacts/experiments")
     model_output_root: Path = Path("models")
     overwrite_existing_model: bool = False
+    #: XGBoost's `device` param: "cpu" or "cuda". A hardware setting, not part
+    #: of what a trial means (tree_method stays "hist" either way), so it is
+    #: excluded from fingerprint() like the other output/runtime fields below.
+    device: str = "cpu"
+
     #: The seed for the Optuna sampler AND every model fit. Threaded everywhere
     #: rather than hardcoded, which is what makes evaluation_seeds possible.
     random_state: int = 16
@@ -1097,6 +1102,8 @@ class ExperimentConfig(BaseModel):
                 "experiment_root_dir": True,
                 "model_output_root": True,
                 "overwrite_existing_model": True,
+                # Hardware choice, not part of what a trial means.
+                "device": True,
                 # Repeating the evaluation under more seeds measures the result,
                 # it does not change what a trial means. random_state is NOT
                 # excluded: it does change every fit.

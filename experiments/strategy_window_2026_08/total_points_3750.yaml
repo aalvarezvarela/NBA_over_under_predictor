@@ -42,6 +42,12 @@ tags: [total_points, 3750_games, strategy_window_campaign]
 prediction_strategy: total_points_regressor
 line_col: TOTAL_LINE_bet365
 
+# GPU (GTX 1060 6GB): benchmark_gpu.py measured ~4.56x over 4 CPUs at this
+# row/feature shape (2500-3750 rows, 1458 features), so all six campaign
+# runs use it -- mixing CPU and GPU within one comparison_group would add a
+# hardware confound. VRAM is not a concern (matrix is 15-22 MB vs 6 GB).
+device: cuda
+
 data:
   csv_path: data/train_data/training_data_2_0_20260704.csv
   data_version: "20260704-2_0-with-overtime-col"
@@ -68,7 +74,7 @@ optuna:
   # choice actually gets made. Tuning moves CV MAE by ~0.08 while seed noise
   # moves ROI by 4.9pp -- compute is better spent on seeds and configurations
   # than on more trials.
-  n_trials: 40
+  n_trials: 50
   timeout: null
 
 # Two extra seeds on top of random_state. This is what turns each number into
