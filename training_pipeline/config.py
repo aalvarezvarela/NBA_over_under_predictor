@@ -250,29 +250,61 @@ class FloatRange(BaseModel):
 class SearchSpaceConfig(BaseModel):
     """XGBoost hyperparameter search space for Optuna.
 
-    Defaults reproduce the hardcoded space in
-    ``nba_ou.modeling.optuna_total_points.build_xgb_params_total_points``
-    exactly -- deliberately conservative (shallow trees, heavy regularization)
-    because NBA totals are noisy and deep trees overfit them badly. A test
-    asserts the two produce identical draws under a seeded sampler, so the
-    defaults cannot silently drift from upstream.
+    Defaults are tuned for this problem's shape: ~2500 training games against
+    1400-2100 features (p/n roughly 0.6-0.8), with a signal worth only ~3% of
+    baseline MAE. Two ranges deviate deliberately from the legacy space in
+    ``nba_ou.modeling.optuna_*.py`` (preserved as UPSTREAM_SEARCH_SPACE):
 
-    Widen these per experiment when you want to explore beyond that space;
-    doing so changes the fingerprint, so a persistent study will not resume
-    across different spaces.
+    * ``colsample_bytree`` reaches down to 0.05. At the old 0.35 floor a tree
+      chose ~15 splits from ~720 candidate features on a noisy bootstrap,
+      which mines noise rather than signal.
+    * ``gamma`` spans 1-500 (log). For ``reg:squarederror`` with residual
+      sigma ~19.5, a 500-row node's gradient sum fluctuates by ~436 from
+      chance alone, so chance split gains are O(100s) -- the old 0.1-3.0 range
+      pruned nothing at all. Gamma is the direct "only split on a real gain"
+      control, which is exactly what a noise-dominated target needs.
+
+    ``min_child_weight`` also starts at 20 rather than 5: with squared error
+    the hessian is 1, so it is effectively minimum samples per leaf, and a
+    leaf holding 5 of 2500 games is noise. ``max_depth`` reaches down to 1
+    because additive stumps cannot manufacture spurious interactions.
+
+    These are reasoned from the problem's structure, not measured -- run the
+    A/B against UPSTREAM_SEARCH_SPACE on a fixed holdout before trusting them.
+    Note a wider space needs more trials to search, so under a tight budget it
+    can underperform a narrow one.
+
+    Changing any range changes the config fingerprint, so a persistent study
+    will start fresh rather than mixing incomparable trials.
     """
 
-    max_depth: IntRange = IntRange(low=2, high=4)
-    min_child_weight: FloatRange = FloatRange(low=5.0, high=60.0, log=True)
-    gamma: FloatRange = FloatRange(low=0.1, high=3.0)
+    max_depth: IntRange = IntRange(low=1, high=4)
+    min_child_weight: FloatRange = FloatRange(low=20.0, high=250.0, log=True)
+    gamma: FloatRange = FloatRange(low=1.0, high=500.0, log=True)
     subsample: FloatRange = FloatRange(low=0.55, high=0.95)
-    colsample_bytree: FloatRange = FloatRange(low=0.35, high=0.8)
+    colsample_bytree: FloatRange = FloatRange(low=0.05, high=0.8, log=True)
     learning_rate: FloatRange = FloatRange(low=0.0075, high=0.06, log=True)
     reg_alpha: FloatRange = FloatRange(low=1e-2, high=20.0, log=True)
-    reg_lambda: FloatRange = FloatRange(low=1.0, high=50.0, log=True)
+    reg_lambda: FloatRange = FloatRange(low=1.0, high=500.0, log=True)
     #: Upper bound on boosting rounds; early stopping picks the real number.
     n_estimators: int = 1000
     early_stopping_rounds: int = 70
+
+
+#: The search space hardcoded in nba_ou.modeling.optuna_*.py, kept verbatim so
+#: pre-existing results stay reproducible and so the A/B against the new
+#: defaults is one config change. A test asserts this still produces draws
+#: identical to upstream's builders under a seeded sampler.
+UPSTREAM_SEARCH_SPACE = SearchSpaceConfig(
+    max_depth=IntRange(low=2, high=4),
+    min_child_weight=FloatRange(low=5.0, high=60.0, log=True),
+    gamma=FloatRange(low=0.1, high=3.0),
+    subsample=FloatRange(low=0.55, high=0.95),
+    colsample_bytree=FloatRange(low=0.35, high=0.8),
+    learning_rate=FloatRange(low=0.0075, high=0.06, log=True),
+    reg_alpha=FloatRange(low=1e-2, high=20.0, log=True),
+    reg_lambda=FloatRange(low=1.0, high=50.0, log=True),
+)
 
 
 class OptunaConfig(BaseModel):
@@ -370,6 +402,34 @@ class BettingConfig(BaseModel):
     # or invalid prices fall back to flat_decimal_odds.
     over_price_col: str | None = None
     under_price_col: str | None = None
+
+    #: Also score the CV folds for profit, not just the holdout. Costs one extra
+    #: fit per fold (~= one Optuna trial) and buys roughly 5x the bet volume:
+    #: 12 folds x ~50 validation games ~= 600, versus ~290 in a 5% holdout. At
+    #: these sample sizes volume is the binding constraint on being able to tell
+    #: a real edge from a lucky one, so this is close to free power.
+    #:
+    #: Read it as a COMPARISON between configurations, not as an unbiased
+    #: estimate of live ROI: the hyperparameters were selected on these same
+    #: folds, so the number is optimistically biased. The holdout stays the
+    #: out-of-sample estimate.
+    evaluate_cv_folds: bool = True
+
+    #: Extra total-line columns to re-score the very same predictions against,
+    #: for information only -- nothing about training or selection changes.
+    #:
+    #: Why it matters: bets are settled here against the CLOSING line, which by
+    #: definition is the last price quoted and therefore one you cannot actually
+    #: take. Beating it is the strict test of "do I have information", but it is
+    #: not the number you would have got. In this dataset the line moves 2.54
+    #: points on average and moves at all in 93% of games -- larger than the
+    #: default 2.0-point bet trigger -- so an edge measured against the close can
+    #: correspond to a materially different bet against the open.
+    #:
+    #: "TOTAL_LINE_consensus_opener" is the natural counterpart. Columns absent
+    #: from the data are skipped rather than raising, since line availability
+    #: varies across CSV snapshots.
+    comparison_line_cols: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def _validate(self) -> BettingConfig:
@@ -520,9 +580,42 @@ class ExperimentConfig(BaseModel):
     experiment_root_dir: Path = Path("artifacts/experiments")
     model_output_root: Path = Path("models")
     overwrite_existing_model: bool = False
+    #: The seed for the Optuna sampler AND every model fit. Threaded everywhere
+    #: rather than hardcoded, which is what makes evaluation_seeds possible.
     random_state: int = 16
 
+    #: Additional seeds to repeat the holdout evaluation under, holding the data,
+    #: the split and the tuned hyperparameters fixed so the only thing that
+    #: changes is XGBoost's own randomness (subsample / colsample draws).
+    #:
+    #: This measures the error bar you have otherwise been comparing experiments
+    #: without. If two configurations differ by less than the spread across
+    #: seeds, the difference between them is not evidence of anything. Empty by
+    #: default because each extra seed re-runs the whole evaluation (~35 fits
+    #: under daily_walk_forward); two or three extras is the useful range.
+    #:
+    #: random_state itself is always evaluated and is the reported headline; it
+    #: is removed from this list if repeated, and duplicates are dropped.
+    evaluation_seeds: tuple[int, ...] = ()
+
     model_config = ConfigDict(populate_by_name=True)
+
+    @model_validator(mode="after")
+    def _normalize_evaluation_seeds(self) -> ExperimentConfig:
+        """Drop duplicates and the primary seed, preserving order.
+
+        The primary seed is always run as the headline evaluation, so leaving it
+        in the extras list would double the work and report the same fit twice
+        as if it were independent evidence of stability.
+        """
+        seen: set[int] = {self.random_state}
+        deduped: list[int] = []
+        for seed in self.evaluation_seeds:
+            if seed not in seen:
+                seen.add(seed)
+                deduped.append(seed)
+        self.evaluation_seeds = tuple(deduped)
+        return self
 
     @model_validator(mode="after")
     def _normalize_training_version(self) -> ExperimentConfig:
@@ -600,6 +693,10 @@ class ExperimentConfig(BaseModel):
                 "experiment_root_dir": True,
                 "model_output_root": True,
                 "overwrite_existing_model": True,
+                # Repeating the evaluation under more seeds measures the result,
+                # it does not change what a trial means. random_state is NOT
+                # excluded: it does change every fit.
+                "evaluation_seeds": True,
                 # Post-hoc scoring settings; changing a bet threshold or a
                 # backtest window must not invalidate an existing study's trials.
                 "betting": True,

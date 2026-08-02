@@ -16,6 +16,7 @@ from training_pipeline.betting import (
     BettingMetrics,
     betting_threshold_sweep,
     break_even_win_rate,
+    evaluate_alternative_lines,
     evaluate_betting,
 )
 from training_pipeline.config import (
@@ -25,6 +26,10 @@ from training_pipeline.config import (
     ExperimentConfig,
     RefitStrategy,
     TargetFamily,
+)
+from training_pipeline.cv_betting import (
+    CrossValidationBettingResult,
+    evaluate_cv_betting,
 )
 from training_pipeline.leaderboard import build_leaderboard, headline_leaderboard
 from training_pipeline.pipeline import ExperimentResult, run_experiment
@@ -51,7 +56,10 @@ __all__ = [
     "DECIMAL_ODDS_MINUS_110",
     "betting_threshold_sweep",
     "break_even_win_rate",
+    "evaluate_alternative_lines",
     "evaluate_betting",
+    "CrossValidationBettingResult",
+    "evaluate_cv_betting",
     "CVStrategy",
     "ExperimentConfig",
     "RefitStrategy",

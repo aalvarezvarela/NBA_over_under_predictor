@@ -33,6 +33,43 @@ def _read_json(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def _read_seed_stability(run_dir: Path) -> dict[str, Any]:
+    """Spread of the headline metrics across evaluation seeds.
+
+    Collapsed to a std and a range here because that is what a leaderboard row
+    can usefully carry: the question it answers is "is the gap between two runs
+    bigger than the noise within one of them?". The full per-seed table stays
+    in seed_stability.csv.
+    """
+    path = run_dir / "seed_stability.csv"
+    if not path.exists():
+        return {}
+    try:
+        df = pd.read_csv(path)
+    except (OSError, pd.errors.ParserError):
+        return {}
+    if df.empty or len(df) < 2:
+        return {}
+
+    def _spread(column: str) -> tuple[float | None, float | None]:
+        if column not in df.columns:
+            return None, None
+        values = pd.to_numeric(df[column], errors="coerce").dropna()
+        if len(values) < 2:
+            return None, None
+        return float(values.std(ddof=1)), float(values.max() - values.min())
+
+    roi_std, roi_range = _spread("roi")
+    mae_std, mae_range = _spread("mae")
+    return {
+        "n_seeds": int(len(df)),
+        "seed_roi_std": roi_std,
+        "seed_roi_range": roi_range,
+        "seed_mae_std": mae_std,
+        "seed_mae_range": mae_range,
+    }
+
+
 def load_run_summary(run_dir: str | Path) -> dict[str, Any]:
     """Load whatever artifacts exist for one run directory into a flat summary
     row. Missing files degrade to None rather than raising, so a partially
@@ -44,6 +81,8 @@ def load_run_summary(run_dir: str | Path) -> dict[str, Any]:
     final_metrics = _read_json(run_dir / "final_test_metrics.json") or {}
     baseline_metrics = _read_json(run_dir / "baseline_metrics.json") or {}
     betting_metrics = _read_json(run_dir / "betting_metrics.json") or {}
+    cv_betting = _read_json(run_dir / "cv_betting_summary.json") or {}
+    seed_stability = _read_seed_stability(run_dir)
     selected_trial_payload = _read_json(run_dir / "optuna_selected_trial.json")
     best_trial_payload = _read_json(run_dir / "optuna_best_trial.json")
 
@@ -134,6 +173,22 @@ def load_run_summary(run_dir: str | Path) -> dict[str, Any]:
         "roi": betting_primary.get("roi"),
         "profit_units": betting_primary.get("profit_units"),
         "is_significant": betting_primary.get("is_significant"),
+        # --- profit across the CV folds: ~5x the holdout's bet volume ---
+        # Biased upward by hyperparameter selection, so this ranks
+        # configurations against each other; the holdout columns above remain
+        # the out-of-sample estimate. A large cv_roi/roi gap is the signature
+        # of selection overfitting.
+        "cv_roi": cv_betting.get("roi"),
+        "cv_n_bets": cv_betting.get("n_bets"),
+        "cv_win_rate": cv_betting.get("win_rate"),
+        "cv_win_rate_ci_low": cv_betting.get("win_rate_ci_low"),
+        "cv_is_significant": cv_betting.get("is_significant"),
+        "cv_profit_units": cv_betting.get("profit_units"),
+        "cv_n_profitable_folds": cv_betting.get("n_profitable_folds"),
+        "cv_n_folds": cv_betting.get("n_folds"),
+        "cv_betting_mae": cv_betting.get("mae"),
+        # --- how much of this is just the seed? ---
+        **seed_stability,
         # --- the harder "line + historical drift" null ---
         "bias_baseline_mae": bias_baseline.get("mae"),
         "bias_baseline_roi": bias_baseline_betting.get("roi"),
@@ -161,6 +216,16 @@ HEADLINE_COLUMNS: tuple[str, ...] = (
     "break_even_rate",
     "edge_vs_break_even",
     "is_significant",
+    # CV profit sits directly beside holdout profit: it has ~5x the bets behind
+    # it, and the gap between the two columns is itself the diagnostic.
+    "cv_roi",
+    "cv_n_bets",
+    "cv_win_rate",
+    "cv_n_profitable_folds",
+    # The error bar. A roi difference between two runs smaller than
+    # seed_roi_range is not evidence of anything.
+    "seed_roi_range",
+    "n_seeds",
     "holdout_start",
     "holdout_end",
     "n_candidates",
@@ -208,6 +273,10 @@ def build_leaderboard(
     df["beats_baseline_mae"] = df["mae_improvement_over_baseline_pct"] > 0
     df["beats_baseline_rmse"] = df["rmse_improvement_over_baseline_pct"] > 0
     df["roi_vs_bias_baseline"] = df["roi"] - df["bias_baseline_roi"]
+    if "cv_roi" in df.columns:
+        # Positive = the holdout underperformed the folds the hyperparameters
+        # were chosen on, i.e. some of the CV edge was selection, not signal.
+        df["cv_minus_holdout_roi"] = df["cv_roi"] - df["roi"]
 
     if sort_by not in df.columns:
         raise KeyError(

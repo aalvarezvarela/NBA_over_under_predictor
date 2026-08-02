@@ -48,8 +48,8 @@ if __name__ == "__main__":
         "--limit",
         "-l",
         dest="limit",
-        default="2026-01-10",
-        help="Limit date to train (YYYY-MM-DD). Defaults to 2026-01-10",
+        default="2026-07-04",
+        help="Limit date to train (YYYY-MM-DD). Defaults to 2026-07-04",
     )
     parser.add_argument(
         "--n-seasons",

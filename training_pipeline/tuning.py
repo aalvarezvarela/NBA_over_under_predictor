@@ -191,6 +191,7 @@ def fit_final_model(
     config: ExperimentConfig,
     dates_dev: pd.Series | None = None,
     sample_weight_lambda: float | None = None,
+    random_state: int | None = None,
 ) -> XGBRegressor:
     """Fit one model on fixed hyperparameters.
 
@@ -198,12 +199,21 @@ def fit_final_model(
     available to TOTAL_POINTS: upstream's fit_best_xgb_total_points has no
     sample_weight parameter, so routing through it would silently drop the
     weights.
+
+    ``random_state`` overrides ``config.random_state`` for this fit alone --
+    the mechanism behind repeating an evaluation under several seeds. It is
+    applied after ``params`` for two reasons: ``_build_static_params`` has
+    already seeded from the config (so without this every "different" seed
+    would fit identically), and a user-supplied ``optuna.fixed_params`` may
+    legitimately contain its own ``random_state``.
     """
     final_params = {
         **_build_static_params(config),
         **params,
         "n_estimators": n_estimators,
     }
+    if random_state is not None:
+        final_params["random_state"] = random_state
     # No eval_set here, so early stopping cannot apply.
     final_params.pop("early_stopping_rounds", None)
 
@@ -218,13 +228,15 @@ def fit_final_model(
     return model
 
 
-def _build_static_params(config: ExperimentConfig) -> dict[str, Any]:
+def _build_static_params(
+    config: ExperimentConfig, *, random_state: int | None = None
+) -> dict[str, Any]:
     return {
         "booster": "gbtree",
         "tree_method": "hist",
         "objective": config.optuna.objective_name,
         "eval_metric": "mae",
-        "random_state": 16,
+        "random_state": config.random_state if random_state is None else random_state,
         "n_jobs": -1,
         "verbosity": 0,
     }
@@ -275,7 +287,10 @@ def run_objective(
     definitions cannot drift.
     """
     params = build_xgb_params(
-        trial, config.optuna.search_space, objective_name=config.optuna.objective_name
+        trial,
+        config.optuna.search_space,
+        objective_name=config.optuna.objective_name,
+        random_state=config.random_state,
     )
     weight_lambda = _resolve_trial_sample_weight_lambda(trial, config.sample_weight)
 
@@ -340,7 +355,7 @@ def _create_study(config: ExperimentConfig) -> optuna.Study:
         }
     return optuna.create_study(
         direction="minimize",
-        sampler=TPESampler(seed=16),
+        sampler=TPESampler(seed=config.random_state),
         pruner=MedianPruner(n_warmup_steps=5),
         study_name=config.resolved_study_name,
         **kwargs,
@@ -418,6 +433,12 @@ class TotalPointsStrategy:
                 splits=splits,
                 config=config,
                 evaluate_fold=evaluate_fold,
+                # Required, not optional: run_objective skips weighting entirely
+                # when dates are absent, so omitting this would let Optuna draw
+                # a sample_weight_lambda, record it on the trial, and score the
+                # trial on unweighted fits -- selecting a training option it
+                # never tested, which the final model would then apply.
+                dates=dates,
             ),
             config,
         )

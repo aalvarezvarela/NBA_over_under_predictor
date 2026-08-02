@@ -177,6 +177,11 @@ def _required_keep_columns(
     for price_col in (config.betting.over_price_col, config.betting.under_price_col):
         if price_col:
             keep.add(price_col)
+    # Alternative lines to re-score against. These are especially exposed to
+    # correlation pruning -- an opening line is near-perfectly correlated with
+    # the closing line, which is exactly why it would be dropped, and exactly
+    # why the comparison is interesting.
+    keep.update(config.betting.comparison_line_cols)
     return sorted(keep)
 
 

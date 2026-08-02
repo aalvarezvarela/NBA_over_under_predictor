@@ -274,6 +274,61 @@ def save_betting_metrics(
     }
 
 
+def save_cv_betting_artifacts(
+    run_dir: str | Path,
+    *,
+    summary: dict[str, Any],
+    fold_metrics_df: pd.DataFrame,
+    betting_sweep: pd.DataFrame,
+    predictions_df: pd.DataFrame,
+    line_comparison_df: pd.DataFrame | None = None,
+) -> dict[str, Path]:
+    """Persist profit metrics measured across the CV folds.
+
+    ``cv_fold_betting.csv`` is the one to read first: a pooled ROI carried by a
+    single fold is a different claim from one that held across all of them, and
+    only the per-fold table can tell those apart.
+    """
+    run_dir = Path(run_dir)
+    artifacts = {
+        "summary": write_json(run_dir / "cv_betting_summary.json", summary),
+        "folds": save_dataframe(fold_metrics_df, run_dir / "cv_fold_betting.csv"),
+        "sweep": save_dataframe(betting_sweep, run_dir / "cv_betting_sweep.csv"),
+        "predictions": save_dataframe(
+            predictions_df, run_dir / "cv_predictions.parquet"
+        ),
+    }
+    if line_comparison_df is not None:
+        # Kept separate from the holdout's line_comparison.csv: this one has
+        # several times the bet volume behind it, so it is the more readable of
+        # the two even though it carries the same selection bias as cv_roi.
+        artifacts["line_comparison"] = save_dataframe(
+            line_comparison_df, run_dir / "cv_line_comparison.csv"
+        )
+    return artifacts
+
+
+def save_seed_stability(
+    run_dir: str | Path, seed_stability_df: pd.DataFrame
+) -> Path:
+    """Persist the same evaluation repeated under several seeds.
+
+    This is the error bar for every cross-experiment comparison: if two runs
+    differ by less than the spread here, the difference is fit noise.
+    """
+    return save_dataframe(seed_stability_df, Path(run_dir) / "seed_stability.csv")
+
+
+def save_line_comparison(run_dir: str | Path, line_comparison_df: pd.DataFrame) -> Path:
+    """Persist the same predictions re-scored against alternative total lines.
+
+    Informational: bets are settled against the closing line, which is not a
+    price you can actually take. This table shows what the same model would
+    have done at other lines (typically the consensus opener).
+    """
+    return save_dataframe(line_comparison_df, Path(run_dir) / "line_comparison.csv")
+
+
 def save_baseline_metrics(
     run_dir: str | Path,
     *,

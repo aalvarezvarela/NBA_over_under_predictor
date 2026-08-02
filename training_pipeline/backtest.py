@@ -48,14 +48,23 @@ from training_pipeline.data import (
     build_feature_matrix,
     prepare_dataset,
 )
+from training_pipeline.line_scoring import (
+    build_line_comparison,
+    collect_comparison_lines,
+)
 from training_pipeline.tuning import (  # noqa: E402
     NON_XGB_TRIAL_PARAMS as _NON_XGB_TRIAL_PARAMS,
 )
-from training_pipeline.tuning import USE_SAMPLE_WEIGHT_PARAM  # noqa: E402
+from training_pipeline.tuning import (  # noqa: E402
+    USE_SAMPLE_WEIGHT_PARAM,
+    resolve_final_params,
+)
 
 
 def xgb_params_from_trial(
     trial: optuna.trial.FrozenTrial,
+    *,
+    config: ExperimentConfig | None = None,
 ) -> tuple[dict[str, Any], int, float | None]:
     """Extract fixed hyperparameters from a tuned Optuna trial.
 
@@ -63,7 +72,17 @@ def xgb_params_from_trial(
     ``sample_weight_lambda`` is separated out because it is a training-protocol
     parameter, not an XGBoost one -- passing it through to ``XGBRegressor``
     would be silently accepted and then ignored.
+
+    **Pass ``config`` whenever you have one.** Without it the returned lambda is
+    ambiguous: ``None`` means both "this trial chose not to weight" and "this
+    trial never sampled a lambda because the config pins one". Only the config
+    can tell those apart, and getting it wrong silently reinstates weighting a
+    trial explicitly rejected. With a config this delegates to the single
+    authoritative implementation in ``tuning.resolve_final_params``.
     """
+    if config is not None:
+        return resolve_final_params(trial, config)
+
     from nba_ou.modeling.optuna_total_points import get_trial_n_estimators
 
     params = {k: v for k, v in trial.params.items() if k not in _NON_XGB_TRIAL_PARAMS}
@@ -73,13 +92,15 @@ def xgb_params_from_trial(
     return params, get_trial_n_estimators(trial), lambda_
 
 
-def _build_static_params(config: ExperimentConfig) -> dict[str, Any]:
+def _build_static_params(
+    config: ExperimentConfig, *, random_state: int | None = None
+) -> dict[str, Any]:
     return {
         "booster": "gbtree",
         "tree_method": "hist",
         "objective": config.optuna.objective_name,
         "eval_metric": "mae",
-        "random_state": 16,
+        "random_state": config.random_state if random_state is None else random_state,
         "n_jobs": -1,
         "verbosity": 0,
     }
@@ -92,6 +113,7 @@ def _make_fit_and_predict(
     xgb_params: dict[str, Any],
     n_estimators: int,
     sample_weight_lambda: float | None,
+    random_state: int | None = None,
 ) -> Callable[[pd.DataFrame, pd.DataFrame], np.ndarray]:
     """Closure fitting one model per day and predicting that day's games."""
     final_params = {
@@ -99,6 +121,12 @@ def _make_fit_and_predict(
         **xgb_params,
         "n_estimators": n_estimators,
     }
+    # Applied last on purpose: _build_static_params has already seeded from the
+    # config, so without this every "different" evaluation seed would fit
+    # identically (a test asserts exactly that). A user-supplied
+    # optuna.fixed_params may also carry its own random_state.
+    if random_state is not None:
+        final_params["random_state"] = random_state
     # No eval_set exists inside the daily loop, so early stopping cannot apply.
     final_params.pop("early_stopping_rounds", None)
     date_col = config.data.date_col
@@ -146,6 +174,12 @@ class DailyBacktestResult:
     xgb_params: dict[str, Any]
     n_estimators: int
     sample_weight_lambda: float | None
+    #: The seed every daily fit used, so a repeat under another seed is
+    #: identifiable in the saved artifacts.
+    random_state: int
+    #: The same predictions re-scored against betting.comparison_line_cols.
+    #: None when none were configured or none survived into the data.
+    line_comparison: pd.DataFrame | None = None
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -173,6 +207,7 @@ class DailyBacktestResult:
             "xgb_params": self.xgb_params,
             "n_estimators": self.n_estimators,
             "sample_weight_lambda": self.sample_weight_lambda,
+            "random_state": self.random_state,
         }
 
 
@@ -193,6 +228,13 @@ def run_daily_backtest(
     """
     if prepared is None:
         prepared = prepare_dataset(config)
+
+    # No trial exists here to have made a weighting decision, so an explicitly
+    # configured lambda is the only signal available and must be honoured.
+    # run_walk_forward_evaluation deliberately does not do this for callers that
+    # DO have a trial -- see the note there.
+    if sample_weight_lambda is None and config.sample_weight.enabled:
+        sample_weight_lambda = config.sample_weight.lambda_
 
     df_history, df_backtest = split_latest_dates_holdout(
         df=prepared.df_full,
@@ -224,21 +266,34 @@ def run_walk_forward_evaluation(
     n_estimators: int,
     sample_weight_lambda: float | None = None,
     show_progress: bool = True,
+    random_state: int | None = None,
 ) -> DailyBacktestResult:
     """Score ``df_evaluation`` one game-day at a time, retraining each day.
 
     The caller supplies the split, so this serves both the standalone backtest
     and ``run_experiment``'s evaluation of its own holdout period with
     Optuna-tuned hyperparameters.
+
+    ``random_state`` overrides ``config.random_state`` for every daily fit,
+    which is how the same evaluation gets repeated under several seeds to
+    measure how much of a result is just fit noise.
     """
+    resolved_random_state = (
+        config.random_state if random_state is None else random_state
+    )
     target_col = (
         "LINE_ERROR" if config.target_family == TargetFamily.LINE_ERROR else "TOTAL_POINTS"
     )
     resolved_params = xgb_params
     resolved_n_estimators = n_estimators
+    # Deliberately NO config fallback here. The caller has already decided --
+    # run_experiment resolves the lambda from the selected trial, and a trial
+    # that chose not to weight reports None. Treating that None as "unset" and
+    # substituting config.sample_weight.lambda_ would re-enable exactly the
+    # weighting the trial rejected, and score the model under a regime no trial
+    # measured. run_daily_backtest, which has no trial to consult, applies the
+    # config fallback itself before calling in.
     resolved_lambda = sample_weight_lambda
-    if resolved_lambda is None and config.sample_weight.enabled:
-        resolved_lambda = config.sample_weight.lambda_
 
     df_backtest = df_evaluation
 
@@ -251,6 +306,7 @@ def run_walk_forward_evaluation(
             xgb_params=resolved_params,
             n_estimators=resolved_n_estimators,
             sample_weight_lambda=resolved_lambda,
+            random_state=resolved_random_state,
         ),
         metric_fn=lambda y_true, y_pred: float(mean_absolute_error(y_true, y_pred)),
         target_col=target_col,
@@ -303,6 +359,19 @@ def run_walk_forward_evaluation(
         line_col=prepared.baseline_line_col,
     )
 
+    line_comparison = build_line_comparison(
+        y_pred=y_pred,
+        target_line=target_line,
+        actual_total=actual_total,
+        lines=collect_comparison_lines(
+            df_backtest,
+            config,
+            target_line_col=prepared.target_line_col,
+            positions=positions,
+        ),
+        config=config,
+    )
+
     predictions = walk_forward.predictions.assign(
         target_line=target_line,
         baseline_line=baseline_line,
@@ -327,4 +396,6 @@ def run_walk_forward_evaluation(
         xgb_params=resolved_params,
         n_estimators=resolved_n_estimators,
         sample_weight_lambda=resolved_lambda,
+        random_state=resolved_random_state,
+        line_comparison=line_comparison,
     )

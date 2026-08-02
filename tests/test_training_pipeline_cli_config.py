@@ -110,7 +110,11 @@ def test_repo_experiment_definitions_are_valid(relative_path):
     # Inherited from _base.yaml.
     assert config.data.season_year_floor == 2021
     assert config.data.exclude_playoffs is True
-    assert config.optuna.search_space.max_depth.low == 2
+    # Compare to the code defaults rather than a literal, so this test
+    # tracks intentional changes instead of blocking them.
+    from training_pipeline.config import SearchSpaceConfig
+
+    assert config.optuna.search_space == SearchSpaceConfig()
 
 
 def test_repo_line_error_definition_enables_recency_weighting():

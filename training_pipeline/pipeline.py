@@ -14,6 +14,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import optuna
@@ -32,11 +33,16 @@ from training_pipeline.baseline import (
     compute_baseline_metrics_across_folds,
     compute_line_error_bias,
 )
+from training_pipeline.betting import BettingMetrics
 from training_pipeline.config import (
     ExperimentConfig,
     HoldoutEvaluation,
     RefitStrategy,
     TargetFamily,
+)
+from training_pipeline.cv_betting import (
+    CrossValidationBettingResult,
+    evaluate_cv_betting,
 )
 from training_pipeline.data import (
     PreparedDataset,
@@ -64,6 +70,82 @@ def _feature_target_subset(
 
 
 @dataclass
+class _EvaluationMetrics:
+    """One evaluation's numbers, normalized across both holdout modes.
+
+    daily_walk_forward and single_shot produce different result objects; every
+    consumer downstream (artifacts, leaderboard, seed table) wants the same
+    handful of numbers, so the mode is absorbed exactly once, here.
+    """
+
+    mae: float
+    rmse: float
+    r2: float
+    ou_acc: float
+    baseline: BaselineMetrics
+    betting_primary: BettingMetrics
+    betting_sweep: pd.DataFrame
+    predictions: pd.DataFrame
+    line_comparison: pd.DataFrame | None
+
+
+def _normalize_evaluation(
+    holdout_result: HoldoutEvaluationResult | None,
+    walk_forward_result: DailyBacktestResult | None,
+) -> _EvaluationMetrics:
+    if holdout_result is not None:
+        return _EvaluationMetrics(
+            mae=holdout_result.mae,
+            rmse=holdout_result.rmse,
+            r2=holdout_result.r2,
+            ou_acc=holdout_result.ou_accuracy,
+            baseline=holdout_result.baseline_holdout,
+            betting_primary=holdout_result.betting_primary,
+            betting_sweep=holdout_result.betting_sweep,
+            predictions=holdout_result.predictions_df,
+            line_comparison=holdout_result.line_comparison,
+        )
+
+    assert walk_forward_result is not None
+    return _EvaluationMetrics(
+        mae=walk_forward_result.mae,
+        rmse=walk_forward_result.rmse,
+        r2=walk_forward_result.r2,
+        # The walk-forward's directional accuracy at the primary edge; there is
+        # no single-model threshold sweep to read a zero-edge accuracy from.
+        ou_acc=walk_forward_result.betting_primary.win_rate or float("nan"),
+        baseline=walk_forward_result.baseline,
+        betting_primary=walk_forward_result.betting_primary,
+        betting_sweep=walk_forward_result.betting_sweep,
+        predictions=walk_forward_result.predictions,
+        line_comparison=walk_forward_result.line_comparison,
+    )
+
+
+def _seed_metrics_row(
+    seed: int, evaluation: _EvaluationMetrics, *, primary: bool = False
+) -> dict[str, Any]:
+    """One row of the seed-stability table."""
+    return {
+        "random_state": seed,
+        # Marks the seed whose numbers are reported everywhere else, so the
+        # headline is never mistaken for the mean across seeds.
+        "is_primary": primary,
+        "mae": evaluation.mae,
+        "rmse": evaluation.rmse,
+        "r2": evaluation.r2,
+        "ou_acc": evaluation.ou_acc,
+        "baseline_mae": evaluation.baseline.mae,
+        "mae_edge_vs_line": evaluation.baseline.mae - evaluation.mae,
+        "roi": evaluation.betting_primary.roi,
+        "n_bets": evaluation.betting_primary.n_bets,
+        "win_rate": evaluation.betting_primary.win_rate,
+        "profit_units": evaluation.betting_primary.profit_units,
+        "is_significant": evaluation.betting_primary.is_significant,
+    }
+
+
+@dataclass
 class ExperimentResult:
     config: ExperimentConfig
     prepared: PreparedDataset
@@ -85,6 +167,14 @@ class ExperimentResult:
     walk_forward_result: DailyBacktestResult | None
     baseline_cv: BaselineMetrics
     baseline_fold_df: pd.DataFrame
+    #: Profit metrics pooled over the CV validation rows (~5x the holdout's bet
+    #: volume). None when betting.evaluate_cv_folds is off or no
+    #: hyperparameters were available. Biased by hyperparameter selection --
+    #: read it to compare configurations, not to estimate live ROI.
+    cv_betting: CrossValidationBettingResult | None
+    #: One row per seed when evaluation_seeds is set: the error bar on every
+    #: between-experiment comparison. None when no extra seeds were requested.
+    seed_stability: pd.DataFrame | None
     run_dir: Path | None
     model_path: Path | None
     meta_path: Path | None
@@ -174,29 +264,39 @@ def run_experiment(
         reporting_trial = (
             selected_trial if selected_trial is not None else study.best_trial
         )
+        # config= is required, not cosmetic: without it a trial that declined
+        # weighting is indistinguishable from one that never sampled a lambda,
+        # and the two need opposite handling downstream.
         tuned_params, tuned_n_estimators, tuned_lambda = xgb_params_from_trial(
-            reporting_trial
+            reporting_trial, config=config
         )
 
-    holdout_result: HoldoutEvaluationResult | None = None
-    walk_forward_result: DailyBacktestResult | None = None
+    def evaluate_under_seed(
+        seed: int,
+    ) -> tuple[HoldoutEvaluationResult | None, DailyBacktestResult | None]:
+        """Score the held-out test period with every fit using ``seed``.
 
-    if config.holdout_evaluation == HoldoutEvaluation.DAILY_WALK_FORWARD:
-        # Score the test period the way production runs: retrain once per game
-        # day on everything available strictly before it (dev, plus test days
-        # already played), predict only that day, then pool all days.
-        walk_forward_result = run_walk_forward_evaluation(
-            config,
-            prepared=prepared,
-            df_history=df_dev,
-            df_evaluation=df_test,
-            train_games=config.walk_forward.train_games,
-            xgb_params=tuned_params,
-            n_estimators=tuned_n_estimators,
-            sample_weight_lambda=tuned_lambda,
-            show_progress=config.backtest.show_progress,
-        )
-    else:
+        Data, split and hyperparameters are all held fixed, so repeating this
+        under different seeds isolates XGBoost's own randomness -- the error
+        bar that says whether a gap between two experiments means anything.
+        """
+        if config.holdout_evaluation == HoldoutEvaluation.DAILY_WALK_FORWARD:
+            # Score the test period the way production runs: retrain once per
+            # game day on everything available strictly before it (dev, plus
+            # test days already played), predict only that day, then pool.
+            return None, run_walk_forward_evaluation(
+                config,
+                prepared=prepared,
+                df_history=df_dev,
+                df_evaluation=df_test,
+                train_games=config.walk_forward.train_games,
+                xgb_params=tuned_params,
+                n_estimators=tuned_n_estimators,
+                sample_weight_lambda=tuned_lambda,
+                show_progress=config.backtest.show_progress,
+                random_state=seed,
+            )
+
         # One model fitted on the dev window, predicting the whole test period
         # at once. Cheaper, but never absorbs completed test days.
         single_shot_model = fit_final_model(
@@ -207,18 +307,59 @@ def run_experiment(
             config=config,
             dates_dev=dates_dev,
             sample_weight_lambda=tuned_lambda,
+            random_state=seed,
         )
-        holdout_result = evaluate_on_holdout(
-            strategy,
-            single_shot_model,
-            X_test=X_test,
-            y_test=y_test,
-            df_test_full=df_test,
-            baseline_line_col=prepared.baseline_line_col,
+        return (
+            evaluate_on_holdout(
+                strategy,
+                single_shot_model,
+                X_test=X_test,
+                y_test=y_test,
+                df_test_full=df_test,
+                baseline_line_col=prepared.baseline_line_col,
+                target_line_col=prepared.target_line_col,
+                dev_line_error_bias=dev_line_error_bias,
+                config=config,
+            ),
+            None,
+        )
+
+    holdout_result, walk_forward_result = evaluate_under_seed(config.random_state)
+    evaluation = _normalize_evaluation(holdout_result, walk_forward_result)
+
+    # --- profit across the CV folds ----------------------------------------
+    # ~5x the bet volume of the holdout, which is the binding constraint on
+    # telling a real edge from a lucky one at these sample sizes. Runs before
+    # the seed loop below because it is much cheaper (one fit per fold, versus
+    # a whole re-evaluation per seed), so a failure here surfaces early.
+    cv_betting: CrossValidationBettingResult | None = None
+    if config.betting.evaluate_cv_folds and tuned_params:
+        cv_betting = evaluate_cv_betting(
+            config,
+            df_dev=df_dev,
+            X_dev=X_dev,
+            y_dev=y_dev,
+            dates_dev=dates_dev,
+            splits=splits,
+            params=tuned_params,
+            n_estimators=tuned_n_estimators,
             target_line_col=prepared.target_line_col,
-            dev_line_error_bias=dev_line_error_bias,
-            config=config,
+            sample_weight_lambda=tuned_lambda,
         )
+
+    # --- seed stability ----------------------------------------------------
+    # The headline seed is always row 0, so the table reads as "the number I
+    # reported, plus what it would have been under other seeds".
+    seed_stability: pd.DataFrame | None = None
+    if config.evaluation_seeds:
+        seed_rows = [_seed_metrics_row(config.random_state, evaluation, primary=True)]
+        for seed in config.evaluation_seeds:
+            seed_rows.append(
+                _seed_metrics_row(
+                    seed, _normalize_evaluation(*evaluate_under_seed(seed))
+                )
+            )
+        seed_stability = pd.DataFrame(seed_rows)
 
     # --- production model -------------------------------------------------
     # Fitted on the FULL dataset (dev + test) because production holds nothing
@@ -254,28 +395,15 @@ def run_experiment(
         cv_ou_acc = reporting_trial.user_attrs.get("mean_ou_acc")
 
     # One metric surface regardless of evaluation mode, so artifacts and the
-    # leaderboard read the same either way.
-    if holdout_result is not None:
-        test_mae = holdout_result.mae
-        test_rmse = holdout_result.rmse
-        test_r2 = holdout_result.r2
-        test_ou_acc = holdout_result.ou_accuracy
-        test_baseline = holdout_result.baseline_holdout
-        test_betting_primary = holdout_result.betting_primary
-        test_betting_sweep = holdout_result.betting_sweep
-        test_predictions = holdout_result.predictions_df
-    else:
-        assert walk_forward_result is not None
-        test_mae = walk_forward_result.mae
-        test_rmse = walk_forward_result.rmse
-        test_r2 = walk_forward_result.r2
-        # The walk-forward's directional accuracy at the primary edge; there is
-        # no single-model threshold sweep to read a zero-edge accuracy from.
-        test_ou_acc = walk_forward_result.betting_primary.win_rate or float("nan")
-        test_baseline = walk_forward_result.baseline
-        test_betting_primary = walk_forward_result.betting_primary
-        test_betting_sweep = walk_forward_result.betting_sweep
-        test_predictions = walk_forward_result.predictions
+    # leaderboard read the same either way (see _normalize_evaluation).
+    test_mae = evaluation.mae
+    test_rmse = evaluation.rmse
+    test_r2 = evaluation.r2
+    test_ou_acc = evaluation.ou_acc
+    test_baseline = evaluation.baseline
+    test_betting_primary = evaluation.betting_primary
+    test_betting_sweep = evaluation.betting_sweep
+    test_predictions = evaluation.predictions
 
     run_dir: Path | None = None
     model_path: Path | None = None
@@ -372,6 +500,19 @@ def run_experiment(
             ),
             dev_line_error_bias=dev_line_error_bias,
         )
+        if cv_betting is not None:
+            tracking.save_cv_betting_artifacts(
+                run_dir,
+                summary=cv_betting.summary(),
+                fold_metrics_df=cv_betting.fold_metrics,
+                betting_sweep=cv_betting.betting_sweep,
+                predictions_df=cv_betting.predictions,
+                line_comparison_df=cv_betting.line_comparison,
+            )
+        if seed_stability is not None:
+            tracking.save_seed_stability(run_dir, seed_stability)
+        if evaluation.line_comparison is not None:
+            tracking.save_line_comparison(run_dir, evaluation.line_comparison)
         if walk_forward_result is not None:
             tracking.save_backtest_artifacts(
                 run_dir,
@@ -425,6 +566,8 @@ def run_experiment(
         walk_forward_result=walk_forward_result,
         baseline_cv=baseline_cv,
         baseline_fold_df=baseline_fold_df,
+        cv_betting=cv_betting,
+        seed_stability=seed_stability,
         run_dir=run_dir,
         model_path=model_path,
         meta_path=meta_path,

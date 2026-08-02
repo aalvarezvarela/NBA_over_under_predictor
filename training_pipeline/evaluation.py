@@ -21,6 +21,10 @@ from training_pipeline.betting import (
     evaluate_betting,
 )
 from training_pipeline.config import ExperimentConfig, RefitStrategy, TargetFamily
+from training_pipeline.line_scoring import (
+    build_line_comparison,
+    collect_comparison_lines,
+)
 from training_pipeline.tuning import TargetFamilyStrategy
 
 
@@ -113,6 +117,9 @@ class HoldoutEvaluationResult:
     baseline_bias_corrected: BaselineMetrics
     baseline_bias_corrected_betting: BettingMetrics
     dev_line_error_bias: float
+    #: The same predictions re-scored against betting.comparison_line_cols.
+    #: None when none were configured or none survived into the data.
+    line_comparison: pd.DataFrame | None = None
 
 
 def _extract_zero_threshold_accuracy(threshold_results: pd.DataFrame) -> float:
@@ -235,6 +242,16 @@ def evaluate_on_holdout(
         **betting_kwargs,
     )
 
+    line_comparison = build_line_comparison(
+        y_pred=y_pred,
+        target_line=target_line,
+        actual_total=actual_total,
+        lines=collect_comparison_lines(
+            df_test_full, config, target_line_col=target_line_col
+        ),
+        config=config,
+    )
+
     predictions_df = pd.DataFrame(
         {
             "y_true": y_true,
@@ -261,4 +278,5 @@ def evaluate_on_holdout(
         baseline_bias_corrected=baseline_bias_corrected,
         baseline_bias_corrected_betting=baseline_bias_corrected_betting,
         dev_line_error_bias=dev_line_error_bias,
+        line_comparison=line_comparison,
     )

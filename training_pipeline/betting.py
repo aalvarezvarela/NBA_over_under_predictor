@@ -255,3 +255,90 @@ def betting_threshold_sweep(
         for threshold in thresholds
     ]
     return pd.DataFrame(rows)
+
+
+def evaluate_alternative_lines(
+    *,
+    predicted_total_points: np.ndarray | pd.Series,
+    actual_total: np.ndarray | pd.Series,
+    lines: dict[str, np.ndarray | pd.Series],
+    min_edge: float,
+    flat_decimal_odds: float = DECIMAL_ODDS_MINUS_110,
+) -> pd.DataFrame:
+    """Re-score one set of predictions against several different total lines.
+
+    The model is left completely untouched: only the number bets are placed
+    *at* and settled *into* changes. For each candidate line the edge is
+    recomputed as ``predicted_total_points - line``, which is why this takes
+    predictions in POINTS space rather than a precomputed edge -- an edge is
+    only meaningful relative to the line it was derived from.
+
+    The point of this table is that the closing line is not a line you can bet.
+    A model that clears break-even against the close but not against the open
+    has demonstrated information without demonstrating a capturable edge, and
+    those are different claims. ``line_mae`` (each line's own forecasting error)
+    sits alongside so you can see whether a line is worse *as a forecast* --
+    which is what creates the opportunity in the first place -- separately from
+    whether betting into it actually paid.
+
+    One row per line, in the order given. Reference points such as
+    ``mean_abs_move_vs_first`` are measured against the first line, which by
+    convention is the one bets were really settled against.
+    """
+    predicted = np.asarray(
+        pd.to_numeric(pd.Series(predicted_total_points), errors="coerce"), dtype=float
+    )
+    actual = np.asarray(
+        pd.to_numeric(pd.Series(actual_total), errors="coerce"), dtype=float
+    )
+
+    reference: np.ndarray | None = None
+    rows: list[dict[str, object]] = []
+
+    for line_col, line_values in lines.items():
+        line_array = np.asarray(
+            pd.to_numeric(pd.Series(line_values), errors="coerce"), dtype=float
+        )
+        if reference is None:
+            reference = line_array
+
+        metrics = evaluate_betting(
+            predicted_edge=predicted - line_array,
+            actual_total=actual,
+            line=line_array,
+            min_edge=min_edge,
+            flat_decimal_odds=flat_decimal_odds,
+        )
+
+        finite_line = np.isfinite(actual) & np.isfinite(line_array)
+        line_mae = (
+            float(np.mean(np.abs(actual[finite_line] - line_array[finite_line])))
+            if finite_line.any()
+            else float("nan")
+        )
+        moved = np.isfinite(reference) & np.isfinite(line_array)
+        mean_abs_move = (
+            float(np.mean(np.abs(line_array[moved] - reference[moved])))
+            if moved.any()
+            else float("nan")
+        )
+
+        rows.append(
+            {
+                "line_col": line_col,
+                # How good this line is as a forecast, independent of betting.
+                "line_mae": line_mae,
+                # How far this line sits from the one bets were settled against.
+                # Compare it to min_edge: if the move is the larger of the two,
+                # the bet you would really have placed is a different bet.
+                "mean_abs_move_vs_first": mean_abs_move,
+                **{
+                    key: value
+                    for key, value in metrics.model_dump().items()
+                    if key != "min_edge"
+                },
+                "min_edge": metrics.min_edge,
+            }
+        )
+
+    return pd.DataFrame(rows)

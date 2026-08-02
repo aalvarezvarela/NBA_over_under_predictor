@@ -5,7 +5,12 @@ from nba_ou.modeling.optuna_total_points import build_xgb_params_total_points
 from optuna.samplers import TPESampler
 from pydantic import ValidationError
 
-from training_pipeline.config import FloatRange, IntRange, SearchSpaceConfig
+from training_pipeline.config import (
+    UPSTREAM_SEARCH_SPACE,
+    FloatRange,
+    IntRange,
+    SearchSpaceConfig,
+)
 from training_pipeline.tuning import build_xgb_params
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -24,31 +29,66 @@ def _sample_params(builder, n_trials: int = 5) -> list[dict]:
     return captured
 
 
-def test_default_space_reproduces_upstream_total_points_exactly():
-    """The configurable space must be a faithful reimplementation of the
-    hardcoded upstream one: same parameter names, ranges, log flags AND call
+def test_upstream_space_constant_reproduces_upstream_total_points_exactly():
+    """UPSTREAM_SEARCH_SPACE must stay a faithful transcription of the
+    hardcoded upstream space: same parameter names, ranges, log flags AND call
     order. A seeded TPE sampler draws per-parameter in call order, so identical
-    draws prove all four match.
+    draws prove all four match. This is what keeps pre-existing results
+    reproducible now that the *defaults* deliberately differ.
     """
-    space = SearchSpaceConfig()
     upstream = _sample_params(
         lambda t: build_xgb_params_total_points(t, objective="reg:squarederror")
     )
     mine = _sample_params(
-        lambda t: build_xgb_params(t, space, objective_name="reg:squarederror")
+        lambda t: build_xgb_params(
+            t, UPSTREAM_SEARCH_SPACE, objective_name="reg:squarederror"
+        )
     )
     assert mine == upstream
 
 
-def test_default_space_reproduces_upstream_error_line_exactly():
-    space = SearchSpaceConfig()
+def test_upstream_space_constant_reproduces_upstream_error_line_exactly():
     upstream = _sample_params(
         lambda t: build_xgb_params_error_line(t, objective="reg:squarederror")
     )
     mine = _sample_params(
-        lambda t: build_xgb_params(t, space, objective_name="reg:squarederror")
+        lambda t: build_xgb_params(
+            t, UPSTREAM_SEARCH_SPACE, objective_name="reg:squarederror"
+        )
     )
     assert mine == upstream
+
+
+def test_defaults_deliberately_differ_from_upstream():
+    """The defaults are tuned for p/n ~ 0.6-0.8 with a very weak signal, which
+    the legacy space was not. Guard the two changes that matter most.
+    """
+    space = SearchSpaceConfig()
+    assert space != UPSTREAM_SEARCH_SPACE
+
+    # A depth-4 tree makes ~15 splits; choosing them from ~720 candidates
+    # (the old 0.35 floor on ~2000 features) mines noise.
+    assert space.colsample_bytree.low < UPSTREAM_SEARCH_SPACE.colsample_bytree.low
+    assert space.colsample_bytree.low <= 0.05
+
+    # For reg:squarederror with residual sigma ~19.5, chance split gains are
+    # O(100s) -- the old 0.1-3.0 gamma range pruned nothing.
+    assert space.gamma.high >= 100
+    assert space.gamma.log is True
+
+    # A leaf holding 5 of 2500 games is noise.
+    assert space.min_child_weight.low >= 20
+    # Stumps cannot manufacture spurious interactions.
+    assert space.max_depth.low == 1
+
+
+def test_default_space_stays_within_valid_xgboost_bounds():
+    space = SearchSpaceConfig()
+    assert 0 < space.colsample_bytree.low <= space.colsample_bytree.high <= 1.0
+    assert 0 < space.subsample.low <= space.subsample.high <= 1.0
+    assert space.max_depth.low >= 1
+    for name in ("gamma", "min_child_weight", "reg_alpha", "reg_lambda"):
+        assert getattr(space, name).low > 0, name
 
 
 def test_widening_the_space_actually_changes_sampled_values():
