@@ -313,13 +313,27 @@ def run_experiment(
 
         # One model fitted on the dev window, predicting the whole test period
         # at once. Cheaper, but never absorbs completed test days.
+        #
+        # Same training filter the CV folds and the production refit apply.
+        # Without it this path would silently ignore
+        # data.exclude_overtime_from_training and fit on rows the rest of the
+        # pipeline excluded -- a config that quietly means nothing on one code
+        # path is worse than one that errors. X_test/y_test are untouched:
+        # the filter changes what is learned from, never what is scored.
+        eligible = training_eligible_mask(df_dev, config)
+        X_fit, y_fit, dates_fit = X_dev, y_dev, dates_dev
+        if not eligible.all():
+            X_fit = X_dev.loc[eligible]
+            y_fit = y_dev.loc[X_fit.index]
+            dates_fit = dates_dev.loc[X_fit.index]
+
         single_shot_model = fit_final_model(
-            X_dev=X_dev,
-            y_dev=y_dev,
+            X_dev=X_fit,
+            y_dev=y_fit,
             params=tuned_params,
             n_estimators=tuned_n_estimators,
             config=config,
-            dates_dev=dates_dev,
+            dates_dev=dates_fit,
             sample_weight_lambda=tuned_lambda,
             random_state=seed,
         )

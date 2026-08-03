@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
 # Overnight campaign: 3 prediction strategies x 2 training windows, 6 runs.
 #
-#   bash experiments/run_strategy_window_campaign.sh
+#   bash experiments/runners/run_strategy_window_campaign.sh
 #
 # Detached, so closing the terminal does not kill it:
-#   nohup bash experiments/run_strategy_window_campaign.sh > /dev/null 2>&1 &
+#   nohup bash experiments/runners/run_strategy_window_campaign.sh > /dev/null 2>&1 &
 #
 # Follow along:
 #   tail -f artifacts/logs/campaign_*/campaign.log      # the summary
 #   tail -f artifacts/logs/campaign_*/<experiment>.log  # one run in detail
 #
 # Interrupted? Re-run with SKIP_EXISTING=1 to continue where it stopped:
-#   SKIP_EXISTING=1 bash experiments/run_strategy_window_campaign.sh
+#   SKIP_EXISTING=1 bash experiments/runners/run_strategy_window_campaign.sh
 #
 # NOT `set -e`: one failing run must not cancel the remaining five. An overnight
 # window is too expensive to lose to a single bad config.
 set -uo pipefail
 
-cd "$(dirname "$0")/.." || exit 1
+cd "$(dirname "$0")/../.." || exit 1
 
 CAMPAIGN="strategy_window_2026_08"
 CONFIG_DIR="experiments/${CAMPAIGN}"

@@ -1,0 +1,108 @@
+# Campaign: how much history, which feature set, and do overtime games help?
+#
+# Follow-up to strategy_window_2026_08, which established (re-scored at a common
+# 0.1 threshold, ~400 bets each) that line_error_regressor leads:
+#
+#   line_error  · 3750   CV 53.9% -> test 56.0%   ROI +6.8%
+#   total_points· 3750   CV 54.3% -> test 53.3%   ROI +1.7%
+#   classifier  · 2500   CV 52.1% -> test 52.2%   ROI -0.4%
+#
+# Three axes are varied here, each against that result:
+#
+#   WINDOW    3750 -> 4500. MEASURED ceiling, after cleaning drops rows:
+#             the 2.0 build cleans to 5752 rows -> 5336 dev, and a fold needs
+#             train_games + 11*60 + 50. That gives +126 games of headroom at
+#             4500 and -374 at 5000, so 5000 does NOT fit.
+#             This matters more than it looks: an over-large window does not
+#             error. make_test_anchored_walk_forward_splits takes tail(n) and
+#             only skips a fold below min_train_games (1250), so the early folds
+#             would silently train on fewer games than requested and the window
+#             comparison would quietly stop being a window comparison.
+#             Verified: every fold of every prior run has n_train == requested.
+#
+#   DATASET   the 2.0 feature set (2146 cols) vs the older build (3240 cols).
+#             Both start from the same 6165 usable games, but the older build
+#             cleans down to 5597 rows (~5181 dev) because more of its columns
+#             breach the NaN threshold -- so 4500 would need 5210 and does NOT
+#             fit there. The old-data cell therefore stays at 3750, which is
+#             also the window its 2.0 counterpart uses, keeping the pair a
+#             clean one-variable comparison.
+#
+#   PLAYOFFS  every other cell drops them (regular season + play-in only).
+#             This one keeps them, adding ~750 training games.
+#             READ THIS CELL ON cv_roi, NOT ON HOLDOUT ROI. The dataset ends
+#             2026-06-13, mid-playoffs, so with playoffs kept the last-60-days
+#             holdout lands entirely inside them: 89 games, 85 of them playoff,
+#             zero regular season -- a different question on a fifth of the
+#             volume. The CV folds are unaffected because
+#             walk_forward.exclude_test_months = (5, 6) keeps May and June out
+#             of every validation window, so cv_roi stays comparable to the
+#             other cells while training gains the extra games.
+#
+#   OVERTIME  drop overtime games from TRAINING only, scoring on all of them.
+#             ~5.2% of games; on this data they average +21.2 points over the
+#             line and go OVER 85.5% of the time, which no pre-game feature can
+#             anticipate. The question is whether those rows teach noise.
+#             ONLY testable on the 2.0 CSV -- the older build predates the
+#             IS_OVERTIME column, so the filter would raise there.
+#
+# Anchor cell (line_error, 2.0, 3750, overtime kept) is NOT repeated: it already
+# exists as strategy_window_2026_08/line_error_3750. Survey both campaigns
+# together by passing both folders to the notebook's SOURCES.
+#
+# READ THE RESULTS IN THIS ORDER:
+#   1. seed_roi_range  -- measured at 4.9-12pp on this data. A gap smaller than
+#                         one run's own seed spread is not a result. With 8
+#                         cells, expect roughly one to look good by luck.
+#   2. cv_roi          -- ~600 games behind it; the ranking metric.
+#   3. roi (holdout)   -- out-of-sample sanity check, not proof of profit.
+#   4. cv_minus_holdout_roi -- large and positive means selection overfitting.
+#
+# PRE-REGISTERED EXPECTATIONS, written down now so they cannot be adjusted later:
+#   - Window 4500 > 3750: PLAUSIBLE but a smaller step than 2500 -> 3750 was,
+#     so expect a smaller effect against the same noise floor.
+#   - Overtime exclusion: UNLIKELY to clear the noise floor. It moves ~5% of
+#     training rows, and the prior campaign's own note said as much. Running it
+#     because it is cheap on GPU and the mechanism is sound, not because the
+#     effect is expected to be large.
+#   - Old dataset > 2.0: UNLIKELY. The earlier A/B was inconclusive once the
+#     holdouts were aligned, and the gap sat inside seed noise.
+#   - Playoffs kept > playoffs dropped: PLAUSIBLE on cv_roi. It is the only
+#     change here that adds data (~750 games) rather than removing it, but
+#     playoff basketball averages ~11.6 fewer points, so the added rows are
+#     partly a different distribution.
+experiment_name: total_points_4500
+training_version: "2.0"
+comparison_group: window_overtime_2026_08
+hypothesis: >
+  Window control. If 5000 helps line_error but not total_points, the gain is
+  specific to predicting the residual rather than to having more history --
+  a different claim, and one worth separating.
+tags: [total_points, 4500_games, window, overtime_campaign]
+
+prediction_strategy: total_points_regressor
+line_col: TOTAL_LINE_bet365
+
+data:
+  csv_path: data/train_data/training_data_2_0_20260704.csv
+  data_version: "20260704-2_0"
+  expected_checksum: "sha256:2fc9ed86d2f42a78"
+  # All games kept, matching the prior campaign's baseline.
+  exclude_overtime_from_training: false
+
+device: cuda
+
+walk_forward:
+  # Used by both the CV folds and the production refit, so the model that would
+  # ship is fitted on exactly the history the hyperparameters were chosen for.
+  train_games: 4500
+
+optuna:
+  # Fixed trial count, no timeout: a timeout makes trial count a function of the
+  # machine, which silently un-matches runs that are meant to be comparable.
+  n_trials: 50
+  timeout: null
+
+# Turns every headline number into a number-with-an-error-bar. Without these the
+# 8-cell comparison below is unreadable.
+evaluation_seeds: [101, 202]

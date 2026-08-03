@@ -4,7 +4,7 @@
 # training-code versions through the different feature sets they generate.
 #
 # Paired with 2500_games_train_2_0_20260704.yaml, which step 0 of
-# run_overnight.sh rebuilds to this same 2026-07-04 end date. With the
+# runners/run_total_points_dataset_ab.sh uses this same 2026-07-04 end date. With the
 # calendar held fixed the two holdouts should line up closely, so the
 # comparison isolates the dataset/schema. Confirm it in the notebook's
 # cohort check (section 2) before trusting a head-to-head reading.

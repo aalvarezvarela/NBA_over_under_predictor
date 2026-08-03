@@ -155,6 +155,10 @@ def load_run_summary(run_dir: str | Path) -> dict[str, Any]:
         "holdout_start": metadata.get("holdout_start"),
         "holdout_end": metadata.get("holdout_end"),
         "holdout_n_games": metadata.get("holdout_n_games"),
+        # How the holdout was scored: daily_walk_forward retrains once per game
+        # day, single_shot fits once. Surfaced so "the walk-forward result" is
+        # only called that when it actually is one.
+        "holdout_evaluation": metadata.get("holdout_evaluation"),
         "n_candidates": betting_primary.get("n_candidates"),
         # walk_forward is the single source of truth; refit_cfg is only read
         # as a fallback for runs saved before the two were unified.
@@ -271,6 +275,33 @@ HEADLINE_COLUMNS: tuple[str, ...] = (
 )
 
 
+def add_derived_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Add the comparison columns that are functions of the loaded metrics.
+
+    Split out from ``build_leaderboard`` so a frame assembled from an explicit
+    list of run directories (see ``training_pipeline.reporting.discovery``) gets
+    exactly the same derived columns, rather than a near-copy that drifts.
+    """
+    if df.empty:
+        return df
+
+    df = df.copy()
+    df["mae_improvement_over_baseline_pct"] = (
+        df["baseline_holdout_mae"] - df["final_test_mae"]
+    ) / df["baseline_holdout_mae"]
+    df["rmse_improvement_over_baseline_pct"] = (
+        df["baseline_holdout_rmse"] - df["final_test_rmse"]
+    ) / df["baseline_holdout_rmse"]
+    df["beats_baseline_mae"] = df["mae_improvement_over_baseline_pct"] > 0
+    df["beats_baseline_rmse"] = df["rmse_improvement_over_baseline_pct"] > 0
+    df["roi_vs_bias_baseline"] = df["roi"] - df["bias_baseline_roi"]
+    if "cv_roi" in df.columns:
+        # Positive = the holdout underperformed the folds the hyperparameters
+        # were chosen on, i.e. some of the CV edge was selection, not signal.
+        df["cv_minus_holdout_roi"] = df["cv_roi"] - df["roi"]
+    return df
+
+
 def build_leaderboard(
     root_dir: str | Path = DEFAULT_EXPERIMENT_ROOT,
     *,
@@ -293,23 +324,9 @@ def build_leaderboard(
         )
         rows = [row for row in rows if row.get("target_family") == target_value]
 
-    df = pd.DataFrame(rows)
+    df = add_derived_columns(pd.DataFrame(rows))
     if df.empty:
         return df
-
-    df["mae_improvement_over_baseline_pct"] = (
-        df["baseline_holdout_mae"] - df["final_test_mae"]
-    ) / df["baseline_holdout_mae"]
-    df["rmse_improvement_over_baseline_pct"] = (
-        df["baseline_holdout_rmse"] - df["final_test_rmse"]
-    ) / df["baseline_holdout_rmse"]
-    df["beats_baseline_mae"] = df["mae_improvement_over_baseline_pct"] > 0
-    df["beats_baseline_rmse"] = df["rmse_improvement_over_baseline_pct"] > 0
-    df["roi_vs_bias_baseline"] = df["roi"] - df["bias_baseline_roi"]
-    if "cv_roi" in df.columns:
-        # Positive = the holdout underperformed the folds the hyperparameters
-        # were chosen on, i.e. some of the CV edge was selection, not signal.
-        df["cv_minus_holdout_roi"] = df["cv_roi"] - df["roi"]
 
     if sort_by not in df.columns:
         raise KeyError(

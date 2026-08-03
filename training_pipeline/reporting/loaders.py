@@ -1,0 +1,221 @@
+"""Read the per-run artifact files the charts need.
+
+Every loader returns ``None`` (or an empty frame) rather than raising when a
+file is absent. Runs legitimately differ in what they wrote -- regressors have
+no calibration buckets, classifiers have no MAE, older runs predate whole
+artifact families -- so a missing file is normal and a section should skip a
+run rather than fail the notebook.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
+
+def run_dir_of(row: Any) -> Path:
+    """The run's directory, from either the explicit column or its parts."""
+    if "run_dir" in row and pd.notna(row["run_dir"]):
+        return Path(row["run_dir"])
+    return Path(row["source_path"]) / row["run_name"]
+
+
+def read_json(path: str | Path) -> dict:
+    return json.loads(Path(path).read_text())
+
+
+def _optional_csv(path: Path, **kwargs: Any) -> pd.DataFrame | None:
+    if not path.exists():
+        return None
+    try:
+        return pd.read_csv(path, **kwargs)
+    except (OSError, pd.errors.ParserError, ValueError):
+        return None
+
+
+def load_fold_betting(row: Any) -> pd.DataFrame | None:
+    return _optional_csv(
+        run_dir_of(row) / "cv_fold_betting.csv", parse_dates=["valid_start", "valid_end"]
+    )
+
+
+def load_seed_stability(row: Any) -> pd.DataFrame | None:
+    return _optional_csv(run_dir_of(row) / "seed_stability.csv")
+
+
+def load_calibration_buckets(row: Any) -> list[tuple[str, pd.DataFrame]]:
+    """Reliability buckets, CV first because it pools far more games."""
+    found = []
+    for filename, source in (("cv_calibration_buckets.csv", "CV"),
+                             ("calibration_buckets.csv", "holdout")):
+        frame = _optional_csv(run_dir_of(row) / filename)
+        if frame is not None and not frame.empty:
+            found.append((source, frame))
+    return found
+
+
+def load_line_comparison(row: Any) -> pd.DataFrame | None:
+    """Alternative-line scoring, preferring the CV table for its bet volume."""
+    for filename, source in (("cv_line_comparison.csv", "CV folds"),
+                             ("line_comparison.csv", "holdout")):
+        frame = _optional_csv(run_dir_of(row) / filename)
+        if frame is not None and not frame.empty:
+            frame = frame.copy()
+            frame.insert(0, "measured_on", source)
+            return frame
+    return None
+
+
+def load_feature_names(row: Any) -> set[str]:
+    path = run_dir_of(row) / "feature_schema.json"
+    if not path.exists():
+        return set()
+    return set(read_json(path).get("feature_names", []))
+
+
+def load_config_flat(row: Any) -> dict[str, Any]:
+    """The run's resolved config, flattened to dotted keys for diffing."""
+    path = run_dir_of(row) / "config.json"
+    if not path.exists():
+        return {}
+
+    def flatten(value: dict, prefix: str = "") -> dict:
+        flat: dict[str, Any] = {}
+        for key, item in value.items():
+            full = f"{prefix}.{key}" if prefix else key
+            if isinstance(item, dict):
+                flat.update(flatten(item, full))
+            else:
+                flat[full] = (
+                    json.dumps(item, sort_keys=True)
+                    if isinstance(item, (list, dict)) else item
+                )
+        return flat
+
+    return flatten(read_json(path))
+
+
+def load_walk_forward(row: Any) -> dict[str, Any] | None:
+    """Per-day retrain log plus pooled predictions, for runs scored daily."""
+    run_dir = run_dir_of(row)
+    daily_path = run_dir / "backtest_daily.csv"
+    predictions_path = run_dir / "backtest_predictions.parquet"
+    if not daily_path.exists() or not predictions_path.exists():
+        return None
+    daily = pd.read_csv(
+        daily_path, parse_dates=["date", "train_start_date", "train_end_date"]
+    )
+    predictions = pd.read_parquet(predictions_path)
+    predictions["date"] = pd.to_datetime(predictions["date"])
+    return {
+        "daily": daily.sort_values("date").reset_index(drop=True),
+        "predictions": predictions.sort_values("date").reset_index(drop=True),
+    }
+
+
+def settle_bets(frame: pd.DataFrame) -> pd.DataFrame:
+    """Attach win/push outcomes to a predictions frame.
+
+    A bet is on OVER when the predicted edge is positive. A game landing exactly
+    on the line is a push: stake returned, and excluded from the win rate rather
+    than counted as a loss.
+    """
+    margin = frame["TOTAL_POINTS"] - frame["target_line"]
+    bet_over = frame["predicted_edge"] > 0
+    frame = frame.copy()
+    frame["push"] = margin == 0
+    frame["won"] = (
+        np.where(bet_over, margin > 0, margin < 0) & ~frame["push"]
+    ).astype(int)
+    return frame
+
+
+#: Columns any settled-bet analysis needs, present for every strategy.
+_PREDICTION_COLUMNS = {"predicted_edge", "target_line", "TOTAL_POINTS"}
+
+#: (filename, label) in the order they should be preferred/reported.
+PREDICTION_SOURCES = (
+    ("cv_predictions.parquet", "cross-validation"),
+    ("final_test_predictions.parquet", "holdout"),
+)
+
+
+def load_all_predictions(
+    row: Any, *, drop_pushes: bool = True
+) -> list[tuple[str, pd.DataFrame]]:
+    """Every settled prediction set this run wrote, labelled by source.
+
+    Unlike :func:`load_predictions`, which picks one, this returns both so the
+    cross-validation and holdout periods can be compared directly rather than
+    one standing in for the other.
+
+    ``drop_pushes`` removes games landing exactly on the line, which is right
+    for win-rate work. Set it False when handing the frame to
+    ``betting.evaluate_betting``, which counts pushes itself -- stripping them
+    first would understate the candidate pool and misstate ROI, whose
+    denominator includes staked-and-returned capital.
+    """
+    found: list[tuple[str, pd.DataFrame]] = []
+    for filename, source in PREDICTION_SOURCES:
+        path = run_dir_of(row) / filename
+        if not path.exists():
+            continue
+        frame = pd.read_parquet(path)
+        if not _PREDICTION_COLUMNS <= set(frame.columns):
+            continue
+        frame = _ensure_selection_score(frame, row)
+        if frame is None:
+            continue
+        frame = frame.dropna(subset=[*_PREDICTION_COLUMNS, "selection_score"])
+        if frame.empty:
+            continue
+        settled = settle_bets(frame)
+        found.append((source, settled[~settled["push"]] if drop_pushes else settled))
+    return found
+
+
+def _ensure_selection_score(frame: pd.DataFrame, row: Any) -> pd.DataFrame | None:
+    """Reconstruct ``selection_score`` for runs that predate the column.
+
+    For a regressor it is exactly ``abs(predicted_edge)`` by definition (see
+    ``decisions.predict_decisions``), so recovering it is lossless and lets
+    older runs stay in the comparison instead of vanishing from it silently --
+    which is the worse failure, since a dropped run looks identical to a run
+    that was never there.
+
+    A classifier's is a maximum of two expected values, which needs the
+    probabilities and prices, so it cannot be rebuilt from these columns. In
+    practice the classifier postdates the column, so nothing is lost.
+    """
+    if "selection_score" in frame.columns:
+        return frame
+    if row.get("is_classifier", False):
+        return None
+    return frame.assign(selection_score=frame["predicted_edge"].abs())
+
+
+def load_predictions(row: Any) -> tuple[pd.DataFrame, str] | None:
+    """Settled predictions, preferring the pooled CV folds for their volume.
+
+    Returns ``(frame, source)`` with pushes already removed, or None when the
+    run wrote nothing usable.
+    """
+    required = {"selection_score", "predicted_edge", "target_line", "TOTAL_POINTS"}
+    for filename, source in (("cv_predictions.parquet", "CV"),
+                             ("final_test_predictions.parquet", "holdout")):
+        path = run_dir_of(row) / filename
+        if not path.exists():
+            continue
+        frame = pd.read_parquet(path)
+        if not required <= set(frame.columns):
+            continue
+        frame = frame.dropna(subset=list(required))
+        if frame.empty:
+            continue
+        settled = settle_bets(frame)
+        return settled[~settled["push"]], source
+    return None

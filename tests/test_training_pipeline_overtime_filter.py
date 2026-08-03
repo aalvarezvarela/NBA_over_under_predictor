@@ -210,3 +210,43 @@ def test_cv_folds_train_clean_but_score_everything(monkeypatch, tmp_path):
         result.cv_betting.predictions["row_in_dev"].to_numpy()
     ]
     assert scored["IS_OVERTIME"].any()
+
+
+def test_single_shot_holdout_fit_also_excludes_overtime(monkeypatch, tmp_path):
+    """The filter must hold on every training path, not just the default one.
+
+    single_shot fits one model on the dev window instead of retraining daily.
+    It previously ignored the flag, so a config asking to exclude overtime
+    silently trained on it -- and the run still looked successful.
+    """
+    from training_pipeline import pipeline as pipeline_module
+    from training_pipeline.config import HoldoutEvaluation
+
+    prepared = _prepared(_frame())
+    monkeypatch.setattr(pipeline_module, "prepare_dataset", lambda cfg: prepared)
+
+    seen: list[int] = []
+    real_fit = pipeline_module.fit_final_model
+
+    def spy(*, X_dev, **kwargs):
+        seen.append(len(X_dev))
+        return real_fit(X_dev=X_dev, **kwargs)
+
+    monkeypatch.setattr(pipeline_module, "fit_final_model", spy)
+
+    config = _config(
+        tmp_path,
+        holdout_evaluation=HoldoutEvaluation.SINGLE_SHOT,
+        data=DataConfig(csv_path="x.csv", exclude_overtime_from_training=True),
+    )
+    pipeline_module.run_experiment(config)
+
+    from training_pipeline.splits import build_holdout_split
+
+    df_dev, _ = build_holdout_split(prepared.df_full, config)
+    overtime_in_dev = int(
+        pd.to_numeric(df_dev["IS_OVERTIME"], errors="coerce").eq(1).sum()
+    )
+    assert overtime_in_dev > 0, "fixture must contain overtime games in dev"
+    assert seen, "fit_final_model was never called"
+    assert seen[0] == len(df_dev) - overtime_in_dev

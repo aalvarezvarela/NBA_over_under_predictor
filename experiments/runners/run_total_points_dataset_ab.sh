@@ -4,16 +4,16 @@
 # Both aligned datasets must already exist. The script checks them before
 # validating and running the experiments; it does not generate training data.
 #
-#   bash experiments/run_overnight.sh
+#   bash experiments/runners/run_total_points_dataset_ab.sh
 #
 # Detached (survives closing the terminal):
-#   nohup bash experiments/run_overnight.sh > /dev/null 2>&1 &
+#   nohup bash experiments/runners/run_total_points_dataset_ab.sh > /dev/null 2>&1 &
 #
 # Follow along:
 #   tail -f artifacts/logs/overnight_*.log
 set -uo pipefail          # NOT -e: run 2 should still start if run 1 fails
 
-cd "$(dirname "$0")/.." || exit 1
+cd "$(dirname "$0")/../.." || exit 1
 
 LOG_DIR="artifacts/logs"
 mkdir -p "$LOG_DIR"
