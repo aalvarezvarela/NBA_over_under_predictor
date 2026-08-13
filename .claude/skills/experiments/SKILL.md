@@ -178,9 +178,18 @@ one common threshold from raw predictions. **Do this whenever runs span a config
 change** — each run freezes its own threshold into `betting_metrics.json`, so
 otherwise old and new runs sit in the same column measuring different things.
 
+`experiments/notebooks/summary_experiments.ipynb` is the cross-campaign view:
+every run's CV and holdout win rate on one page, then **one variable at a
+time**. It reduces each `config.json` to a factor vector and only compares runs
+agreeing on every factor but the one being read, so a cell that moved two knobs
+appears in no comparison. Use it for "what does changing X do?"; use
+`survey_experiments.ipynb` for "what is wrong with this run?".
+
 Helpers live in `training_pipeline/reporting/` (`discovery`, `loaders`,
-`charts`, `narrative`, `rescore`, `theme`). Extend those rather than growing
-notebook code. Chart conventions there are deliberate: dumbbells rather than
+`charts`, `factors`, `narrative`, `rescore`, `theme`). Extend those rather than
+growing notebook code. If a campaign varies a knob not in
+`factors.FACTOR_SOURCES`, add it — otherwise its runs are matched as though
+they were identical, which is exactly the silent no-op this table warns about. Chart conventions there are deliberate: dumbbells rather than
 truncated bars when values differ by ~0.1 on a base of ~14; small multiples
 rather than overlaying runs that share a strategy colour; a plain rule for the
 seed range, because it is an observed min–max and not a confidence interval.
