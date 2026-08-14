@@ -1,0 +1,94 @@
+# Campaign: can a model bet the line that is on the board NOW, at any hour
+# before tip, rather than only the closing line?
+#
+# The TOTAL_POINTS arm. Identical to pooled_line_error.yaml in every respect
+# except the target -- same CSV, same 60-day holdout, same 12 folds, same 50
+# trials, same seeds, same settlement line. One deliberate difference is the
+# only way a two-cell comparison stays readable.
+#
+# Run it with the snapshot-aware wrapper, NOT the plain CLI:
+#   poetry run python scripts/run_intermediate_snapshot_experiment.py \
+#       experiments/intermediate_line_2026_08/pooled_total_points.yaml
+#
+# WHY THE POOLED n_bets IS NOT READABLE
+# evaluate_betting counts every ROW as an independent bet and wilson_interval
+# builds its interval from that count. Here one game contributes up to six rows
+# that share a single outcome -- within a game the snapshot lines differ by a
+# median of 0.75 points against ~18 points of outcome noise. n_bets is therefore
+# inflated and the interval too narrow. The exact factor is NOT sqrt(6): that
+# assumes all six horizons present and identically decided, whereas coverage
+# varies (T=720 reaches 97.6% of games) and the min-edge filter selects
+# differently per snapshot. Direction certain, magnitude not -- so the report
+# leaves the pooled row's interval and significance BLANK rather than printing
+# a number it cannot justify. Read the per-snapshot rows, where there really is
+# one row per game and the binomial maths holds.
+
+experiment_name: intermediate_pooled_total_points
+training_version: "intermediate-line-1.0"
+comparison_group: intermediate_line_2026_08
+hypothesis: >
+  The same pooled-snapshot model, predicting the TOTAL rather than the error
+  against the line. Expected to lose to the line_error arm: most of the loss
+  goes on reproducing a line the model can already read off its own features,
+  so the part that is actually bet on gets a small share of the gradient. The
+  earlier closing-line campaign measured -6.11% ROI here against +12.96% for
+  line_error.
+  .
+  It is run anyway because that result was measured on the CLOSING line, where
+  the line is a near-perfect feature. At an intermediate snapshot the line is
+  noisier and further from the truth, so how much of the target is nuisance is
+  genuinely different -- which makes the ranking worth re-measuring rather than
+  assuming it carries over.
+tags: [intermediate_line, pooled_snapshots, total_points]
+
+prediction_strategy: total_points_regressor
+
+# REQUIRED for this strategy, and it must be the SNAPSHOT line, which is what
+# TOTAL_LINE_bet365 holds in this dataset (the normalized line that was on the
+# board at that moment -- not the close, which lives in the scoring sidecar and
+# never reaches the feature matrix).
+#
+# This is also exactly the line the line_error arm settles against implicitly:
+# nba_ou.config.odds_columns.total_line_col() resolves to TOTAL_LINE_bet365 for
+# the configured main book. Stating it here means the two arms bet into the
+# identical price and their ROIs are directly comparable.
+line_col: TOTAL_LINE_bet365
+
+# Must match pooled_line_error.yaml: mixing CPU and GPU within one
+# comparison_group adds a hardware confound. See that file for how to verify
+# the build really has CUDA -- a non-CUDA build warns and falls back silently
+# rather than failing.
+device: cuda
+
+data:
+  csv_path: data/train_data/intermediate_line_data_20260412.csv
+  data_version: "20260412-intermediate-line-6-snapshots"
+  # Must be the SAME value as the line_error arm -- if the two cells run against
+  # different bytes the comparison is void. Fill in before running:
+  #   poetry run python -c "from training_pipeline.data import compute_file_checksum as c; print(c('data/train_data/intermediate_line_data_20260412.csv'))"
+  expected_checksum: null
+  season_year_floor: 2021
+  exclude_playoffs: true
+  allowed_season_types: ["Regular Season", "Play-In Tournament"]
+
+# --- ROW-COUNTED WINDOWS, RESCALED x6 ---------------------------------------
+# Identical to the line_error arm. Every *_games setting counts ROWS, not games
+# (train_pool.tail(n)); at six snapshots per game the inherited defaults would
+# give each fold ~417 games instead of 2500. Measured on the real dates, these
+# values produce 12 folds of exactly 15,000 training rows each.
+#
+# holdout.test_days is deliberately NOT rescaled: it is calendar-based.
+walk_forward:
+  train_games: 15000          # 2500 games
+  min_train_games: 7500       # 1250 games
+  test_games: 300             # 50 games
+  step_games_between_tests: 360  # 60 games
+
+backtest:
+  test_games: 1800            # 300 games
+
+optuna:
+  n_trials: 50
+  timeout: null
+
+evaluation_seeds: [101, 202]

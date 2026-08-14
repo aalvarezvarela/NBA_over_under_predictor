@@ -1,0 +1,73 @@
+# Control run for the TOTAL_POINTS arm: is pooling the six snapshots earning
+# its complexity?
+#
+# NOT a deliverable, and LOWEST priority in this campaign. It trains on 12-hour
+# rows only, so it can serve exactly one betting time and is useless as a
+# product. Run it only after the two pooled arms have been read and the
+# total-points arm is still in contention -- if line_error wins the pooled
+# comparison decisively, this cell answers a question about a target you are
+# not going to use.
+#
+# Build its CSV first (shared with t720_control_line_error.yaml -- one slice
+# serves both targets, so this costs nothing extra if that control already ran):
+#   poetry run python scripts/create_train_data/slice_intermediate_snapshot.py --snapshot 720
+#
+# Then run with the ORDINARY CLI -- one row per game means the standard betting
+# report is already correct and there is nothing to group:
+#   poetry run python -m training_pipeline.cli \
+#       experiments/intermediate_line_2026_08/t720_control_total_points.yaml
+
+experiment_name: intermediate_t720_control_total_points
+training_version: "intermediate-line-1.0"
+comparison_group: intermediate_line_2026_08
+hypothesis: >
+  A total-points model trained only on 12-hour-out rows, as a control for the
+  pooled total-points arm. If pooling helps, pooled_total_points scored at
+  snapshot 720 should beat this; if it does not, the shared model is diluting
+  the horizon rather than informing it.
+tags: [intermediate_line, single_snapshot, control, total_points]
+
+prediction_strategy: total_points_regressor
+
+# The snapshot line, exactly as in pooled_total_points.yaml. The control must
+# differ from the pooled arm in ONE thing only: which rows it sees.
+line_col: TOTAL_LINE_bet365
+
+# Must match every other cell in the comparison_group.
+device: cuda
+
+data:
+  csv_path: data/train_data/intermediate_line_data_20260412_t720.csv
+  data_version: "20260412-intermediate-line-t720"
+  # Printed by slice_intermediate_snapshot.py when it writes the file. Must be
+  # the same value as t720_control_line_error.yaml -- both read this one file.
+  expected_checksum: null
+  season_year_floor: 2021
+  exclude_playoffs: true
+  allowed_season_types: ["Regular Season", "Play-In Tournament"]
+
+# THE CONTROL IS CLOSE, NOT EXACT -- measured, not assumed.
+# A 15,000-row window in the pooled arm holds 2,501-2,522 DISTINCT games
+# (12 folds: 2522 2520 2520 2517 2514 2513 2509 2501 2501 2501 2501 2501),
+# because not every game has all six snapshots: T=480 covers 5,784 games and
+# T=720 covers 5,670, against 5,808 at the shorter horizons. So x6 on the row
+# window lands near 2,500 games rather than on it, versus exactly 2,500 here.
+#
+# The gap is 0.04-0.9% of the window and is left in place deliberately: closing
+# it would mean selecting a common GAME_ID cohort, and GAME_ID is dropped during
+# cleaning (its name contains "_ID") for the good reason that the default
+# exclude_cols would otherwise let a date-encoding string into the feature
+# matrix. Worth remembering if a comparison lands inside that margin -- at which
+# point the honest read is "no difference", not "the control won".
+
+# NO window rescaling, deliberately. This file is one row per game, so every
+# *_games default in _base.yaml already means games -- and matching the pooled
+# arm's rescaled 15000 rows (= 2500 games) means leaving these at the inherited
+# 2500. Overriding them would make the control train on a different amount of
+# history than the thing it is controlling for.
+
+optuna:
+  n_trials: 50
+  timeout: null
+
+evaluation_seeds: [101, 202]

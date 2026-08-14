@@ -1,0 +1,117 @@
+# Campaign: can a model bet the line that is on the board NOW, at any hour
+# before tip, rather than only the closing line?
+#
+# THE deliverable of this campaign. One model trained on every pre-game
+# snapshot at once (30/60/120/240/480/720 minutes before tip), with
+# TIME_TO_MATCH_MIN as an ordinary feature, so it learns how the mapping changes
+# with time to tip and can be used at whatever hour the bet actually gets
+# placed. Six separate per-horizon models would force clock-watching and could
+# not interpolate to a time not on the grid.
+#
+# Run it with the snapshot-aware wrapper, NOT the plain CLI:
+#   poetry run python scripts/run_intermediate_snapshot_experiment.py \
+#       experiments/intermediate_line_2026_08/pooled.yaml
+#
+# The plain CLI trains and evaluates identically, but reports only the pooled
+# betting numbers -- and those are the ones that must not be read. See below.
+#
+# WHY THE POOLED n_bets IS NOT READABLE
+# evaluate_betting counts every ROW as an independent bet and wilson_interval
+# builds its interval from that count. Here one game contributes up to six rows
+# that share a single outcome -- within a game the snapshot lines differ by a
+# median of 0.75 points against ~18 points of outcome noise. n_bets is therefore
+# inflated and the interval too narrow. The exact factor is NOT sqrt(6): that
+# assumes all six horizons present and identically decided, whereas coverage
+# varies (T=720 reaches 97.6% of games) and the min-edge filter selects
+# differently per snapshot. Direction certain, magnitude not -- so the report
+# leaves the pooled row's interval and significance BLANK rather than printing
+# a number it cannot justify. Read the per-snapshot rows, where there really is
+# one row per game and the binomial maths holds.
+
+experiment_name: intermediate_pooled_line_error
+training_version: "intermediate-line-1.0"
+comparison_group: intermediate_line_2026_08
+hypothesis: >
+  A model trained on every pre-game snapshot, conditioning on time-to-tip, can
+  bet the line available at any hour before tip. Read the per-snapshot table,
+  not the pooled row: the question is whether the edge at 12 hours out survives
+  at all, and how much of it is given up relative to betting near tip-off.
+  .
+  Target: LINE_ERROR. Pre-registered favourite of the two targets -- the
+  nuisance part is subtracted out, so the whole target is the quantity being
+  bet, and the earlier closing-line campaign gave +12.96% ROI here versus
+  -6.11% for total points. Paired with pooled_total_points.yaml, which differs
+  in the target and nothing else.
+  .
+  No closing line is available to this model at any snapshot -- the CLOSING_*
+  columns are physically held in a separate scoring sidecar so they cannot
+  reach the feature matrix.
+tags: [intermediate_line, pooled_snapshots, line_error]
+
+prediction_strategy: line_error_regressor
+
+# Hardware, not part of the hypothesis -- but it must be set identically on
+# every cell of the campaign, or a timing difference becomes a results
+# difference through the trial/pruning path.
+#
+# VERIFY THE BUILD ACTUALLY HAS CUDA before trusting this. XGBoost 2.1.4 does
+# NOT error on device: cuda when it was compiled without CUDA support -- it
+# emits "XGBoost is not compiled with CUDA support" as a *warning* and silently
+# runs on CPU, so a run can look configured for GPU and take CPU time:
+#   poetry run python -c "import xgboost, numpy as np; \
+#     xgboost.train({'device':'cuda'}, xgboost.DMatrix(np.random.rand(50,3), \
+#     label=np.random.rand(50)), num_boost_round=2)"
+# Silence means real CUDA. VRAM is not a concern: the pooled training matrix is
+# 15000 x 2400 float32, about 144 MB.
+device: cuda
+
+# line_col deliberately absent: TOTAL_LINE_bet365 in this dataset is already the
+# NORMALIZED SNAPSHOT line, and LINE_ERROR is TOTAL_POINTS minus that. The
+# target is therefore the error against the line that was actually on the board
+# at that moment, which is the quantity being bet.
+
+data:
+  csv_path: data/train_data/intermediate_line_data_20260412.csv
+  data_version: "20260412-intermediate-line-6-snapshots"
+  # Fill this in before running. It changes whenever the CSV is rebuilt --
+  # including the fanatics-column removal:
+  #   poetry run python -c "from training_pipeline.data import compute_file_checksum as c; print(c('data/train_data/intermediate_line_data_20260412.csv'))"
+  expected_checksum: null
+  # Matches the line-history store exactly: its oldest game is 2021-10-19, so
+  # this floor drops nothing here. Stated explicitly so the closing-line
+  # reference run can be given the identical floor.
+  season_year_floor: 2021
+  # Regular season + play-in only, resolved from the GAME_ID prefix. Leaves
+  # 34,686 rows / 5,808 games. Playoff basketball is a different distribution
+  # and the campaign it is being compared against excludes it too.
+  exclude_playoffs: true
+  allowed_season_types: ["Regular Season", "Play-In Tournament"]
+
+# --- ROW-COUNTED WINDOWS, RESCALED x6 ---------------------------------------
+# Every *_games setting below counts ROWS, not games (train_pool.tail(n)). At
+# six snapshots per game the inherited defaults would cover a sixth of the
+# calendar history they were reasoned for, with no error raised -- each fold
+# would train on ~417 games while the closing-line comparison trains on 2500.
+# Any difference would then measure dataset SIZE, not dataset quality.
+#
+# holdout.test_days is deliberately NOT rescaled: it is calendar-based, and it
+# is what gives two datasets the identical evaluation window.
+walk_forward:
+  train_games: 15000          # 2500 games
+  min_train_games: 7500       # 1250 games
+  test_games: 300             # 50 games
+  step_games_between_tests: 360  # 60 games
+
+backtest:
+  test_games: 1800            # 300 games
+
+optuna:
+  # Fixed trial count, no timeout: a timeout makes the number of completed
+  # trials a function of the machine, which silently breaks comparability
+  # across the cells of a campaign.
+  n_trials: 50
+  timeout: null
+
+# Turns each number into a number-with-an-error-bar. A gap smaller than one
+# run's own seed spread is not a result.
+evaluation_seeds: [101, 202]
