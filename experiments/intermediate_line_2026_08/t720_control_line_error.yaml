@@ -48,25 +48,32 @@ data:
   exclude_playoffs: true
   allowed_season_types: ["Regular Season", "Play-In Tournament"]
 
-# THE CONTROL IS CLOSE, NOT EXACT -- measured, not assumed.
-# A 15,000-row window in the pooled arm holds 2,501-2,522 DISTINCT games
-# (12 folds: 2522 2520 2520 2517 2514 2513 2509 2501 2501 2501 2501 2501),
-# because not every game has all six snapshots: T=480 covers 5,784 games and
-# T=720 covers 5,670, against 5,808 at the shorter horizons. So x6 on the row
-# window lands near 2,500 games rather than on it, versus exactly 2,500 here.
+# --- WINDOW: 3750 GAMES, NOT RESCALED --------------------------------------
+# This file is one row per game, so 3750 already means 3750 games -- and that
+# is exactly the pooled arms' 22,500 rows / 3750 games. The two must match or
+# the control is controlling for the wrong thing.
 #
-# The gap is 0.04-0.9% of the window and is left in place deliberately: closing
-# it would mean selecting a common GAME_ID cohort, and GAME_ID is dropped during
-# cleaning (its name contains "_ID") for the good reason that the default
-# exclude_cols would otherwise let a date-encoding string into the feature
-# matrix. Worth remembering if a comparison lands inside that margin -- at which
-# point the honest read is "no difference", not "the control won".
+# 3750 is also the ceiling here. Measured with the real splitter on this
+# dataset's 5,262-game T=720 dev pool, 12 folds:
+#     3750 -> exactly 3,750 every fold   [clean]
+#     3850 -> 3,798-3,850                [SILENTLY SHRANK]
+# See pooled_line_error.yaml for why 3750 was chosen and, more importantly,
+# for why the window effect sits inside the seed-noise floor and must not be
+# reported as a demonstrated optimum.
+walk_forward:
+  train_games: 3750
+  min_train_games: 1875
+  test_games: 50
+  step_games_between_tests: 60
+  max_folds: 12
 
-# NO window rescaling here, deliberately. This file is one row per game, so
-# every *_games default in _base.yaml already means games -- and matching the
-# pooled run's rescaled 15000 rows (= 2500 games) means leaving these at the
-# inherited 2500. Overriding them would make the control train on a different
-# amount of history than the thing it is controlling for.
+backtest:
+  test_games: 300
+
+# Off, matching the pooled arms -- see pooled_line_error.yaml for the measured
+# comparison.
+sample_weight:
+  enabled: true
 
 optuna:
   n_trials: 50

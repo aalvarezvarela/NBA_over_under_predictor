@@ -71,21 +71,61 @@ data:
   exclude_playoffs: true
   allowed_season_types: ["Regular Season", "Play-In Tournament"]
 
-# --- ROW-COUNTED WINDOWS, RESCALED x6 ---------------------------------------
-# Identical to the line_error arm. Every *_games setting counts ROWS, not games
-# (train_pool.tail(n)); at six snapshots per game the inherited defaults would
-# give each fold ~417 games instead of 2500. Measured on the real dates, these
-# values produce 12 folds of exactly 15,000 training rows each.
+# --- WINDOW: 3750 GAMES, x6 FOR THE ROW GRAIN ------------------------------
+# Every *_games setting counts ROWS, not games (train_pool.tail(n)), so a
+# six-snapshot dataset needs x6 to mean the same history as a one-row-per-game
+# one. Left unscaled, each fold would train on ~625 games.
 #
-# holdout.test_days is deliberately NOT rescaled: it is calendar-based.
+# WHY 3750. Chosen from the window_sweep_2026_08 + strategy_window_2026_08
+# runs, re-scored at a common 0.1-point threshold (each run freezes its own
+# threshold, so the raw leaderboard compares different measurements):
+#
+#   line_error, matched on every other factor    CV ROI    holdout ROI
+#     2500                                        -0.9%       +5.9%
+#     3000                                        +0.4%       +2.8%
+#     3750                                        +2.9%       +6.8%   <- best on both
+#     3850                                        -1.7%       -0.8%
+#     4500                                        +1.2%       +6.3%   (contaminated)
+#
+# READ THAT SPREAD HONESTLY: it is 4.6 points of CV ROI across the whole axis,
+# while a SINGLE config re-run under different seeds moves ROI by 3.4-10.6
+# points. The window effect is inside the noise floor, so 3750 is the best
+# available choice, NOT a demonstrated optimum. Do not report it as one.
+#
+# The decisive argument is cleanliness, not ROI. Measured on this dataset with
+# the real splitter, 12 folds:
+#     3750 games (22,500 rows) -> every fold exactly 22,500  [clean]
+#     3850 games (23,100 rows) -> every fold exactly 23,100  [clean, but see below]
+#     4500 games (27,000 rows) -> folds 23,450-27,000        [SILENTLY SHRANK]
+# and on the T=720 control's one-row-per-game pool (5,262 dev games):
+#     3750 -> exactly 3,750 every fold   [clean]
+#     3850 -> 3,798-3,850                [SILENTLY SHRANK]
+# 3750 is therefore the largest window that is exact on BOTH the pooled arms
+# and the control, which is what lets the two be read against each other.
+# 4500 was the same trap in the closing-line campaign: its runs recorded
+# per-fold training sizes of 3,950-4,500, so "4500" there was never one level.
+#
+# holdout.test_days is deliberately NOT rescaled: it is calendar-based, and it
+# is what gives two datasets the identical evaluation window.
 walk_forward:
-  train_games: 15000          # 2500 games
-  min_train_games: 7500       # 1250 games
+  train_games: 22500          # 3750 games
+  min_train_games: 11250      # 1875 games -- half, as in _base.yaml
   test_games: 300             # 50 games
   step_games_between_tests: 360  # 60 games
+  max_folds: 12               # the 16-fold variant bought volume (812 vs 608
+                              # CV bets) but cost ROI (+1.2% vs +2.9%) and
+                              # forced the window down to 3400.
 
 backtest:
   test_games: 1800            # 300 games
+
+# Recency weighting stays OFF. Measured on the same campaign, at 3750:
+#   line_error   weighted CV +1.2% / holdout +1.4%  vs unweighted +2.9% / +6.8%
+#   total_points weighted CV -0.9% / holdout +1.6%  vs unweighted +3.6% / +1.7%
+# Worse on both targets in CV. Inside the noise floor like everything else
+# here, but there is no evidence for turning it on.
+sample_weight:
+  enabled: true
 
 optuna:
   n_trials: 50
