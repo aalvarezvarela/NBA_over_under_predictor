@@ -13,6 +13,8 @@ accessing configs, datasets, logs, or artifacts.
 - `run_window_overtime_campaign.sh`: follow-up to the above, varying five axes
   against its winner (`line_error` at 3,750) -- training window, overtime rows,
   feature build, playoffs, and the per-row missing-data cap. 11 runs.
+- `run_intermediate_line_campaign.sh`: runs the intermediate-line pooled
+  snapshot models and their 12-hour controls. 4 runs.
 
 Run a campaign in the foreground:
 
