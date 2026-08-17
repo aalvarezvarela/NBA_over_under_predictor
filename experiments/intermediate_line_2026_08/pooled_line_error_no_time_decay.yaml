@@ -1,0 +1,49 @@
+# Pooled LINE_ERROR arm with recency decay forced off.
+#
+# Same pooled snapshot design as pooled_line_error.yaml, but without the
+# sample-weight Optuna branch. This isolates whether recency weighting is
+# helping the line-error target on the intermediate-line dataset.
+#
+# Run with the snapshot-aware wrapper:
+#   poetry run python scripts/run_intermediate_snapshot_experiment.py \
+#       experiments/intermediate_line_2026_08/pooled_line_error_no_time_decay.yaml
+
+experiment_name: intermediate_pooled_line_error_no_time_decay
+training_version: "intermediate-line-1.0"
+comparison_group: intermediate_line_2026_08
+hypothesis: >
+  A pooled line-error model trained on every pre-game snapshot, with recency
+  decay disabled. Read this against pooled_line_error.yaml to measure whether
+  the time-decay sample-weight branch is helping or simply spending search
+  budget on this target.
+tags: [intermediate_line, pooled_snapshots, line_error, no_time_decay]
+
+prediction_strategy: line_error_regressor
+device: cuda
+
+data:
+  csv_path: data/train_data/intermediate_line_data_20260412.csv
+  data_version: "20260412-intermediate-line-6-snapshots"
+  expected_checksum: null
+  season_year_floor: 2021
+  exclude_playoffs: true
+  allowed_season_types: ["Regular Season", "Play-In Tournament"]
+
+walk_forward:
+  train_games: 22500
+  min_train_games: 11250
+  test_games: 300
+  step_games_between_tests: 360
+  max_folds: 12
+
+backtest:
+  test_games: 1800
+
+sample_weight:
+  enabled: false
+
+optuna:
+  n_trials: 50
+  timeout: null
+
+evaluation_seeds: [101, 202]

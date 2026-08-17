@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Intermediate-line campaign: pooled snapshot models plus 12h controls.
+# Intermediate-line campaign: pooled snapshot models plus controls.
 #
 #   bash experiments/runners/run_intermediate_line_campaign.sh
 #
@@ -10,12 +10,14 @@
 #   tail -f artifacts/logs/campaign_*/campaign.log      # the summary
 #   tail -f artifacts/logs/campaign_*/<experiment>.log  # one run in detail
 #
-# Interrupted? Re-run with SKIP_EXISTING=1 to continue where it stopped:
-#   SKIP_EXISTING=1 bash experiments/runners/run_intermediate_line_campaign.sh
+# Interrupted or extending the campaign? Existing experiment artifacts are
+# skipped by default. Set SKIP_EXISTING=0 to force a full rerun:
+#   SKIP_EXISTING=0 bash experiments/runners/run_intermediate_line_campaign.sh
 #
 # The pooled configs MUST use scripts/run_intermediate_snapshot_experiment.py so
-# their artifacts include per-snapshot betting reports. The t720 controls are
-# one row per game, so the ordinary CLI is the correct runner for those.
+# their artifacts include per-snapshot betting reports. The single-snapshot
+# controls are one row per game, so the ordinary CLI is the correct runner for
+# those.
 #
 # NOT `set -e`: one failing run must not cancel the remaining campaign cells.
 set -uo pipefail
@@ -26,6 +28,7 @@ CAMPAIGN="intermediate_line_2026_08"
 CONFIG_DIR="experiments/${CAMPAIGN}"
 POOLED_DATASET="data/train_data/intermediate_line_data_20260412.csv"
 T720_DATASET="data/train_data/intermediate_line_data_20260412_t720.csv"
+T480_DATASET="data/train_data/intermediate_line_data_20260412_t480.csv"
 
 STAMP="$(date +%Y%m%d_%H%M%S)"
 LOG_DIR="artifacts/logs/campaign_${STAMP}"
@@ -40,18 +43,36 @@ NAMES=(
   "intermediate_pooled_total_points"
   "intermediate_t720_control_line_error"
   "intermediate_t720_control_total_points"
+  "intermediate_pooled_line_error_no_time_decay"
+  "intermediate_t720_control_line_error_no_time_decay"
+  "intermediate_t480_control_line_error"
 )
 CONFIGS=(
   "${CONFIG_DIR}/pooled_line_error.yaml"
   "${CONFIG_DIR}/pooled_total_points.yaml"
   "${CONFIG_DIR}/t720_control_line_error.yaml"
   "${CONFIG_DIR}/t720_control_total_points.yaml"
+  "${CONFIG_DIR}/pooled_line_error_no_time_decay.yaml"
+  "${CONFIG_DIR}/t720_control_line_error_no_time_decay.yaml"
+  "${CONFIG_DIR}/t480_control_line_error.yaml"
 )
 RUNNERS=(
   "snapshot"
   "snapshot"
   "cli"
   "cli"
+  "snapshot"
+  "cli"
+  "cli"
+)
+DATASETS=(
+  "$POOLED_DATASET"
+  "$POOLED_DATASET"
+  "$T720_DATASET"
+  "$T720_DATASET"
+  "$POOLED_DATASET"
+  "$T720_DATASET"
+  "$T480_DATASET"
 )
 
 # -u keeps stdout unbuffered so `tail -f` shows progress live rather than in
@@ -65,45 +86,43 @@ log() { echo "$@" | tee -a "$LOG"; }
 log "=========================================================="
 log " Campaign : ${CAMPAIGN}"
 log " Started  : $(date)"
-log " Runs     : ${#CONFIGS[@]}   (2 pooled snapshot runs, 2 t720 controls)"
+log " Runs     : ${#CONFIGS[@]}   (3 pooled snapshot runs, 4 controls)"
+log " Skip old : ${SKIP_EXISTING:-1}"
 log " Logs     : ${LOG_DIR}"
 log "=========================================================="
 
-# --- required datasets must exist before committing GPU time ----------------
-if [[ ! -s "$POOLED_DATASET" ]]; then
-  log "ABORT: pooled dataset missing or empty: $POOLED_DATASET"
-  log "  Regenerate it with:"
-  log "    poetry run python scripts/create_train_data/create_intermediate_line_train_data.py"
-  exit 1
-fi
-
 log ""
-log "Dataset : $POOLED_DATASET ($(du -h "$POOLED_DATASET" | cut -f1))"
-log "Checksum: $("${PY[@]}" -c \
-  "from training_pipeline.data import compute_file_checksum as c; print(c('$POOLED_DATASET'))" \
-  2>/dev/null)"
-
-if ! head -1 "$POOLED_DATASET" | tr ',' '\n' | grep -qx "TIME_TO_MATCH_MIN"; then
-  log ""
-  log "ABORT: TIME_TO_MATCH_MIN is not in $POOLED_DATASET."
-  log "  The pooled runner cannot produce per-snapshot reports without it."
-  exit 1
+if [[ -s "$POOLED_DATASET" ]]; then
+  log "Dataset : $POOLED_DATASET ($(du -h "$POOLED_DATASET" | cut -f1))"
+  log "Checksum: $("${PY[@]}" -c \
+    "from training_pipeline.data import compute_file_checksum as c; print(c('$POOLED_DATASET'))" \
+    2>/dev/null)"
+  if ! head -1 "$POOLED_DATASET" | tr ',' '\n' | grep -qx "TIME_TO_MATCH_MIN"; then
+    log "Dataset : $POOLED_DATASET is missing TIME_TO_MATCH_MIN"
+  fi
+else
+  log "Dataset : $POOLED_DATASET (missing; pooled runs need it)"
 fi
 
-if [[ ! -s "$T720_DATASET" ]]; then
-  log ""
-  log "ABORT: t720 control dataset missing or empty: $T720_DATASET"
-  log "  Build the 12-hour slice with:"
-  log "    poetry run python scripts/create_train_data/slice_intermediate_snapshot.py --snapshot 720"
-  exit 1
+if [[ -s "$T720_DATASET" ]]; then
+  log "Dataset : $T720_DATASET ($(du -h "$T720_DATASET" | cut -f1))"
+  log "Checksum: $("${PY[@]}" -c \
+    "from training_pipeline.data import compute_file_checksum as c; print(c('$T720_DATASET'))" \
+    2>/dev/null)"
+else
+  log "Dataset : $T720_DATASET (missing; t720 controls need it)"
 fi
 
-log "Dataset : $T720_DATASET ($(du -h "$T720_DATASET" | cut -f1))"
-log "Checksum: $("${PY[@]}" -c \
-  "from training_pipeline.data import compute_file_checksum as c; print(c('$T720_DATASET'))" \
-  2>/dev/null)"
-log "  ^ paste these into data.expected_checksum in the four configs to be told"
-log "    loudly if either CSV is ever rebuilt underneath this campaign."
+if [[ -s "$T480_DATASET" ]]; then
+  log "Dataset : $T480_DATASET ($(du -h "$T480_DATASET" | cut -f1))"
+  log "Checksum: $("${PY[@]}" -c \
+    "from training_pipeline.data import compute_file_checksum as c; print(c('$T480_DATASET'))" \
+    2>/dev/null)"
+else
+  log "Dataset : $T480_DATASET (missing; only the t480 control needs it)"
+fi
+log "  ^ paste these into data.expected_checksum in the configs to be told"
+log "    loudly if a CSV is ever rebuilt underneath this campaign."
 
 # --- validate every config BEFORE committing the campaign -------------------
 log ""
@@ -145,15 +164,27 @@ for i in "${!CONFIGS[@]}"; do
   name="${NAMES[$i]}"
   cfg="${CONFIGS[$i]}"
   runner="${RUNNERS[$i]}"
+  dataset="${DATASETS[$i]}"
   run_log="${LOG_DIR}/${name}.log"
 
   # Match ONLY the exact run-dir suffix `_YYYYMMDD_HHMMSS`. A loose prefix
   # check can skip a different experiment whose name merely starts the same way.
-  if [[ "${SKIP_EXISTING:-0}" == "1" ]] \
+  if [[ "${SKIP_EXISTING:-1}" == "1" ]] \
      && compgen -G "artifacts/experiments/${name}_20[0-9][0-9][0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9][0-9][0-9]" > /dev/null; then
     log ""
     log "SKIP  ${name}  (artifacts already exist)"
     SKIPPED=$((SKIPPED + 1))
+    continue
+  fi
+
+  if [[ ! -s "$dataset" ]]; then
+    log ""
+    log "FAIL  ${name}  (dataset missing or empty: ${dataset})"
+    if [[ "$dataset" == "$T480_DATASET" ]]; then
+      log "  Build it with:"
+      log "    poetry run python scripts/create_train_data/slice_intermediate_snapshot.py --snapshot 480"
+    fi
+    FAILED=$((FAILED + 1))
     continue
   fi
 
@@ -210,6 +241,8 @@ log ""
 log "Primary read order:"
 log "  1. pooled_line_error vs pooled_total_points by per-snapshot cv_roi"
 log "  2. pooled_line_error at snapshot 720 vs t720_control_line_error cv_roi"
-log "  3. holdout ROI only as a sanity check, because it is a smaller slice"
+log "  3. pooled_line_error_no_time_decay vs pooled_line_error for decay"
+log "  4. pooled_line_error at snapshot 480 vs t480_control_line_error cv_roi"
+log "  5. holdout ROI only as a sanity check, because it is a smaller slice"
 
 exit $FAILED
