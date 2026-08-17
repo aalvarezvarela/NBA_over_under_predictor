@@ -1,0 +1,63 @@
+# Independent one-hour LINE_ERROR control, trained only on T=60 rows.
+#
+# Build the matched slice from the seven-snapshot CSV with:
+#   bash experiments/intermediate_line_2026_08/prepare_line_error_7snapshot_all_controls.sh
+#
+# Run with the ordinary CLI: this file has one row per game, so no snapshot
+# regrouping wrapper is needed.
+#   poetry run python -m training_pipeline.cli \
+#       experiments/intermediate_line_2026_08/t60_control_line_error_no_time_decay.yaml \
+#       --no-save-model
+
+experiment_name: intermediate_t60_control_line_error_no_time_decay
+training_version: "intermediate-line-1.0"
+comparison_group: intermediate_line_7snapshot_all_controls_2026_08
+hypothesis: >
+  An unweighted line-error model trained only on one-hour-out rows is the
+  comparison control for the pooled seven-snapshot model at T=60. If the pooled
+  T=60 result is better, sharing information across horizons is helping at
+  the one-hour betting time; if it is worse, pooling is diluting that horizon.
+tags: [intermediate_line, single_snapshot, control, line_error, no_time_decay, t60]
+
+prediction_strategy: line_error_regressor
+device: cuda
+
+data:
+  csv_path: data/train_data/intermediate_line_data_20260412_7snap_t60.csv
+  data_version: "20260412-intermediate-line-7-snapshots-t60"
+  # Replace with the value printed by prepare_line_error_7snapshot_all_controls.sh.
+  expected_checksum: null
+  season_year_floor: 2021
+  exclude_playoffs: true
+  allowed_season_types: ["Regular Season", "Play-In Tournament"]
+
+# One row per game: use the unscaled matched protocol.
+walk_forward:
+  train_games: 3750
+  min_train_games: 1875
+  test_games: 50
+  step_games_between_tests: 60
+  max_folds: 12
+
+backtest:
+  test_games: 300
+
+sample_weight:
+  enabled: false
+
+optuna:
+  n_trials: 50
+  timeout: null
+
+# SEVEN seeds in total (random_state 16 plus the six below). Three was not
+# enough: measured on the 12h control, the SAME config swung from -6.46% to
+# +5.43% holdout ROI across its three seeds, and the pooled-vs-control ordering
+# flipped depending on which one you read. Each extra seed re-runs the whole
+# 53-day holdout (~53 fits) but leaves tuning and CV untouched.
+#
+# Caveat worth keeping in view: this measures FIT noise only. The extra seeds
+# reuse the hyperparameters selected under seed 16, so selection noise is not
+# in this range -- and on the pooled cell 25 of 50 trials tied within
+# mae_tolerance_abs, so selection noise is likely the larger of the two.
+# Treat the seed range as a floor on total variability, never as a CI.
+evaluation_seeds: [101, 202, 303, 404, 505, 606]
