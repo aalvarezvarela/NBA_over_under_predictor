@@ -15,6 +15,10 @@ accessing configs, datasets, logs, or artifacts.
   feature build, playoffs, and the per-row missing-data cap. 11 runs.
 - `run_intermediate_line_campaign.sh`: runs the intermediate-line pooled
   snapshot models and their 12-hour controls. 4 runs.
+- `../intermediate_line_2026_08/run_line_error_7snapshot_6h_4h.sh`: runs the
+  unweighted, line-error-only seven-snapshot model and its independent 6h/4h
+  controls. Its matching data-preparation runner is colocated with the configs
+  so the complete follow-up campaign stays grouped in one folder.
 
 Run a campaign in the foreground:
 

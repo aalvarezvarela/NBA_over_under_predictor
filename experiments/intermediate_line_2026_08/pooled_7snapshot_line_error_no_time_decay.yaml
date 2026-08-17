@@ -1,0 +1,75 @@
+# Seven-snapshot pooled LINE_ERROR model, including the new T=360 (6h) row.
+#
+# This is a new dataset/model version rather than a mutation of the original
+# six-snapshot experiment.  Keeping both definitions makes the old artifacts
+# reproducible and prevents the experiment runner's resume logic from treating
+# the seven-snapshot run as already complete.
+#
+# Build the pooled CSV and its T=360/T=240 controls with:
+#   bash experiments/intermediate_line_2026_08/prepare_line_error_7snapshot_6h_4h.sh
+#
+# Run this config with the snapshot-aware wrapper so the artifact contains one
+# honest betting report per horizon:
+#   poetry run python scripts/run_intermediate_snapshot_experiment.py \
+#       experiments/intermediate_line_2026_08/pooled_7snapshot_line_error_no_time_decay.yaml \
+#       --no-save-model
+
+experiment_name: intermediate_pooled_7snapshot_line_error_no_time_decay
+training_version: "intermediate-line-1.0"
+comparison_group: intermediate_line_7snapshot_6h_4h_2026_08
+hypothesis: >
+  A single unweighted line-error model trained on snapshots at 30, 60, 120,
+  240, 360, 480, and 720 minutes can share information across horizons without
+  sacrificing performance at the two independently controlled betting times.
+  Compare its T=360 and T=240 rows with the matching single-snapshot controls;
+  do not interpret the pooled ALL row as independent bets.
+tags:
+  [intermediate_line, pooled_snapshots, seven_snapshots, line_error, no_time_decay]
+
+prediction_strategy: line_error_regressor
+device: cuda
+
+data:
+  csv_path: data/train_data/intermediate_line_data_20260412_7snap.csv
+  data_version: "20260412-intermediate-line-7-snapshots"
+  # Replace with the value printed by prepare_line_error_7snapshot_6h_4h.sh
+  # after regenerating the CSV.
+  expected_checksum: null
+  season_year_floor: 2021
+  exclude_playoffs: true
+  allowed_season_types: ["Regular Season", "Play-In Tournament"]
+
+# These settings count rows, not unique games. Multiplying the
+# 3750/1875/50/60/300-game protocol by seven targets the same nominal window as
+# the one-row-per-game controls. Because a few long-horizon rows are missing,
+# the campaign preflight must verify the actual fold sizes after generation.
+walk_forward:
+  train_games: 26250
+  min_train_games: 13125
+  test_games: 350
+  step_games_between_tests: 420
+  max_folds: 12
+
+backtest:
+  test_games: 2100
+
+# Explicitly unweighted: no recency/time-decay branch is searched or applied.
+sample_weight:
+  enabled: false
+
+optuna:
+  n_trials: 50
+  timeout: null
+
+# SEVEN seeds in total (random_state 16 plus the six below). Three was not
+# enough: measured on the 12h control, the SAME config swung from -6.46% to
+# +5.43% holdout ROI across its three seeds, and the pooled-vs-control ordering
+# flipped depending on which one you read. Each extra seed re-runs the whole
+# 53-day holdout (~53 fits) but leaves tuning and CV untouched.
+#
+# Caveat worth keeping in view: this measures FIT noise only. The extra seeds
+# reuse the hyperparameters selected under seed 16, so selection noise is not
+# in this range -- and on the pooled cell 25 of 50 trials tied within
+# mae_tolerance_abs, so selection noise is likely the larger of the two.
+# Treat the seed range as a floor on total variability, never as a CI.
+evaluation_seeds: [101, 202, 303, 404, 505, 606]

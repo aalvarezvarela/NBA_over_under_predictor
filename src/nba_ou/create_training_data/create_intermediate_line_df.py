@@ -231,10 +231,10 @@ def _build_scoring_frame(merged: pd.DataFrame, gated: pd.DataFrame) -> pd.DataFr
     result. Physical separation is the only version of this that cannot be
     forgotten at the call site.
 
-    ``SNAPSHOT_WEIGHT`` is ``1 / snapshots for that game``. Six snapshots are not
-    six independent observations -- measured on this data, adjacent 30m/60m rows
-    resolve to the identical tick 65.7% of the time -- so pooling them
-    unweighted overstates the evidence by up to six times.
+    ``SNAPSHOT_WEIGHT`` is ``1 / snapshots for that game``. Multiple snapshots
+    are not independent observations -- measured on this data, adjacent 30m/60m
+    rows resolve to the identical tick 65.7% of the time -- so pooling them
+    unweighted overstates the evidence by up to the configured snapshot count.
     """
     keys = merged[SCORING_KEYS].copy()
     closing_columns = [c for c in merged.columns if c.startswith("CLOSING_")]

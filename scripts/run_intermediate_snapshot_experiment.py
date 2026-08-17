@@ -19,9 +19,9 @@ experiment behaves exactly as before.
 
 Why the split scoring is necessary rather than merely interesting: see the
 module docstring of ``training_pipeline.snapshot_scoring``. In short,
-``evaluate_betting`` counts rows as independent bets, so pooling six snapshots
-of one game reports six bets' worth of confidence for one game's worth of
-evidence.
+``evaluate_betting`` counts rows as independent bets, so pooling several
+snapshots of one game reports several bets' worth of confidence for one game's
+worth of evidence.
 """
 
 from __future__ import annotations

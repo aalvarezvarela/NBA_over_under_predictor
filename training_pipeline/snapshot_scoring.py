@@ -1,24 +1,25 @@
 """Per-snapshot betting metrics for a dataset with several rows per game.
 
 The intermediate-line dataset holds one row per (game, pre-game snapshot), so a
-single game appears six times -- once at each of 30/60/120/240/480/720 minutes
-before tip. One model is trained on all of those rows, with
-``TIME_TO_MATCH_MIN`` as an ordinary feature, so it can learn how the mapping
+single game appears once at every configured horizon. One model is trained on
+all of those rows, with ``TIME_TO_MATCH_MIN`` as an ordinary feature, so it can
+learn how the mapping
 changes with time to tip. This module is about how such a model is *scored*.
 
 Why the scoring has to be split
 -------------------------------
 ``evaluate_betting`` counts every row as one independent bet, and
 ``wilson_interval`` builds its confidence interval from that count. Handed the
-pooled predictions, one game contributes up to six rows, so the evaluator
+pooled predictions, one game contributes several rows, so the evaluator
 reports several bets for what is largely one game bet one way and counted
-repeatedly. Within a game the six snapshot lines differ by a median of 0.75
-points against ~18 points of outcome noise, so those rows are heavily
-correlated -- they share one outcome.
+repeatedly. Within a game the snapshot lines differ by much less than the
+typical outcome noise, so those rows are heavily correlated -- they share one
+outcome.
 
-The inflation is real but its exact size is NOT ``sqrt(6)``. That figure would
-hold only if all six snapshots were present and produced identical decisions.
-In practice horizons are missing (T=720 covers 97.6% of games, not 100%), the
+The inflation is real but its exact size is NOT ``sqrt(N)`` for N snapshots.
+That figure would hold only if every snapshot were present and produced an
+identical decision. In practice horizons are missing (T=720 covers 97.6% of
+games, not 100%), the
 min-edge filter selects different subsets at different snapshots, and two
 snapshots can even take opposite sides once the line has moved across the
 model's estimate. The direction is certain and the magnitude is not, which is
@@ -30,8 +31,9 @@ Grouping by snapshot fixes it arithmetically: within one ``TIME_TO_MATCH_MIN``
 there is exactly one row per game, so the rows really are independent events and
 the binomial maths is correct again.
 
-It also matches how the bet is actually placed. Nobody bets the same game six
-times; they bet it once, at some hour before tip. "What is my win rate if I
+It also matches how the bet is actually placed. Nobody bets the same game once
+per configured snapshot; they bet it once, at some hour before tip. "What is
+my win rate if I
 always bet 12 hours out?" is a strategy someone can run, and it is exactly the
 ``720`` group. A single pooled number measures a strategy nobody runs.
 
