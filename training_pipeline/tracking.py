@@ -308,6 +308,18 @@ def save_cv_betting_artifacts(
     return artifacts
 
 
+def save_planted_signal(
+    run_dir: str | Path, *, payload: dict[str, Any]
+) -> Path:
+    """Persist what the planted-signal diagnostic asked for and what it got.
+
+    Written as its own file rather than folded into metadata.json so that the
+    presence of ``planted_signal.json`` in a run directory is by itself the
+    answer to "is this run real?".
+    """
+    return write_json(Path(run_dir) / "planted_signal.json", payload)
+
+
 def save_seed_stability(
     run_dir: str | Path, seed_stability_df: pd.DataFrame
 ) -> Path:

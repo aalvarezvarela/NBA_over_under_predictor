@@ -143,6 +143,20 @@ def check_configs(
             "exclude_cols": str(c.cleaning.exclude_cols_containing),
             "n_trials": c.optuna.n_trials,
             "seeds": str(list(c.evaluation_seeds)),
+            # Without this a planted-signal campaign -- whose four cells differ
+            # in nothing else -- prints "every config is identical, nothing is
+            # being compared", which is the exact opposite of the truth.
+            "cv_strategy": c.walk_forward.strategy.value,
+            "retrain_every_days": c.walk_forward.retrain_every_days,
+            "eval_span_games": c.walk_forward.eval_span_games,
+            "train_games_choices": str(c.walk_forward.train_games_choices),
+            "tune_n_estimators": c.optuna.tune_n_estimators,
+            "objective_agg": c.optuna.objective_aggregation.value,
+            "planted_variance": (
+                c.diagnostics.planted_signal.variance_explained
+                if c.diagnostics.planted_signal.enabled
+                else None
+            ),
         }
         for name, c in configs.items()
     }

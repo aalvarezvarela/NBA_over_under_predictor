@@ -199,6 +199,48 @@ class ExperimentResult:
     meta_path: Path | None
 
 
+def _save_planted_signal_artifact(
+    run_dir: Path,
+    *,
+    config: ExperimentConfig,
+    prepared: PreparedDataset,
+    cv_betting: CrossValidationBettingResult | None,
+) -> None:
+    """Write planted_signal.json: what was requested, what landed, what was used.
+
+    The importance columns are aggregated across CV folds rather than reported
+    per fold (cv_fold_betting.csv already carries those) because the question at
+    this level is "did the pipeline USE the feature at all", and a single fold
+    splitting on it once is not that.
+    """
+    if prepared.planted_signal is None:
+        return
+
+    payload: dict[str, Any] = {
+        **prepared.planted_signal.summary(),
+        "is_diagnostic": True,
+        "experiment_name": config.experiment_name,
+        "target_col": config.target_col,
+    }
+
+    if cv_betting is not None:
+        folds = cv_betting.fold_metrics
+        used = [c for c in folds.columns if c.startswith("planted_")]
+        if used:
+            payload["n_folds"] = int(len(folds))
+            # Share of folds where the tree builder chose it at least once. The
+            # headline diagnostic number: 0.0 means the pipeline was handed a
+            # known signal and never once split on it.
+            if "planted_gain_used" in folds.columns:
+                payload["fold_use_rate"] = float(folds["planted_gain_used"].mean())
+            for column in used:
+                payload[f"mean_{column}"] = float(
+                    pd.to_numeric(folds[column], errors="coerce").mean()
+                )
+
+    tracking.save_planted_signal(run_dir, payload=payload)
+
+
 def _baseline_window(config: ExperimentConfig) -> int | None:
     """A window that is certain to exist, for the pre-tuning baselines.
 
@@ -241,6 +283,16 @@ def run_experiment(
     train_production = (
         config.refit.train_production_model if save_model is None else save_model
     )
+    # ExperimentConfig already refuses refit.train_production_model on a
+    # diagnostic run; this catches the other door into the same room, where
+    # save_model=True is passed at the call site and the config never sees it.
+    if train_production and config.is_diagnostic:
+        raise ValueError(
+            "Refusing to train a production model on a diagnostic run: "
+            f"{config.experiment_name!r} carries the target-derived feature "
+            f"{config.diagnostics.planted_signal.column!r}. The resulting model "
+            "would score spectacularly and predict nothing."
+        )
     prepared = prepare_dataset(config)
     df_dev, df_test = build_holdout_split(prepared.df_full, config)
 
@@ -593,6 +645,16 @@ def run_experiment(
                 "holdout_phases": describe_phases(
                     phases_present(df_test[config.data.date_col])
                 ),
+                # --- diagnostics ---------------------------------------------
+                # Present and true ONLY on a deliberately corrupted run. The
+                # leaderboard and any future reader should treat is_diagnostic
+                # as disqualifying for anything except pipeline questions.
+                "is_diagnostic": config.is_diagnostic,
+                **(
+                    {}
+                    if prepared.planted_signal is None
+                    else prepared.planted_signal.summary()
+                ),
             },
         )
         tracking.save_config_snapshot(run_dir, config)
@@ -654,6 +716,9 @@ def run_experiment(
             dev_line_error_bias=dev_line_error_bias,
         )
         if cv_betting is not None:
+            _save_planted_signal_artifact(
+                run_dir, config=config, prepared=prepared, cv_betting=cv_betting
+            )
             tracking.save_cv_betting_artifacts(
                 run_dir,
                 summary=cv_betting.summary(),

@@ -945,6 +945,68 @@ class BaselineConfig(BaseModel):
     book: str | None = None
 
 
+class PlantedSignalConfig(BaseModel):
+    """A synthetic feature carrying a KNOWN, small amount of target information.
+
+    Diagnostic only. It exists to answer "can this pipeline recover a weak
+    signal it is handed?", which is the question every negative line_error
+    result silently depends on. See training_pipeline.diagnostics for the
+    construction and the reasoning.
+
+    ``variance_explained`` is a fraction of the RUN'S OWN TARGET variance, so
+    0.01 means the feature explains 1% of LINE_ERROR's variance on a line_error
+    run and 1% of TOTAL_POINTS' variance on a total_points run. Those are very
+    different absolute quantities -- total points is dominated by the line,
+    which the model can already read off its features -- so cells are only
+    comparable within one strategy.
+
+    Off by default, and every path that could turn a run carrying it into a
+    shipped model refuses: refit.train_production_model, run_experiment's
+    save_model, and training_pipeline.promote.
+    """
+
+    enabled: bool = False
+    #: Fraction of target variance the planted feature should explain. 0.0 is a
+    #: real control, not a no-op: the feature is still added, as pure
+    #: independent noise, so the 0% cell measures the cost of one extra random
+    #: column rather than being a different experiment.
+    variance_explained: float = 0.0
+    #: Seeds ONLY the planted feature, never the model. Separate from
+    #: random_state on purpose: the planted column must be identical across
+    #: cells that differ only in strength, and must not move when the model seed
+    #: is varied to measure fit noise.
+    seed: int = 12345
+    column: str = "PLANTED_SIGNAL"
+
+    @model_validator(mode="after")
+    def _validate(self) -> PlantedSignalConfig:
+        if not 0.0 <= self.variance_explained < 1.0:
+            raise ValueError(
+                "diagnostics.planted_signal.variance_explained must be in "
+                "[0, 1). It is a fraction of target variance; 1.0 would mean a "
+                "noiseless copy of the target, which tests nothing."
+            )
+        if not self.column.strip():
+            raise ValueError("diagnostics.planted_signal.column must be named.")
+        return self
+
+
+class DiagnosticsConfig(BaseModel):
+    """Switches that deliberately corrupt a run to measure the pipeline itself.
+
+    Anything here makes a run diagnostic: informative about the protocol, and
+    invalid as evidence about live performance.
+    """
+
+    planted_signal: PlantedSignalConfig = Field(
+        default_factory=PlantedSignalConfig
+    )
+
+    @property
+    def any_enabled(self) -> bool:
+        return self.planted_signal.enabled
+
+
 class ExperimentConfig(BaseModel):
     experiment_name: str
     #: Manually curated label for the training approach behind this run, e.g.
@@ -991,6 +1053,10 @@ class ExperimentConfig(BaseModel):
     baseline: BaselineConfig = Field(default_factory=BaselineConfig)
     betting: BettingConfig = Field(default_factory=BettingConfig)
     backtest: BacktestConfig = Field(default_factory=BacktestConfig)
+    #: Deliberate corruptions used to measure the pipeline rather than the
+    #: market. Included in fingerprint(): a planted signal changes what every
+    #: trial means, so a diagnostic study must never resume a real one.
+    diagnostics: DiagnosticsConfig = Field(default_factory=DiagnosticsConfig)
 
     exclude_cols: list[str] = Field(
         default_factory=lambda: ["TOTAL_POINTS", "SEASON_YEAR", "GAME_DATE"]
@@ -1240,6 +1306,48 @@ class ExperimentConfig(BaseModel):
         if self.strategy == PredictionStrategy.OVER_UNDER_CLASSIFIER:
             return OVER_LABEL_COL
         return "TOTAL_POINTS"
+
+    @model_validator(mode="after")
+    def _diagnostic_runs_must_announce_themselves(self) -> ExperimentConfig:
+        """A planted-signal run must be unmistakable, and must not ship a model.
+
+        Two guards, both refusing rather than correcting:
+
+        * the experiment name must start with ``diag_planted``, so the run
+          directory, the model-bundle name, the study name, the leaderboard row
+          and every log line carry the marker. Auto-prefixing would be friendlier
+          and worse -- the name in the YAML would stop matching the name in the
+          artifacts, and the one thing this run must never do is look like
+          something it is not.
+        * ``refit.train_production_model`` must be off. The feature is derived
+          from the target, so a model fitted with it would score spectacularly
+          and predict nothing. run_experiment repeats this check for its
+          ``save_model`` override, and promote.py repeats it again at the point
+          a run becomes a shipped bundle.
+        """
+        if not self.diagnostics.any_enabled:
+            return self
+
+        from training_pipeline.diagnostics import DIAGNOSTIC_NAME_PREFIX
+
+        if not self.experiment_name.startswith(DIAGNOSTIC_NAME_PREFIX):
+            raise ValueError(
+                f"experiment_name={self.experiment_name!r} must start with "
+                f"{DIAGNOSTIC_NAME_PREFIX!r} when a diagnostic is enabled. This "
+                "run carries a target-derived feature; its artifacts must say so "
+                "in their own name."
+            )
+        if self.refit.train_production_model:
+            raise ValueError(
+                "refit.train_production_model must be false when a diagnostic is "
+                "enabled. The planted feature is derived from the target, so the "
+                "resulting model would look excellent and predict nothing."
+            )
+        return self
+
+    @property
+    def is_diagnostic(self) -> bool:
+        return self.diagnostics.any_enabled
 
     @property
     def tunes_n_estimators(self) -> bool:

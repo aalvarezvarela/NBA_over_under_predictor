@@ -139,6 +139,20 @@ def train_production_model_from_run(
     if updates:
         config = config.model_copy(update=updates)
 
+    # The last door into production, and the one most likely to be walked
+    # through months later by someone reading a leaderboard rather than a run's
+    # metadata. A diagnostic run's CV numbers look excellent BECAUSE a feature
+    # was derived from the target, so they are exactly the rows most likely to
+    # be picked for promotion by accident.
+    if config.is_diagnostic:
+        raise ValueError(
+            f"Refusing to promote {run_dir}: it is a diagnostic run carrying the "
+            f"target-derived feature "
+            f"{config.diagnostics.planted_signal.column!r}. Its metrics measure "
+            "whether the pipeline can find a planted signal, not whether the "
+            "model can predict anything."
+        )
+
     prepared = prepare_dataset(config)
 
     # config.target_col, not a two-way branch: the classifier trains on

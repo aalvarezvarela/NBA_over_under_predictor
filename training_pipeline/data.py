@@ -35,6 +35,11 @@ from training_pipeline.config import (
     ExperimentConfig,
     PredictionStrategy,
 )
+from training_pipeline.diagnostics import (
+    PlantedSignalResult,
+    build_planted_signal,
+    measure_planted_signal,
+)
 
 # NOTE: "odds_total_line_books_median" (the engineered cross-book median total
 # line, per src/nba_ou/data_processing/merged_home_away_data/odds_feature_engeneer.py)
@@ -363,6 +368,10 @@ class PreparedDataset:
     #: OVER/UNDER answer to learn. Classifier only; 0 for the regressors, which
     #: keep those rows (a push is a perfectly good regression target).
     n_pushes_excluded: int = 0
+    #: What the planted diagnostic feature actually ended up carrying. None on
+    #: every normal run -- its presence is the marker that this dataset is
+    #: deliberately corrupted and cannot be read as evidence about the market.
+    planted_signal: PlantedSignalResult | None = None
 
 
 def prepare_dataset(config: ExperimentConfig) -> PreparedDataset:
@@ -404,8 +413,33 @@ def prepare_dataset(config: ExperimentConfig) -> PreparedDataset:
 
     baseline_line_col = resolve_baseline_line_col(df, config.baseline)
 
+    # Planted BEFORE cleaning, and deliberately NOT added to force_keep: the
+    # point of the diagnostic is that the synthetic feature travels the same
+    # path as a real one -- the NaN budget, the correlation prune, the constant
+    # and duplicate-column steps, then build_feature_matrix. Force-keeping it
+    # would exempt it from exactly what is being tested. It is checked for
+    # survival below instead, so a drop is an error rather than a quiet null
+    # result.
+    planted = config.diagnostics.planted_signal
+    if planted.enabled:
+        if target_col not in df.columns:
+            raise KeyError(
+                f"Cannot plant a signal: target column {target_col!r} is not in "
+                "the frame yet. The planted feature must be derived after the "
+                "target exists and before cleaning."
+            )
+        df = df.copy()
+        df[planted.column] = build_planted_signal(df[target_col], config=planted)
+
     force_keep = _required_keep_columns(config, baseline_line_col, target_line_col)
     df = clean_for_training(df, config.cleaning, force_keep_columns=force_keep)
+
+    if planted.enabled and planted.column not in df.columns:
+        raise ValueError(
+            f"The planted feature {planted.column!r} did not survive cleaning, so "
+            "the diagnostic would measure nothing while appearing to run. Check "
+            "cleaning.exclude_cols_containing and cleaning.corr_threshold."
+        )
 
     if target_line_col not in df.columns:
         raise KeyError(
@@ -431,6 +465,21 @@ def prepare_dataset(config: ExperimentConfig) -> PreparedDataset:
     X, y = build_feature_matrix(df, target_col=target_col, exclude_cols=config.exclude_cols)
     assert_no_leaking_features(X)
 
+    planted_result = None
+    if planted.enabled:
+        if planted.column not in X.columns:
+            raise ValueError(
+                f"The planted feature {planted.column!r} was cleaned through but "
+                "never reached the feature matrix, so no model would ever see "
+                "it. Check config.exclude_cols."
+            )
+        # Measured on the frame the model actually gets, not on the frame the
+        # feature was generated against: rows are dropped in between, so the
+        # realised correlation is the honest number.
+        planted_result = measure_planted_signal(
+            df, target_col=target_col, config=planted
+        )
+
     return PreparedDataset(
         df_full=df,
         X=X,
@@ -440,4 +489,5 @@ def prepare_dataset(config: ExperimentConfig) -> PreparedDataset:
         feature_names=list(X.columns),
         dataset_checksum=dataset_checksum,
         n_pushes_excluded=n_pushes_excluded,
+        planted_signal=planted_result,
     )

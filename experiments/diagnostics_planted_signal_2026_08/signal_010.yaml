@@ -1,0 +1,42 @@
+# DIAGNOSTIC -- contains a synthetic feature derived from the target.
+# Not a model evaluation. See ./README.md.
+#
+# Role of this cell: the main test: roughly the size of edge these models are actually hunting
+#
+# Identical to the other three cells in every respect except
+# diagnostics.planted_signal.variance_explained. Everything else -- dataset,
+# rolling-origin folds, train_games choices, search space, trial budget,
+# random_state, preprocessing, pruning, every real feature -- comes from
+# ../_base.yaml and is therefore shared by construction rather than by being
+# restated four times and kept in sync by hand.
+
+experiment_name: diag_planted_signal_010
+prediction_strategy: line_error_regressor
+training_version: "2.1-rolling-origin-DIAGNOSTIC"
+comparison_group: diagnostics_planted_signal_2026_08
+hypothesis: >
+  With 0.01 of LINE_ERROR variance planted in one synthetic feature, does the
+  current pipeline's pooled out-of-fold performance improve relative to the 0%
+  control? Measures the protocol, not the market.
+tags: [line_error, diagnostic, planted_signal]
+
+diagnostics:
+  planted_signal:
+    enabled: true
+    variance_explained: 0.01
+    # Identical across all four cells, and independent of random_state, so the
+    # noise component of the planted feature is the SAME draw everywhere. Only
+    # the target-derived component changes between cells.
+    seed: 12345
+
+optuna:
+  # Matches the real campaign exactly. A smaller budget here would answer a
+  # different question -- "can 50 trials find it" is not "can our protocol
+  # find it".
+  n_trials: 200
+  timeout: null
+
+# Two extra seeds rather than four: the primary readout is the pooled CV number
+# over ~855 games, and the holdout re-evaluation is the expensive part. Enough
+# to have a noise floor to judge cell-to-cell differences against.
+evaluation_seeds: [101, 202]

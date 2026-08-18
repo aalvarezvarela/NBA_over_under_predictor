@@ -71,10 +71,21 @@ done
 # fit would make that fold train short for some trials and not others, so the
 # window axis would be measuring the shortfall.
 log ""
-log "Running pre-flight (this cleans the dataset once, so it takes a while)..."
-if ! "${PY[@]}" scripts/preflight_campaign.py "$CONFIG_DIR" 2>&1 | tee -a "$LOG"; then
-  log "ABORT: pre-flight failed. Fix the reported problems before running."
-  exit 1
+if [[ "${SKIP_PREFLIGHT:-0}" == "1" ]]; then
+  # The slow part is cleaning the 394MB CSV (~8 min), which the campaign is
+  # about to do anyway. Skipping is reasonable when an identical data + fold
+  # configuration has already passed -- and unreasonable otherwise, because the
+  # check it removes is the one that catches a training window silently
+  # shrinking rather than erroring.
+  log "SKIP_PREFLIGHT=1: skipping the pre-flight window check."
+  log "  Only safe if the same dataset and walk_forward settings already passed."
+else
+  log "Running pre-flight (this cleans the dataset once, so it takes ~8 min)..."
+  log "  Skip with: SKIP_PREFLIGHT=1 bash $0"
+  if ! "${PY[@]}" scripts/preflight_campaign.py "$CONFIG_DIR" 2>&1 | tee -a "$LOG"; then
+    log "ABORT: pre-flight failed. Fix the reported problems before running."
+    exit 1
+  fi
 fi
 
 # --- the runs --------------------------------------------------------------

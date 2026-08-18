@@ -60,6 +60,10 @@ FACTOR_SOURCES: dict[str, str] = {
     "objective_aggregation": "optuna.objective_aggregation",
     "tune_n_estimators": "optuna.tune_n_estimators",
     "pruner_warmup_fraction": "optuna.pruner_warmup_fraction",
+    #: Strength of the planted diagnostic signal. The only thing that varies
+    #: across the planted-signal campaign, so without it those four runs
+    #: match as identical and the comparison they exist for disappears.
+    "planted_variance": "diagnostics.planted_signal.variance_explained",
 }
 
 #: Factors needing a rule rather than a straight read; see ``_derived_factors``.
@@ -72,6 +76,7 @@ DERIVED_FACTORS: tuple[str, ...] = (
     "sample_weighting",
     "train_games_tuned",
     "n_estimators_range",
+    "is_diagnostic",
 )
 
 FACTOR_COLUMNS: tuple[str, ...] = (*DERIVED_FACTORS, *FACTOR_SOURCES)
@@ -140,6 +145,13 @@ def _derived_factors(config: dict[str, Any], row: Any) -> dict[str, Any]:
         "n_estimators_range": _render_range(
             config.get("optuna.search_space.n_estimators_range")
         ),
+        # A planted-signal run must never be matched against a real one: its
+        # metrics are inflated by a target-derived feature by construction.
+        # Absent from every config written before diagnostics existed, which
+        # means False -- those runs predate any way to enable it.
+        "is_diagnostic": bool(
+            config.get("diagnostics.planted_signal.enabled", False)
+        ),
     }
 
 
@@ -175,6 +187,8 @@ _DEVIATION_TAGS: dict[str, Any] = {
     "keep_playoffs": "+playoffs",
     "drop_consensus": "no-consensus",
     "sample_weighting": "weighted",
+    "is_diagnostic": "DIAGNOSTIC",
+    "planted_variance": lambda value: f"planted{value:.3f}",
     "data_build": lambda value: f"{value}-data",
     "max_na_per_row": lambda value: f"maxna{value:.0f}",
     "nan_threshold": lambda value: f"nanthr{value:.0f}",

@@ -47,6 +47,7 @@ from training_pipeline.decisions import (
     primary_threshold,
     threshold_sweep_values,
 )
+from training_pipeline.diagnostics import planted_feature_importance
 from training_pipeline.line_scoring import (
     build_line_comparison,
     collect_comparison_lines,
@@ -165,6 +166,31 @@ def _distinct(values: pd.Series, positions: np.ndarray | None) -> str:
     return "+".join(str(value) for value in sorted(unique, key=str))
 
 
+def _planted_importance(
+    model: Any, config: ExperimentConfig, *, n_features: int
+) -> dict[str, float]:
+    """Importance of the planted diagnostic feature in one fold's model.
+
+    Empty on any normal run, so the extra columns exist only where they mean
+    something. Three importance types because they answer different questions:
+    ``weight`` is how often the tree builder chose it, ``gain`` how much it
+    helped on average when chosen, ``total_gain`` the product -- and a weak
+    feature can rank well on one and poorly on another.
+    """
+    planted = config.diagnostics.planted_signal
+    if not planted.enabled:
+        return {}
+
+    booster = model.get_booster()
+    scores = {
+        kind: booster.get_score(importance_type=kind)
+        for kind in ("weight", "gain", "total_gain")
+    }
+    return planted_feature_importance(
+        scores, column=planted.column, n_features=n_features
+    )
+
+
 def evaluate_cv_betting(
     config: ExperimentConfig,
     *,
@@ -247,6 +273,9 @@ def evaluate_cv_betting(
                 "fold": fold_num,
                 "n_train": int(len(train_idx)),
                 "n_valid": int(len(valid_idx)),
+                # Read off the fold model that was fitted anyway, so the
+                # diagnostic costs nothing extra. Empty dict on a normal run.
+                **_planted_importance(model, config, n_features=X_dev.shape[1]),
                 "valid_start": pd.Timestamp(dates_dev.iloc[valid_idx].min()),
                 "valid_end": pd.Timestamp(dates_dev.iloc[valid_idx].max()),
                 # Where in the season this fold sits. A rolling-origin fold spans
