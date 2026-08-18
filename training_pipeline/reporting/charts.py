@@ -971,3 +971,84 @@ def plot_line_comparison(runs: pd.DataFrame) -> pd.DataFrame | None:
     plt.tight_layout()
     plt.show()
     return lines
+
+
+# --------------------------------------------------- one factor at a time
+def plot_factor_effect(
+    contrast_table: pd.DataFrame,
+    factor: str,
+    *,
+    max_cols: int = 3,
+) -> None:
+    """Small multiples of a controlled comparison: one panel per matched set.
+
+    Within a panel every run is identical except for ``factor``, so the shape
+    of the line across the x-axis *is* the effect of that factor -- there is
+    nothing else varying that it could be attributed to.
+
+    Both measurements are drawn together and never averaged. Cross-validation
+    (hollow) chose the hyperparameters and so reads high; the holdout (filled)
+    did not. A factor that moves them in opposite directions has not been shown
+    to do anything, and seeing the two lines cross is the fastest way to notice
+    that.
+
+    Bet counts are annotated because they are the other half of every ROI here:
+    the classifier reaches its win rate on ~150-250 bets where a regressor
+    takes ~400, and two win rates on such different volumes are not equally
+    believable.
+    """
+    if contrast_table.empty:
+        return
+
+    groups = list(contrast_table.groupby("contrast", sort=False))
+    n_cols = min(max_cols, len(groups))
+    n_rows = int(np.ceil(len(groups) / n_cols))
+    fig, axes = plt.subplots(
+        n_rows, n_cols, figsize=(4.6 * n_cols, 3.6 * n_rows), squeeze=False
+    )
+    flat = axes.ravel()
+
+    for ax, (contrast, group) in zip(flat, groups, strict=False):
+        group = group.sort_values(factor)
+        levels = [str(value) for value in group[factor]]
+        x = np.arange(len(group))
+        colours = [
+            STRATEGY_COLOR.get(strategy, MUTED)
+            for strategy in group.get("prediction_strategy", pd.Series(dtype=object))
+        ] or [MUTED] * len(group)
+
+        ax.plot(x, group["cv_win_rate"], color=GRID, linewidth=2, zorder=1)
+        ax.plot(x, group["win_rate"], color=AXIS, linewidth=2, zorder=1)
+        for position, (_, row) in enumerate(group.iterrows()):
+            colour = colours[position]
+            ax.plot(position, row["cv_win_rate"], marker="o", markersize=9,
+                    markerfacecolor=SURFACE, markeredgecolor=colour,
+                    markeredgewidth=2.2, zorder=3)
+            ax.plot(position, row["win_rate"], marker="o", markersize=9,
+                    color=colour, markeredgecolor=SURFACE, markeredgewidth=1.4,
+                    zorder=4)
+            if pd.notna(row.get("n_bets")):
+                ax.annotate(f"{row['n_bets']:.0f} bets",
+                            (position, row["win_rate"]), textcoords="offset points",
+                            xytext=(0, -15), ha="center", fontsize=7, color=MUTED)
+
+        ax.axhline(BREAK_EVEN, color=CRITICAL, linestyle="--", linewidth=1.3, zorder=2)
+        ax.set_xticks(x, levels, fontsize=8)
+        ax.set_xlim(-0.45, len(group) - 0.55)
+        ax.set_title(contrast, fontsize=9)
+        ax.set_xlabel(factor)
+        ax.set_ylabel("Win rate")
+
+    for ax in flat[len(groups):]:
+        ax.axis("off")
+
+    fig.legend(handles=[
+        Line2D([], [], marker="o", linestyle="", markersize=9, markerfacecolor=SURFACE,
+               markeredgecolor=MUTED, markeredgewidth=2.2, label="cross-validation"),
+        Line2D([], [], marker="o", linestyle="", markersize=9, color=MUTED,
+               label="held-out test"),
+        Line2D([], [], color=CRITICAL, linestyle="--", label="break-even 52.38%"),
+    ], fontsize=8, ncol=3, loc="lower center", bbox_to_anchor=(0.5, -0.02))
+    fig.suptitle(f"Effect of {factor}, everything else held constant", fontsize=11)
+    plt.tight_layout(rect=(0, 0.04, 1, 0.97))
+    plt.show()

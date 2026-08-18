@@ -29,6 +29,14 @@ def _sample_params(builder, n_trials: int = 5) -> list[dict]:
     return captured
 
 
+# `device` is a static XGBoost param added by build_xgb_params for GPU support;
+# the upstream builders never set it. Strip it before comparing so the equality
+# check keeps testing what it is meant to: parameter names, ranges, log flags,
+# and suggest_* call order.
+def _drop_device(params_list: list[dict]) -> list[dict]:
+    return [{k: v for k, v in p.items() if k != "device"} for p in params_list]
+
+
 def test_upstream_space_constant_reproduces_upstream_total_points_exactly():
     """UPSTREAM_SEARCH_SPACE must stay a faithful transcription of the
     hardcoded upstream space: same parameter names, ranges, log flags AND call
@@ -44,7 +52,7 @@ def test_upstream_space_constant_reproduces_upstream_total_points_exactly():
             t, UPSTREAM_SEARCH_SPACE, objective_name="reg:squarederror"
         )
     )
-    assert mine == upstream
+    assert _drop_device(mine) == upstream
 
 
 def test_upstream_space_constant_reproduces_upstream_error_line_exactly():
@@ -56,7 +64,7 @@ def test_upstream_space_constant_reproduces_upstream_error_line_exactly():
             t, UPSTREAM_SEARCH_SPACE, objective_name="reg:squarederror"
         )
     )
-    assert mine == upstream
+    assert _drop_device(mine) == upstream
 
 
 def test_defaults_deliberately_differ_from_upstream():

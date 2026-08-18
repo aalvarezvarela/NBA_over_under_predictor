@@ -1,0 +1,100 @@
+# Campaign: how much history helps, measured properly this time.
+#
+# Follow-up to window_overtime_2026_08 (11 runs). What that campaign settled:
+#
+#   * NOTHING cleared break-even. Between-run holdout ROI spread (10.7pp) was
+#     SMALLER than the worst within-run seed range (12.0pp) -- the runs were
+#     not separable at all.
+#   * Excluding overtime from training HURTS: CV ROI fell in all three pairs
+#     (+2.9 -> -3.6, +1.2 -> +0.2, +1.6 -> -1.9). Axis closed; overtime stays.
+#   * Relaxing max_na_per_row does NOT help, and is non-monotone: 80 -> +1.2%,
+#     120 -> +1.9%, 200 -> +0.5%, 200+no-consensus -> -1.4%. Axis closed at 80.
+#   * 6 of 11 runs silently trained on FEWER games than requested, because a
+#     window larger than the data does not raise -- it just shrinks the folds.
+#     That corrupted the window axis and confounded max_na with it.
+#
+# Playoffs are dropped in every cell and are not under test here: they are a
+# different distribution (~11.6 fewer points per game).
+#
+# THIS CAMPAIGN DOES ONE THING: fill in the window curve, with every cell
+# verified by the pre-flight to actually reach its requested window.
+#
+#   Runs already exist at 2500 and 3750 for all three strategies on identical
+#   settings, so adding 3000 and 4000 makes the four points read as one curve:
+#
+#       2500        3000        3750        3850
+#       (have)      (new)       (have)      (new)
+#
+#   3850, not 4000: the pre-flight measured window ceilings of ~3950
+#   (regressors) and ~3880 (classifier) at this fold count, so 4000 would leave
+#   1-2 folds training short. 3850 is the largest value every strategy reaches
+#   intact. The honest read is that this axis is nearly exhausted -- there is
+#   only ~100 games of headroom above 3750.
+#
+#   The existing "4500" runs are NOT on that curve: they trained on 3880-3950,
+#   so they measure a window nobody chose.
+#
+# test_days stays at the usual 60 so these cells are directly comparable to the
+# 2500 and 3750 runs already on disk.
+#
+# Seeds go 3 -> 5. IMPORTANT when comparing error bars across campaigns: a
+# max-min RANGE grows with the number of seeds, so compare seed_roi_std between
+# 3-seed and 5-seed runs, not seed_roi_range.
+#
+# READ THE RESULTS IN THIS ORDER:
+#   1. seed_roi_std  -- comparable across seed counts, unlike the range.
+#   2. cv_roi        -- ~650 validation games; the ranking metric.
+#   3. roi (holdout) -- ~400 bets; a sanity check, never proof.
+#
+# PRE-REGISTERED EXPECTATIONS:
+#   - A FLAT window curve is the most likely outcome. 2500 -> 3750 already did
+#     nothing measurable, and 3000/4000 are smaller steps than that was.
+#   - If one window looks good, check it against seed_roi_std before believing
+#     it: with 9 cells at this noise floor, about one should look good by luck.
+#   - 16 folds should not move the estimate, only tighten it. If the interval
+#     narrows while cv_roi holds, adopt 16 folds as the default.
+experiment_name: line_error_16folds
+training_version: "2.0"
+comparison_group: window_sweep_2026_08
+hypothesis: >
+  A measurement change, not a model change: 16 folds pool ~800 validation games
+  instead of ~650. Nothing across three campaigns has cleared break-even and
+  the reason is volume rather than the models, so precision is worth one cell.
+  If the interval narrows while cv_roi holds still, adopt 16 folds by default.
+  .
+  Window is 3400, not 3750: four extra folds reach ~260 games further back, and
+  the pre-flight measured the ceiling at ~3488 for this layout. Folds and window
+  trade directly, so this cell answers "does more folds tighten the interval",
+  never "which window is best".
+tags: [line_error, more_folds, power, window_sweep]
+
+prediction_strategy: line_error_regressor
+
+# line_col is deliberately absent: the target is already relative
+# to the line, so the scorers never take one.
+
+data:
+  csv_path: data/train_data/training_data_2_0_20260704.csv
+  data_version: "20260704-2_0"
+  expected_checksum: "sha256:2fc9ed86d2f42a78"
+  # Both settled by earlier campaigns and held fixed here, so the training
+  # window is the only thing moving across the curve.
+  exclude_playoffs: true
+  exclude_overtime_from_training: false
+
+device: cuda
+
+walk_forward:
+  train_games: 3400
+  # More folds = more pooled validation games, the quantity this whole effort
+  # is short of. It changes the CV cohort, so read cv_roi here for its interval
+  # WIDTH rather than decimal-for-decimal against the 12-fold cells.
+  max_folds: 16
+
+optuna:
+  n_trials: 50
+  timeout: null
+
+# Five seeds, not three. The measured seed range was 4.9-12.0pp, wide enough to
+# swallow every difference found so far; this measures that spread properly.
+evaluation_seeds: [101, 202, 303, 404]

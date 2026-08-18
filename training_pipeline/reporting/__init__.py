@@ -11,7 +11,14 @@ here where they can be tested and fixed once.
     charts.plot_roi_with_seed_noise(runs)
 """
 
-from training_pipeline.reporting import charts, loaders, narrative, rescore, theme
+from training_pipeline.reporting import (
+    charts,
+    factors,
+    loaders,
+    narrative,
+    rescore,
+    theme,
+)
 from training_pipeline.reporting.discovery import (
     find_run_dirs,
     is_run_dir,
@@ -22,6 +29,7 @@ from training_pipeline.reporting.theme import apply_theme, prepare_runs
 
 __all__ = [
     "charts",
+    "factors",
     "loaders",
     "narrative",
     "rescore",
