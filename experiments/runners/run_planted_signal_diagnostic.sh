@@ -17,10 +17,10 @@
 # Compare afterwards:
 #   poetry run python scripts/compare_planted_signal.py
 #
-# Budget: the trial count deliberately matches the real campaign (200 trials x
-# 30 folds), because "can 50 trials find it" is a different question from "can
-# our protocol find it". That is ~24,000 fits across the four cells before
-# pruning, plus 3 holdout evaluations each.
+# Budget: 100 trials x 30 folds, reduced from the real campaign's 200 to cut
+# runtime. That is ~12,000 fits across the four cells before pruning, plus 3
+# holdout evaluations each. Answers a slightly different question than "can
+# our protocol find it at full budget" -- say so when reporting results.
 #
 # To sanity-check the machinery before committing that, run the single most
 # discriminating cell on its own -- it is the one whose failure would already
@@ -49,7 +49,7 @@ CONFIGS=(
 )
 
 DATASETS=(
-  "data/train_data/all_odds_training_data_until_20260318.csv"
+  "data/train_data/training_data_2_0_20260704.csv"
 )
 
 # -u keeps output unbuffered so `tail -f` shows progress live.

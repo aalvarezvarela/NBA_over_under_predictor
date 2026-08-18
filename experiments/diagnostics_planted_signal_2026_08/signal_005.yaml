@@ -20,6 +20,10 @@ hypothesis: >
   control? Measures the protocol, not the market.
 tags: [line_error, diagnostic, planted_signal]
 
+# Hardware setting only -- excluded from fingerprint(), so this does not fork
+# the Optuna study.
+device: cuda
+
 # This campaign runs on the 2.0 build rather than _base.yaml's default. Stated
 # in all four cells rather than in one shared place because a campaign-local
 # _base.yaml would REPLACE the root one outright (find_base_config takes the
@@ -51,10 +55,10 @@ diagnostics:
     seed: 12345
 
 optuna:
-  # Matches the real campaign exactly. A smaller budget here would answer a
-  # different question -- "can 50 trials find it" is not "can our protocol
-  # find it".
-  n_trials: 200
+  # Reduced from the real campaign's 200 to 100 trials to cut runtime. This
+  # answers a slightly different question than "can our protocol find it at
+  # full budget" -- say so when reporting results from this campaign.
+  n_trials: 100
   timeout: null
 
 # Two extra seeds rather than four: the primary readout is the pooled CV number
