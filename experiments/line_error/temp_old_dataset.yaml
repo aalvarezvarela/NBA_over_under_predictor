@@ -1,0 +1,36 @@
+# TEMP: quick 10-minute feel for the old 3240-column dataset.
+# Not a rigorous comparison -- see max_folds note below.
+experiment_name: temp
+training_version: temp-dataset-comparison
+comparison_group: temp_csv_comparison
+hypothesis: >
+  Quick smoke look at whether the older 3240-column snapshot behaves sanely on
+  LINE_ERROR with a 3-season window. Deliberately under-tuned.
+tags: [temp, line_error, dataset_comparison, old_3240col]
+
+target_family: line_error
+
+data:
+  csv_path: data/train_data/old_training_data_until_20260704.csv
+  data_version: "20260704-old-3240col"
+  # Must be overridden: _base pins the 20260318 snapshot, and the checksum
+  # guard would (correctly) refuse to run against a different file.
+  expected_checksum: "sha256:f73aa98c82119b42"
+
+sample_weight:
+  enabled: true
+  lambda_: 0.005
+  # Fixed rather than tuned: with only a handful of trials in 10 minutes,
+  # spending search budget on the decay rate adds noise instead of signal.
+  tune_lambda: false
+
+walk_forward:
+  # 12 folds x ~25s per fit is 4-7 minutes PER TRIAL, which would yield 1-2
+  # trials in 10 minutes. 4 folds gets ~4-6 trials instead. This trades CV
+  # robustness for search breadth, which is the right trade for a smoke look
+  # and the wrong one for a real comparison.
+  max_folds: 4
+
+optuna:
+  timeout: 600          # 10 minutes
+  mae_tolerance_abs: 0.05

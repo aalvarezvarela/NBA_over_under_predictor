@@ -1,0 +1,15 @@
+# Reproduces lab/total_points/regressor/3_seasons_all_odds_regressor ... tsplit.ipynb
+# Everything not stated here comes from ../_base.yaml.
+experiment_name: total_points_3_seasons
+training_version: "1.0-notebook-parity"
+comparison_group: window_sweep_2026_03
+hypothesis: >
+  Baseline for the window sweep: does a 2500-game rolling window on TOTAL_POINTS
+  beat simply trusting the bookmaker's closing line?
+tags: [total_points, window_sweep, notebook_parity]
+
+target_family: total_points
+line_col: TOTAL_LINE_bet365
+
+window_dir_label: 3_seasons
+window_name_label: three_seasons

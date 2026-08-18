@@ -1,0 +1,38 @@
+# LINE_ERROR regression on the training_data_2_0 feature set.
+# Paired conceptually with the TOTAL_POINTS experiment that uses the same
+# dataset and 2500-game window. This tests whether predicting the bookmaker's
+# error directly is more effective than predicting the final game total.
+experiment_name: line_error_2500_games_train_2_0
+training_version: "2.0"
+comparison_group: target_family_ab_2026_08
+hypothesis: >
+  Predicting final-game TOTAL_POINTS minus the normalized Bet365 line directly
+  should produce better directional and betting performance than predicting
+  TOTAL_POINTS on the same games, features, training window, and evaluation
+  procedure.
+tags: [line_error, target_family_ab, train_2_0, 2500_games]
+
+# line_col is intentionally omitted: LINE_ERROR is already defined relative
+# to the configured main bookmaker line.
+target_family: line_error
+
+data:
+  csv_path: data/train_data/training_data_2_0_20260704.csv
+  data_version: "20260704-train-2-0"
+  expected_checksum: null
+
+walk_forward:
+  train_games: 2500
+
+# Weight recent games more heavily. Optuna searches the decay rate and also
+# lets unweighted training compete as a control.
+sample_weight:
+  enabled: true
+  lambda_: 0.005
+  tune_lambda: true
+  allow_unweighted: true
+
+optuna:
+  timeout: 4500           # 1 hour 15 minutes
+  n_trials: 100           # timeout is expected to be the effective limit
+  mae_tolerance_abs: 0.05

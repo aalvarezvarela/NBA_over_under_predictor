@@ -1,0 +1,38 @@
+# TOTAL_POINTS, 2500-game window, new (wider) search space.
+# Dataset B was produced by the training_data_2_0 code and contains its
+# feature-engineered column set. This paired experiment compares training-code
+# versions through the different feature sets they generate.
+#
+# That alignment is the point: the previous 2_0 file stopped at 2026-01-10,
+# five months earlier than dataset A, so the two runs' holdout periods covered
+# different parts of the season and their bookmaker baselines differed. With
+# matching end dates the holdouts should line up closely and the comparison
+# isolates the dataset/schema rather than the calendar.
+#
+# No expected_checksum is pinned here. The actual checksum is still recorded
+# in the run's metadata.json for traceability.
+experiment_name: total_points_2500_games_train_2_0
+training_version: "2.0"
+comparison_group: total_points_dataset_ab_2026_08
+hypothesis: >
+  Compare different versions of the training-data code by training the same
+  TOTAL_POINTS experiment on the different feature-engineered column sets
+  they produce. This run uses the training_data_2_0 feature set and is paired
+  with 2500_games_20260704.yaml on the same end date, window, evaluation
+  procedure, and search space.
+tags: [total_points, wide_search_space, dataset_ab, overnight, train_2_0]
+
+target_family: total_points
+line_col: TOTAL_LINE_bet365
+
+data:
+  csv_path: data/train_data/training_data_2_0_20260704.csv
+  data_version: "20260704-train-2-0"
+  expected_checksum: null
+
+walk_forward:
+  train_games: 2500       # ~3 seasons; also drives the "2500_games" label
+
+optuna:
+  timeout: 4500           # 1 hour 15 minutes
+  n_trials: 100           # effectively unlimited; the timeout is the real cap

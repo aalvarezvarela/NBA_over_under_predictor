@@ -1,0 +1,35 @@
+# TOTAL_POINTS, 2500-game window, new (wider) search space.
+# Dataset A was produced by the older training-data code and contains its
+# wider set of feature-engineered columns. This paired experiment compares
+# training-code versions through the different feature sets they generate.
+#
+# Paired with 2500_games_train_2_0_20260704.yaml, which step 0 of
+# runners/run_total_points_dataset_ab.sh uses this same 2026-07-04 end date. With the
+# calendar held fixed the two holdouts should line up closely, so the
+# comparison isolates the dataset/schema. Confirm it in the notebook's
+# cohort check (section 2) before trusting a head-to-head reading.
+experiment_name: total_points_2500_old_games_20260704
+training_version: "old"
+comparison_group: total_points_dataset_ab_2026_08
+hypothesis: >
+  Compare different versions of the training-data code by training the same
+  TOTAL_POINTS experiment on the different feature-engineered column sets
+  they produce. This run uses the older 3240-column training snapshot and is
+  paired with 2500_games_train_2_0_20260704.yaml on the same end date, window,
+  evaluation procedure, and search space.
+tags: [total_points, wide_search_space, dataset_ab, overnight, old_3240col]
+
+target_family: total_points
+line_col: TOTAL_LINE_bet365
+
+data:
+  csv_path: data/train_data/old_training_data_until_20260704.csv
+  data_version: "20260704-old-3240col"
+  expected_checksum: "sha256:f73aa98c82119b42"
+
+walk_forward:
+  train_games: 2500
+
+optuna:
+  timeout: 12600          # 3.5 hours
+  n_trials: 100

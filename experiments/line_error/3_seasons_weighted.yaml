@@ -1,0 +1,28 @@
+# LINE_ERROR target with recency-weighted training.
+# Note: line_col must NOT be set for this family -- the error target is already
+# relative to the line, so the scorers never need a line column.
+experiment_name: line_error_3_seasons_weighted
+training_version: "1.0-notebook-parity"
+comparison_group: window_sweep_2026_03
+hypothesis: >
+  Predicting the bookmaker's error directly, with recency-weighted samples,
+  should beat predicting TOTAL_POINTS on the same window -- the daily backtest
+  suggests it does (+12.96% vs -6.11% ROI at edge>2).
+tags: [line_error, window_sweep, recency_weighted]
+
+target_family: line_error
+
+sample_weight:
+  enabled: true
+  lambda_: 0.005
+  tune_lambda: true
+  # Optuna searches the decay rate AND whether to weight at all.
+  allow_unweighted: true
+
+optuna:
+  # Tighter than the base 0.10: the line_error notebooks used 0.05, trading a
+  # little MAE for better OU accuracy in trial selection.
+  mae_tolerance_abs: 0.05
+
+window_dir_label: 3_seasons
+window_name_label: three_seasons
