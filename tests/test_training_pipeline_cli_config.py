@@ -156,7 +156,7 @@ def test_campaign_configs_are_valid_and_share_their_controls(name):
     config = load_config(CAMPAIGN / f"{name}.yaml")
 
     assert config.comparison_group == "strategy_window_2026_08"
-    assert config.optuna.n_trials == 40
+    assert config.optuna.n_trials == 50
     # Fixed trial count, no timeout: the previous A/B gave one side 2.4x the
     # tuning because its timeout was larger, and a timeout also makes the trial
     # count a function of the machine.
