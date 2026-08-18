@@ -50,6 +50,16 @@ FACTOR_SOURCES: dict[str, str] = {
     "max_na_per_row": "cleaning.max_na_per_row",
     "nan_threshold": "cleaning.nan_threshold",
     "n_trials": "optuna.n_trials",
+    # --- rolling-origin CV and the tuned training protocol -------------------
+    # These change what a trial IS, so a run before and after any of them is not
+    # the same experiment. Without them here the summary notebook would match a
+    # rolling-origin run against a test-anchored one as though they were
+    # identical and quietly average the two.
+    "retrain_every_days": "walk_forward.retrain_every_days",
+    "eval_span_games": "walk_forward.eval_span_games",
+    "objective_aggregation": "optuna.objective_aggregation",
+    "tune_n_estimators": "optuna.tune_n_estimators",
+    "pruner_warmup_fraction": "optuna.pruner_warmup_fraction",
 }
 
 #: Factors needing a rule rather than a straight read; see ``_derived_factors``.
@@ -60,6 +70,8 @@ DERIVED_FACTORS: tuple[str, ...] = (
     "keep_playoffs",
     "drop_consensus",
     "sample_weighting",
+    "train_games_tuned",
+    "n_estimators_range",
 )
 
 FACTOR_COLUMNS: tuple[str, ...] = (*DERIVED_FACTORS, *FACTOR_SOURCES)
@@ -77,6 +89,21 @@ CONTRAST_METRICS: tuple[str, ...] = (
     "bet_rate",
     "seed_roi_range",
 )
+
+
+def _render_range(value: Any) -> str:
+    """A hashable, readable rendering of an IntRange/FloatRange config block.
+
+    ``design_matrix`` groups on factor values, so an unhashable dict would raise
+    rather than produce a wrong answer -- but a stringified dict would also
+    reorder between pandas versions. Reading the three fields explicitly keeps
+    the label stable.
+    """
+    if not isinstance(value, dict):
+        return "" if value is None else str(value)
+    low, high = value.get("low"), value.get("high")
+    scale = "log" if value.get("log") else "lin"
+    return f"{low}-{high}:{scale}"
 
 
 def _derived_factors(config: dict[str, Any], row: Any) -> dict[str, Any]:
@@ -101,6 +128,18 @@ def _derived_factors(config: dict[str, Any], row: Any) -> dict[str, Any]:
         "keep_playoffs": not bool(config.get("data.exclude_playoffs", True)),
         "drop_consensus": "consensus" in excluded,
         "sample_weighting": bool(config.get("sample_weight.enabled", False)),
+        # A run that TUNED the window is not comparable with one that fixed it,
+        # even when train_games happens to read the same: the fixed run's value
+        # is what it used, the tuned run's is only a fallback. Without this flag
+        # the two would land in the same cell of the design matrix.
+        "train_games_tuned": bool(
+            config.get("walk_forward.train_games_choices") or False
+        ),
+        # The search range itself, so widening it forks the comparison. Rendered
+        # as text because a dict is not hashable and groupby needs to hash it.
+        "n_estimators_range": _render_range(
+            config.get("optuna.search_space.n_estimators_range")
+        ),
     }
 
 
@@ -143,6 +182,13 @@ _DEVIATION_TAGS: dict[str, Any] = {
     "n_trials": lambda value: f"{value:.0f}trials",
     "season_floor": lambda value: f"from{value:.0f}",
     "wf_strategy": lambda value: str(value),
+    "retrain_every_days": lambda value: f"every{value:.0f}d",
+    "eval_span_games": lambda value: f"span{value:.0f}",
+    "objective_aggregation": lambda value: str(value),
+    "tune_n_estimators": "tuned-rounds",
+    "train_games_tuned": "tuned-window",
+    "n_estimators_range": lambda value: f"rounds{value}",
+    "pruner_warmup_fraction": lambda value: f"warmup{value:.2f}",
 }
 
 
@@ -298,10 +344,19 @@ def contrasts(
     # between* the contrasts on screen. Spelling out all eleven every time
     # buries the one or two that distinguish "line_error at 3750" from
     # "line_error at 4500" under a wall of identical text.
+    # NaN must be normalised before the comparison. A factor absent from every
+    # config (a knob added after those runs) yields a distinct NaN per group, and
+    # distinct NaNs do not collapse in a set -- so the factor would count as
+    # "varying" and be spelled out in every contrast label, burying the one
+    # factor that actually differs. This bit only shows up once a new factor is
+    # added, which is exactly when the labels matter most.
+    def _level(value: Any) -> Any:
+        return "<absent>" if value is None or pd.isna(value) else value
+
     varying = [
         name
         for position, name in enumerate(others)
-        if len({key[position] for key, _ in kept}) > 1
+        if len({_level(key[position]) for key, _ in kept}) > 1
     ]
     positions = {name: others.index(name) for name in varying}
     for key, group in kept:

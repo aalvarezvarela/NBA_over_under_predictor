@@ -61,7 +61,7 @@ def test_run_experiment_refuses_existing_bundle_before_running_optuna(monkeypatc
     def _explode(*args, **kwargs):
         raise AssertionError("tuning must not start when the bundle path is taken")
 
-    monkeypatch.setattr(pipeline_module, "build_walk_forward_splits", _explode)
+    monkeypatch.setattr(pipeline_module, "build_split_provider", _explode)
 
     with pytest.raises(FileExistsError, match="already exists"):
         pipeline_module.run_experiment(config, save_model=True)
@@ -101,7 +101,7 @@ def test_run_experiment_skips_bundle_check_when_not_saving_model(monkeypatch, tm
         reached["tuning"] = True
         raise RuntimeError("stop here -- we only care that we got past the guard")
 
-    monkeypatch.setattr(pipeline_module, "build_walk_forward_splits", _marker)
+    monkeypatch.setattr(pipeline_module, "build_split_provider", _marker)
 
     with pytest.raises(RuntimeError):
         pipeline_module.run_experiment(config, save_model=False)

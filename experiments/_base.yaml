@@ -148,16 +148,80 @@ holdout:
   test_days: 60
 
 walk_forward:
-  strategy: test_anchored
+  # test_anchored (default, unchanged) builds 12 folds of ~50 consecutive games
+  # spread back through dev, each trained on the games immediately before it.
+  #
+  # rolling_origin instead reproduces the protocol the HOLDOUT is scored under:
+  # train on everything strictly before a date, predict the next few game-days,
+  # advance, retrain with those games now in history. Two things follow.
+  #   - Folds are date-defined, so their size is whatever the schedule gave
+  #     them. Set optuna.objective_aggregation: pooled with it, or a 4-game
+  #     fold weighs as much as a 12-game one.
+  #   - The validation games do not depend on the training window, which is
+  #     what makes walk_forward.train_games_choices legitimate: every trial is
+  #     scored on identical games whichever window it picks.
+  strategy: rolling_origin
+  # test_anchored only. Left here so a config can switch back by naming the
+  # strategy alone.
   test_games: 50
   step_games_between_tests: 60
-  # THE training-window size. Used both by each CV fold and by the final
-  # refit, so the model you ship is fitted on the same amount of history the
-  # hyperparameters were selected for. There is deliberately no separate
-  # refit.train_games -- two knobs could silently disagree.
-  train_games: 2500
+  # THE training-window size. Used by each CV fold, the holdout walk-forward
+  # AND the final refit, so the model you ship is fitted on the same amount of
+  # history the hyperparameters were selected for. There is deliberately no
+  # separate refit.train_games -- two knobs could silently disagree.
+  #
+  # Only the fallback now that train_games_choices is set below: the value the
+  # SELECTED TRIAL chose is what every fit site actually uses. Read as "what to
+  # do if tuning is skipped", not as the window of any run.
+  train_games: 3500
   min_train_games: 1250
-  max_folds: 12
+  # null under rolling_origin: a cap of 12 would trim the 30 folds that
+  # eval_span_games asks for and quietly deliver a third of the volume. The run
+  # refuses to start rather than doing that, but do not make it have to.
+  max_folds: null
+
+  # --- rolling_origin only ---------------------------------------------------
+  # How many GAME-DAYS each origin predicts before retraining. Counted in days
+  # that contain games, so a dark date is skipped rather than eating part of a
+  # window. 1 reproduces the daily walk-forward exactly.
+  #
+  # 4 is the default because staleness turned out to cost nothing measurable:
+  # pooled over the 36 runs already in artifacts/experiments, betting win rate
+  # by day-into-the-fold reads 53.4 / 51.5 / 50.2 / 51.6 / 54.7 / 49.5 / 55.2%
+  # for days 0-6 -- no decay, and days 0-1 (52.1%) are if anything slightly
+  # worse than days 2+ (53.4%). Retraining daily would cost 4x the fits to buy
+  # that. Spend the budget on eval_span_games instead.
+  retrain_every_days: 4
+  # Approximate size of the validation region in games, measured back from the
+  # end of dev. Approximate because the region grows in whole game-days; the
+  # realised count is recorded in metadata.json as cv_n_validation_games.
+  # null uses everything the data allows.
+  #
+  # 850 is the measured compromise: on this dataset it yields 30 folds, 117
+  # game-days and 855 validation games -- ~1.3x the 652 games the old 12x50
+  # layout scored, at ~2.5x the fits per trial. 1300 would give 45 folds and
+  # ~1304 games, which is the next step up once the 850 runs land.
+  eval_span_games: 850
+  # Discrete training-window sizes for Optuna to choose between, making "how
+  # much history helps?" part of the same search as model complexity rather
+  # than a separate campaign. Categorical, not a range: the question is which
+  # of a few meaningful amounts of history wins, and a continuous axis would
+  # spend trials distinguishing 3,700 from 3,750.
+  #
+  # Every value must fit the EARLIEST fold's history or the run refuses to
+  # start -- tail(n) returns what it has, so the alternative is that fold
+  # quietly training short for some trials and not others. Measure the ceiling
+  # with scripts/preflight_campaign.py before setting this.
+  #
+  # Measured ceiling on this dataset at eval_span_games=850: the earliest fold
+  # has 4117 games of history, so 4000 is the largest value with real headroom.
+  # In seasons (1236 regular-season + play-in games each):
+  #   2500 = 2.02   3000 = 2.43   3500 = 2.83   4000 = 3.24
+  # Reaching 4-5 seasons needs data.season_year_floor lowered from 2021 to 2020
+  # (ceiling ~5560) or 2019 (~6543), but those seasons are the compressed
+  # 72-game 2020-21 and the 2019-20 bubble -- that confounds "more history" with
+  # "different-distribution history", so it belongs in its own labelled run.
+  train_games_choices: [2500, 3000, 3500, 4000]
 
 # How the held-out test period is scored.
 #   daily_walk_forward (default) -- retrain once per test game-day on the games
@@ -187,6 +251,47 @@ optuna:
   objective_name: reg:squarederror
   mae_tolerance_abs: 0.10
   persistent_storage: false
+
+  # Sample n_estimators per trial instead of letting each fold early-stop on the
+  # very games that then score it. Off by default so every run to date
+  # reproduces; turn it on for new work. Three measured reasons, all from the
+  # runs in artifacts/experiments:
+  #
+  #   1. The fold's eval_set WAS the fold being scored, so each trial's metric
+  #      is the minimum of a noisy curve over ~1000 stopping points. That bias
+  #      is larger for higher-capacity trials, so it tilted the RANKING.
+  #   2. The rounds chosen in CV were never the rounds used: every downstream
+  #      fit took the median across folds. Within one selected trial, folds
+  #      stopped anywhere from 2 to 922 rounds -- coefficient of variation 1.04
+  #      for line_error, 1.01 for the classifier. A CV of 1.0 is what a
+  #      memoryless process looks like; the stopping point was not measuring
+  #      anything.
+  #   3. Optuna could not control capacity. Capacity is ~ learning_rate x
+  #      rounds; the sampler set the rate and early stopping then set the
+  #      rounds. Spearman(learning_rate, rounds) is -0.75 to -0.90 for
+  #      total_points, so half the search space was illusory.
+  #
+  # The range is filled in per strategy from config.N_ESTIMATORS_RANGES
+  # (line_error and classifier 10-500, total_points 30-1000, log scale), read
+  # off where early stopping actually landed for each. State
+  # search_space.n_estimators_range explicitly to override.
+  #
+  # This also removes the max(50, ...) floor that used to raise a selected
+  # 10-round model to 50 rounds -- silently, in 16 of 38 runs.
+  tune_n_estimators: true
+
+  # mean (default) averages the folds' own metrics; pooled computes one metric
+  # over every validation game. Use pooled with rolling_origin, whose fold sizes
+  # the NBA schedule decides. Both are always recorded; only the objective and
+  # the trial ranking change.
+  objective_aggregation: pooled
+
+  # Folds a trial must complete before MedianPruner may kill it. null derives it
+  # as pruner_warmup_fraction x fold count, floored at the historical 5 -- so 12
+  # folds still gives 5 and nothing becomes less patient, while 28 folds gives
+  # 7 rather than pruning on ~35 games.
+  pruner_warmup_steps: null
+  pruner_warmup_fraction: 0.25
 
   # XGBoost hyperparameter search space. These defaults reproduce the space
   # hardcoded in nba_ou.modeling.optuna_*.py exactly (a test asserts identical

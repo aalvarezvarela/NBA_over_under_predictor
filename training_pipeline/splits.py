@@ -1,8 +1,19 @@
-"""Thin dispatch over the existing CV/holdout builders in nba_ou.modeling.modeling."""
+"""CV/holdout split construction.
+
+Mostly a thin dispatch over the builders in ``nba_ou.modeling.modeling``. The
+exception is the rolling-origin plan below, which is new machinery: it exists
+because the two older splitters describe a fold as "a block of N games", and the
+protocol worth selecting hyperparameters under is "train on everything up to a
+date, predict the next few game-days" -- which is a statement about dates, and
+produces folds whose size the schedule decides.
+"""
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+
 import numpy as np
+import optuna
 import pandas as pd
 from nba_ou.modeling.modeling import (
     assert_valid_time_splits,
@@ -13,6 +24,13 @@ from nba_ou.modeling.modeling import (
 
 from training_pipeline.config import CVStrategy, ExperimentConfig
 from training_pipeline.data import training_eligible_mask
+
+#: Optuna parameter name for the tuned training-window size. One constant so the
+#: sampler, the artifacts, the reporting factors and the final refit cannot drift
+#: onto different spellings of the same knob.
+TRAIN_GAMES_PARAM = "train_games"
+
+Split = tuple[np.ndarray, np.ndarray]
 
 
 def split_latest_days_holdout(
@@ -66,10 +84,426 @@ def build_holdout_split(
     )
 
 
+@dataclass(frozen=True)
+class RollingOriginFold:
+    """One retrain point: what was knowable, and what it then predicted.
+
+    ``history_idx`` is every training-eligible row dated strictly before
+    ``origin_date``, in chronological order and NOT yet windowed. The window is
+    applied by :meth:`RollingOriginPlan.splits`, which is what lets one plan
+    serve every ``train_games`` an Optuna trial might choose without rebuilding
+    the fold layout -- and therefore lets different trials be compared on
+    identical validation games.
+    """
+
+    fold: int
+    #: Training uses games strictly before this date. It is the fold's first
+    #: validation day, so "strictly before" is exactly what production knows.
+    origin_date: pd.Timestamp
+    valid_start: pd.Timestamp
+    valid_end: pd.Timestamp
+    #: The game-days this fold predicts. Length <= retrain_every_days: a fold is
+    #: closed early at a season boundary.
+    valid_dates: tuple[pd.Timestamp, ...]
+    #: Positional indices into df_dev. Every game on the validation days,
+    #: including training-ineligible ones -- the filter changes what is learned
+    #: from, never what is scored.
+    valid_idx: np.ndarray
+    history_idx: np.ndarray
+    season: object = None
+
+    def train_idx(self, train_games: int | None) -> np.ndarray:
+        if train_games is None:
+            return self.history_idx
+        return self.history_idx[-int(train_games) :]
+
+
+@dataclass
+class RollingOriginPlan:
+    """The rolling-origin fold layout, independent of the training window."""
+
+    folds: list[RollingOriginFold]
+    fold_info: pd.DataFrame
+    #: Games in the pooled validation region, i.e. what the objective is
+    #: actually measured on. Reported because ``eval_span_games`` is a target
+    #: and whole game-days are indivisible, so the two rarely match exactly.
+    n_validation_games: int
+    n_validation_days: int
+    #: Set when max_folds trimmed the layout, so callers can say so out loud.
+    n_folds_before_max: int = 0
+
+    @property
+    def n_folds(self) -> int:
+        return len(self.folds)
+
+    @property
+    def min_history_games(self) -> int:
+        """Smallest training history any fold has available.
+
+        The ceiling on ``train_games``: ask for more than this and the earliest
+        folds quietly train on less than requested, which is the silent shrink
+        that has corrupted a window comparison before.
+        """
+        return min(int(len(fold.history_idx)) for fold in self.folds)
+
+    def splits(self, train_games: int | None) -> list[Split]:
+        return [(fold.train_idx(train_games), fold.valid_idx) for fold in self.folds]
+
+    def assert_window_fits(self, train_games: int | None) -> None:
+        if train_games is None:
+            return
+        available = self.min_history_games
+        if int(train_games) > available:
+            raise ValueError(
+                f"train_games={train_games} exceeds the {available} games the "
+                "earliest rolling-origin fold has available, so that fold would "
+                "silently train on fewer games than every other fold and the "
+                "comparison would no longer be the one you designed. Lower "
+                "train_games, shorten walk_forward.eval_span_games (fewer folds "
+                "reach as far back), or lower data.season_year_floor to add "
+                "history."
+            )
+
+
+def build_rolling_origin_plan(
+    df_dev: pd.DataFrame, config: ExperimentConfig
+) -> RollingOriginPlan:
+    """Lay out rolling origins over the tail of ``df_dev``.
+
+    The protocol, matching ``holdout_evaluation: daily_walk_forward``:
+
+        train on everything strictly before T -> predict the next
+        ``retrain_every_days`` game-days -> advance the origin past them ->
+        repeat, with the games just predicted now part of history.
+
+    Definitions that matter, and why:
+
+    * A step is counted in **game-days**, not calendar dates. "The next 4 days
+      with games" is what a bettor experiences; counting dates would let an
+      All-Star break silently consume a whole window.
+    * Months in ``exclude_test_months`` never appear in a validation window, the
+      same rule the older splitters apply. Those games stay available as
+      training history -- excluding them from what a model may LEARN from is a
+      different decision, and not this one.
+    * A fold never spans two seasons when ``require_same_season_test`` is on. It
+      is closed early instead. Without this, skipping May and June would glue
+      late April onto late October into one "4-day" window whose origin is five
+      months before the games it predicts.
+    * Validation windows are consumed sequentially and can never overlap, so no
+      game is scored twice.
+    """
+    wf = config.walk_forward
+    date_col = config.data.date_col
+    season_col = config.data.season_col
+
+    if len(df_dev) == 0:
+        raise ValueError("Cannot build rolling-origin folds from an empty frame.")
+
+    dates = pd.to_datetime(df_dev[date_col], errors="coerce").dt.normalize()
+    if dates.isna().any():
+        raise ValueError(f"Invalid dates in column {date_col!r}.")
+
+    eligible = training_eligible_mask(df_dev, config)
+    positions = np.arange(len(df_dev))
+
+    # Position lists per game-day, chronological. Sorting explicitly rather than
+    # trusting the frame's order: a subtly unsorted dev frame would otherwise
+    # produce a "history" containing future games, which is the one bug this
+    # module must not have.
+    order = np.argsort(dates.to_numpy(), kind="stable")
+    ordered_dates = dates.to_numpy()[order]
+    ordered_positions = positions[order]
+
+    unique_dates, day_starts = np.unique(ordered_dates, return_index=True)
+    day_positions = np.split(ordered_positions, day_starts[1:])
+    unique_dates = [pd.Timestamp(value) for value in unique_dates]
+
+    season_of_day = {
+        day: df_dev[season_col].to_numpy()[members[0]] if season_col in df_dev else None
+        for day, members in zip(unique_dates, day_positions, strict=True)
+    }
+    games_on_day = {
+        day: len(members)
+        for day, members in zip(unique_dates, day_positions, strict=True)
+    }
+    idx_on_day = dict(zip(unique_dates, day_positions, strict=True))
+
+    excluded_months = set(wf.exclude_test_months)
+    candidate_days = [day for day in unique_dates if day.month not in excluded_months]
+    if not candidate_days:
+        raise ValueError(
+            "No game-day is eligible to validate on: every date in dev falls in "
+            f"walk_forward.exclude_test_months={tuple(sorted(excluded_months))}."
+        )
+
+    # --- pick the chronological evaluation region ---------------------------
+    # Walk back from the newest candidate day, accumulating whole days until the
+    # requested span is covered. Whole days only, so a day is never split
+    # between training and validation.
+    if wf.eval_span_games is None:
+        first_day_position = 0
+    else:
+        accumulated = 0
+        first_day_position = len(candidate_days) - 1
+        for position in range(len(candidate_days) - 1, -1, -1):
+            accumulated += games_on_day[candidate_days[position]]
+            first_day_position = position
+            if accumulated >= wf.eval_span_games:
+                break
+
+    region_days = candidate_days[first_day_position:]
+
+    # --- consume the region in retrain_every_days chunks ---------------------
+    folds: list[RollingOriginFold] = []
+    cursor = 0
+    while cursor < len(region_days):
+        window: list[pd.Timestamp] = [region_days[cursor]]
+        season = season_of_day[region_days[cursor]]
+        next_cursor = cursor + 1
+        while (
+            len(window) < wf.retrain_every_days and next_cursor < len(region_days)
+        ):
+            candidate = region_days[next_cursor]
+            if wf.require_same_season_test and season_of_day[candidate] != season:
+                break
+            window.append(candidate)
+            next_cursor += 1
+
+        origin_date = window[0]
+        history_mask = (dates.to_numpy() < np.datetime64(origin_date)) & eligible
+        history_idx = positions[history_mask]
+        # Chronological, because the window is taken as a tail.
+        history_idx = history_idx[np.argsort(dates.to_numpy()[history_idx], kind="stable")]
+
+        if len(history_idx) >= wf.min_train_games:
+            valid_idx = np.concatenate([idx_on_day[day] for day in window])
+            folds.append(
+                RollingOriginFold(
+                    fold=len(folds) + 1,
+                    origin_date=origin_date,
+                    valid_start=window[0],
+                    valid_end=window[-1],
+                    valid_dates=tuple(window),
+                    valid_idx=np.sort(valid_idx),
+                    history_idx=history_idx,
+                    season=season,
+                )
+            )
+        cursor = next_cursor
+
+    if not folds:
+        raise ValueError(
+            "No valid rolling-origin folds were created. The most likely cause "
+            f"is walk_forward.min_train_games={wf.min_train_games} exceeding the "
+            "history available before the evaluation region; shorten "
+            "walk_forward.eval_span_games or lower min_train_games."
+        )
+
+    n_folds_before_max = len(folds)
+    if wf.max_folds is not None and wf.max_folds < len(folds):
+        if wf.eval_span_games is not None:
+            raise ValueError(
+                f"walk_forward.max_folds={wf.max_folds} would trim the "
+                f"{len(folds)} folds that walk_forward.eval_span_games="
+                f"{wf.eval_span_games} asked for, so the evaluation volume you "
+                "configured is not the volume you would get. Set max_folds: null "
+                "under rolling_origin, or drop eval_span_games and cap by folds "
+                "alone."
+            )
+        # Keep the LATEST folds: the most recent history is the most relevant,
+        # and it matches fold_selection's existing default.
+        folds = folds[-wf.max_folds :]
+        folds = [
+            RollingOriginFold(
+                fold=number,
+                origin_date=fold.origin_date,
+                valid_start=fold.valid_start,
+                valid_end=fold.valid_end,
+                valid_dates=fold.valid_dates,
+                valid_idx=fold.valid_idx,
+                history_idx=fold.history_idx,
+                season=fold.season,
+            )
+            for number, fold in enumerate(folds, start=1)
+        ]
+
+    choices = wf.train_games_choices
+    nominal_window = max(choices) if choices else wf.train_games
+    fold_info = pd.DataFrame(
+        [
+            {
+                "fold": fold.fold,
+                # At the nominal window (the largest choice when tuning), so the
+                # column answers "does every fold get the window I asked for?".
+                "train_n_games": int(len(fold.train_idx(nominal_window))),
+                "history_n_games": int(len(fold.history_idx)),
+                "test_n_games": int(len(fold.valid_idx)),
+                "n_valid_days": len(fold.valid_dates),
+                "train_start_date": pd.Timestamp(
+                    dates.to_numpy()[fold.train_idx(nominal_window)].min()
+                ),
+                "train_end_date": pd.Timestamp(
+                    dates.to_numpy()[fold.train_idx(nominal_window)].max()
+                ),
+                "origin_date": fold.origin_date,
+                "test_start_date": fold.valid_start,
+                "test_end_date": fold.valid_end,
+                "test_season": fold.season,
+            }
+            for fold in folds
+        ]
+    )
+
+    plan = RollingOriginPlan(
+        folds=folds,
+        fold_info=fold_info,
+        n_validation_games=int(sum(len(fold.valid_idx) for fold in folds)),
+        n_validation_days=int(sum(len(fold.valid_dates) for fold in folds)),
+        n_folds_before_max=n_folds_before_max,
+    )
+
+    if wf.verbose >= 1:
+        print(
+            f"Created {plan.n_folds} rolling-origin folds "
+            f"({plan.n_validation_days} game-days, {plan.n_validation_games} "
+            f"validation games, min history {plan.min_history_games})"
+        )
+        print(fold_info.to_string(index=False))
+
+    return plan
+
+
+@dataclass
+class SplitProvider:
+    """Hands the tuner a fold set for whichever training window a trial picks.
+
+    Two shapes behind one interface:
+
+    * a fixed list of splits (``test_anchored`` / ``last_n_seasons``), where the
+      window is baked into the fold layout and cannot vary per trial;
+    * a :class:`RollingOriginPlan`, where the validation games are fixed and the
+      window is applied at read time -- so ``train_games`` can be sampled per
+      trial while every trial is still scored on identical games.
+
+    The second property is what makes tuning the window legitimate. If the
+    validation set moved with the window, a trial preferring 4500 games would be
+    scored on different games than one preferring 2500, and the comparison would
+    measure the cohort rather than the window.
+    """
+
+    fold_info: pd.DataFrame
+    default_train_games: int | None
+    plan: RollingOriginPlan | None = None
+    fixed_splits: list[Split] | None = None
+    train_games_choices: tuple[int, ...] | None = None
+    _cache: dict[int | None, list[Split]] = field(default_factory=dict, repr=False)
+
+    @property
+    def tunes_train_games(self) -> bool:
+        return bool(self.train_games_choices)
+
+    @property
+    def n_folds(self) -> int:
+        if self.plan is not None:
+            return self.plan.n_folds
+        assert self.fixed_splits is not None
+        return len(self.fixed_splits)
+
+    @property
+    def n_validation_games(self) -> int:
+        if self.plan is not None:
+            return self.plan.n_validation_games
+        assert self.fixed_splits is not None
+        return int(sum(len(valid) for _, valid in self.fixed_splits))
+
+    def suggest_train_games(self, trial: optuna.Trial) -> int | None:
+        """Sample the window for one trial, or return the fixed value.
+
+        Sampled FIRST in the objective, before any XGBoost parameter, so the
+        draw order a seeded TPE sampler sees is stable and documented. When the
+        window is not tuned no ``suggest_*`` call is issued at all, which is what
+        keeps existing studies reproducible.
+        """
+        if not self.train_games_choices:
+            return self.default_train_games
+        return int(
+            trial.suggest_categorical(
+                TRAIN_GAMES_PARAM, list(self.train_games_choices)
+            )
+        )
+
+    def splits_for(self, train_games: int | None) -> list[Split]:
+        if self.plan is None:
+            assert self.fixed_splits is not None
+            if train_games != self.default_train_games:
+                raise ValueError(
+                    f"This split set was built for train_games="
+                    f"{self.default_train_games} and cannot be re-materialised "
+                    f"at {train_games}: under "
+                    f"{CVStrategy.TEST_ANCHORED.value}/"
+                    f"{CVStrategy.LAST_N_SEASONS.value} the window is part of "
+                    "the fold layout."
+                )
+            return self.fixed_splits
+
+        key = None if train_games is None else int(train_games)
+        if key not in self._cache:
+            self.plan.assert_window_fits(key)
+            self._cache[key] = self.plan.splits(key)
+        return self._cache[key]
+
+
+def build_split_provider(
+    df_dev: pd.DataFrame, config: ExperimentConfig
+) -> SplitProvider:
+    """Build the CV fold set, in whichever shape the configured strategy needs."""
+    wf = config.walk_forward
+
+    if wf.strategy == CVStrategy.ROLLING_ORIGIN:
+        plan = build_rolling_origin_plan(df_dev, config)
+        provider = SplitProvider(
+            fold_info=plan.fold_info,
+            default_train_games=wf.train_games,
+            plan=plan,
+            train_games_choices=wf.train_games_choices,
+        )
+        # Validate every window a trial could pick, not just the nominal one: a
+        # leak or a silently-shrunk fold that only appears at one choice would
+        # otherwise surface as an unexplained result rather than an error.
+        for candidate in wf.train_games_choices or (wf.train_games,):
+            validate_splits(
+                df_dev,
+                provider.splits_for(candidate),
+                date_col=config.data.date_col,
+            )
+        return provider
+
+    splits, fold_info = build_walk_forward_splits(df_dev, config)
+    return SplitProvider(
+        fold_info=fold_info,
+        default_train_games=wf.train_games,
+        fixed_splits=splits,
+    )
+
+
 def build_walk_forward_splits(
     df_dev: pd.DataFrame, config: ExperimentConfig
 ) -> tuple[list[tuple[np.ndarray, np.ndarray]], pd.DataFrame]:
+    """The pre-rolling-origin path, unchanged.
+
+    Kept as-is so every existing config reproduces exactly, and because
+    ``scripts/preflight_campaign.py`` calls it directly.
+    """
     wf = config.walk_forward
+
+    if wf.strategy == CVStrategy.ROLLING_ORIGIN:
+        plan = build_rolling_origin_plan(df_dev, config)
+        choices = wf.train_games_choices
+        window = max(choices) if choices else wf.train_games
+        plan.assert_window_fits(window)
+        splits = plan.splits(window)
+        validate_splits(df_dev, splits, date_col=config.data.date_col)
+        return splits, plan.fold_info
 
     if wf.strategy == CVStrategy.TEST_ANCHORED:
         splits, fold_info = make_test_anchored_walk_forward_splits(

@@ -113,6 +113,35 @@ DEFAULT_CLASSIFIER_OBJECTIVE = "binary:logistic"
 class CVStrategy(StrEnum):
     TEST_ANCHORED = "test_anchored"
     LAST_N_SEASONS = "last_n_seasons"
+    #: Rolling-origin CV: repeatedly train on everything strictly before an
+    #: origin date and predict only the next few game-days, then advance. This
+    #: is the protocol ``holdout_evaluation: daily_walk_forward`` already uses
+    #: to score the test period, so hyperparameters get selected under the
+    #: regime they will actually run in. See splits.build_rolling_origin_plan.
+    ROLLING_ORIGIN = "rolling_origin"
+
+
+#: MedianPruner's warmup before this became fold-count aware. Kept as the floor
+#: so no configuration ever becomes *less* patient than the runs already in
+#: artifacts/experiments.
+_LEGACY_PRUNER_WARMUP_STEPS = 5
+
+
+class ObjectiveAggregation(StrEnum):
+    """How per-fold metrics become the single number Optuna minimises.
+
+    ``mean`` averages the folds' own metrics, weighting a 4-game fold the same
+    as a 12-game one. That was harmless at 12 folds of ~50 games each; it is
+    not harmless under ``rolling_origin``, where a fold is a handful of
+    game-days and its size swings with the schedule.
+
+    ``pooled`` concatenates every validation prediction and computes one metric
+    over all of them, so each GAME contributes equally. Per-fold metrics are
+    still recorded for diagnostics either way.
+    """
+
+    MEAN = "mean"
+    POOLED = "pooled"
 
 
 class RefitStrategy(StrEnum):
@@ -294,6 +323,63 @@ class WalkForwardConfig(BaseModel):
     require_same_season_test: bool = True
     verbose: int = 0
 
+    # --- rolling_origin only -------------------------------------------------
+    #: How many GAME-DAYS each origin predicts before retraining. Counted in
+    #: days that actually contain games, so a dark day on the NBA calendar is
+    #: skipped rather than consuming part of the window -- "the next 4 days with
+    #: games", not "the next 4 dates". 1 reproduces the daily walk-forward
+    #: exactly; 4 costs a quarter of the fits and, measured across 36 runs'
+    #: existing folds, loses nothing (win rate is flat over days 0-6 of a fold).
+    retrain_every_days: int = 4
+    #: Approximate size of the chronological validation region, in games,
+    #: measured back from the end of dev. Approximate by construction: the
+    #: region is grown whole game-days at a time so no day is ever split
+    #: between training and validation. None uses every fold the data allows,
+    #: subject to max_folds.
+    eval_span_games: int | None = None
+    #: Discrete training-window sizes for Optuna to choose between. When set,
+    #: ``train_games`` becomes a tuned hyperparameter sampled once per trial and
+    #: held fixed across that trial's folds; ``train_games`` below is then only
+    #: the fallback used when tuning is skipped. Only supported under
+    #: ``rolling_origin``, where the validation windows do not depend on the
+    #: window size -- under ``test_anchored`` a larger window can push folds
+    #: below ``min_train_games`` and silently change the fold layout, which
+    #: would make trials incomparable.
+    train_games_choices: tuple[int, ...] | None = None
+
+    @property
+    def tunes_train_games(self) -> bool:
+        return bool(self.train_games_choices)
+
+    @model_validator(mode="after")
+    def _validate_rolling_origin(self) -> WalkForwardConfig:
+        if self.retrain_every_days <= 0:
+            raise ValueError("walk_forward.retrain_every_days must be > 0.")
+        if self.eval_span_games is not None and self.eval_span_games <= 0:
+            raise ValueError("walk_forward.eval_span_games must be > 0 when set.")
+        if self.train_games_choices is not None:
+            if len(set(self.train_games_choices)) < 2:
+                raise ValueError(
+                    "walk_forward.train_games_choices needs at least two "
+                    "distinct values -- a one-element categorical is a fixed "
+                    "value that costs a search dimension. Set "
+                    "walk_forward.train_games instead."
+                )
+            if any(choice <= 0 for choice in self.train_games_choices):
+                raise ValueError(
+                    "walk_forward.train_games_choices values must all be > 0."
+                )
+            if self.strategy != CVStrategy.ROLLING_ORIGIN:
+                raise ValueError(
+                    "walk_forward.train_games_choices requires "
+                    "walk_forward.strategy='rolling_origin'. Under "
+                    f"{self.strategy.value!r} the fold layout itself depends on "
+                    "the window size (a fold is dropped once tail(train_games) "
+                    "falls under min_train_games), so different trials would be "
+                    "scored on different folds."
+                )
+        return self
+
     @model_validator(mode="after")
     def _train_seasons_required_for_last_n_seasons(self) -> WalkForwardConfig:
         if self.strategy == CVStrategy.LAST_N_SEASONS:
@@ -431,9 +517,18 @@ class SearchSpaceConfig(BaseModel):
     learning_rate: FloatRange = FloatRange(low=0.0075, high=0.06, log=True)
     reg_alpha: FloatRange = FloatRange(low=1e-2, high=20.0, log=True)
     reg_lambda: FloatRange = FloatRange(low=1.0, high=500.0, log=True)
-    #: Upper bound on boosting rounds; early stopping picks the real number.
+    #: Upper bound on boosting rounds in the LEGACY early-stopping mode, where
+    #: each fold's own validation set picks the real number. Ignored once
+    #: ``n_estimators_range`` is set.
     n_estimators: int = 1000
     early_stopping_rounds: int = 70
+    #: Search range for the boosting rounds. When set, ``n_estimators`` becomes
+    #: an ordinary tuned hyperparameter: sampled once per trial, held fixed
+    #: across every fold, and used verbatim by the holdout walk-forward and the
+    #: production refit. Fold-level early stopping is disabled, because the two
+    #: are alternatives -- see OptunaConfig.tune_n_estimators for why the old
+    #: arrangement was a problem. Left None the legacy behaviour is unchanged.
+    n_estimators_range: IntRange | None = None
 
 
 #: The search space hardcoded in nba_ou.modeling.optuna_*.py, kept verbatim so
@@ -503,6 +598,39 @@ CLASSIFIER_SEARCH_SPACE = SearchSpaceConfig(
 )
 
 
+#: Default ``n_estimators`` search range per strategy, applied automatically
+#: when ``optuna.tune_n_estimators`` is on and no range was stated -- the same
+#: "fires only when the value was inherited rather than chosen" rule that
+#: CLASSIFIER_SEARCH_SPACE uses.
+#:
+#: The bounds are read off where fold-level early stopping actually landed
+#: across the 38 runs in artifacts/experiments, per strategy (median over each
+#: selected trial's folds, and the p10-p90 of that median across all trials):
+#:
+#:   strategy                p10   median   p90   trials under 50 rounds
+#:   line_error               21      41     75            64%
+#:   over_under_classifier    13      31     53            85%
+#:   total_points             75     112    269             2%
+#:
+#: So the two line-relative strategies live at a few dozen rounds and
+#: total_points at a few hundred -- it has to reproduce the line itself before
+#: it reaches the residual, which is a large, genuinely learnable component.
+#: A single shared 100-1500 range would sit entirely above where two of the
+#: three strategies operate. Log scale because the useful resolution is
+#: multiplicative: 20 vs 40 rounds matters, 420 vs 440 does not.
+#:
+#: Ranges extend past the observed p90 on purpose. Early stopping never had a
+#: reason to explore beyond where its noisy 50-game eval set happened to dip,
+#: and low ``colsample_bytree`` needs many rounds before every feature has been
+#: offered even once (at colsample 0.07, 50 rounds offers each feature ~3.5
+#: times out of ~1458 features) -- a region the old setup could not reach.
+N_ESTIMATORS_RANGES: dict[PredictionStrategy, IntRange] = {
+    PredictionStrategy.LINE_ERROR_REGRESSOR: IntRange(low=10, high=500, log=True),
+    PredictionStrategy.OVER_UNDER_CLASSIFIER: IntRange(low=10, high=500, log=True),
+    PredictionStrategy.TOTAL_POINTS_REGRESSOR: IntRange(low=30, high=1000, log=True),
+}
+
+
 class OptunaConfig(BaseModel):
     """Optuna tuning knobs.
 
@@ -542,6 +670,47 @@ class OptunaConfig(BaseModel):
     logloss_tolerance_abs: float | None = 0.002
     search_space: SearchSpaceConfig = Field(default_factory=SearchSpaceConfig)
 
+    #: Sample ``n_estimators`` per trial instead of letting each fold early-stop
+    #: on its own validation set.
+    #:
+    #: What was wrong with the old arrangement, in three parts:
+    #:
+    #: 1. The fold's ``eval_set`` WAS the fold that then scored the trial, so
+    #:    the reported metric is the minimum of a noisy curve over ~1000
+    #:    candidate stopping points. That bias is not constant across trials --
+    #:    a higher-capacity trial harvests more of it -- so it tilted the
+    #:    ranking, not just the level.
+    #: 2. The number chosen in CV was never the number used. Every downstream
+    #:    fit took ``median_best_iteration`` across folds and no early stopping.
+    #:    Measured on the selected trials in artifacts/experiments, folds within
+    #:    ONE trial stopped anywhere from 2 to 922 rounds; the coefficient of
+    #:    variation across folds is 1.04 for line_error and 1.01 for the
+    #:    classifier -- a CV of 1.0 is the signature of a memoryless process,
+    #:    i.e. the stopping point was not measuring anything.
+    #: 3. Optuna could not control capacity. Capacity is roughly
+    #:    ``learning_rate x rounds``; the sampler set the rate and early
+    #:    stopping then set the rounds in reaction. Measured Spearman
+    #:    correlation between them is -0.75 to -0.90 for total_points, so the
+    #:    sampler was modelling an axis it did not own.
+    #:
+    #: With this on, the round count is part of the configuration being scored,
+    #: evaluated exactly as it will be used, on games that had no say in
+    #: choosing it. Off by default so every existing config reproduces byte for
+    #: byte.
+    tune_n_estimators: bool = False
+    #: See ObjectiveAggregation. ``pooled`` is required in spirit by
+    #: rolling_origin, whose folds vary in size; the default stays ``mean`` so
+    #: existing configs are unchanged.
+    objective_aggregation: ObjectiveAggregation = ObjectiveAggregation.MEAN
+    #: Folds to complete before the pruner may act. None derives it from the
+    #: fold count via ``pruner_warmup_fraction``, which is what you want once a
+    #: fold is a handful of game-days: the old fixed 5 was 5 of 12 folds (~250
+    #: games) and becomes 5 of ~50 (~35 games), i.e. pruning on noise.
+    pruner_warmup_steps: int | None = None
+    #: Fraction of the fold count to use as warmup when pruner_warmup_steps is
+    #: None. 0.25 of 28 folds is 7.
+    pruner_warmup_fraction: float = 0.25
+
     #: Skip tuning entirely and use these hyperparameters. Populate from a
     #: previous run with training_pipeline.reuse.load_run_hyperparameters(),
     #: which prints a ready-to-paste YAML block -- that is how you avoid
@@ -560,6 +729,17 @@ class OptunaConfig(BaseModel):
             raise ValueError(
                 "optuna.fixed_n_estimators is required alongside "
                 "optuna.fixed_params (there is no study to infer it from)."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_pruner_warmup(self) -> OptunaConfig:
+        if self.pruner_warmup_steps is not None and self.pruner_warmup_steps < 1:
+            raise ValueError("optuna.pruner_warmup_steps must be >= 1 when set.")
+        if not 0.0 < self.pruner_warmup_fraction <= 1.0:
+            raise ValueError(
+                "optuna.pruner_warmup_fraction must be in (0, 1]. It is a "
+                "fraction of the fold count, not a number of folds."
             )
         return self
 
@@ -974,6 +1154,36 @@ class ExperimentConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _resolve_n_estimators_range(self) -> ExperimentConfig:
+        """Reconcile ``tune_n_estimators`` with ``search_space.n_estimators_range``.
+
+        One switch, one range, and they can never disagree: asking for tuning
+        without a range fills in the strategy's default from
+        N_ESTIMATORS_RANGES, and stating a range implies tuning. Two fields
+        that could contradict each other is how a knob ends up silently
+        applied at some fit sites and not others.
+
+        Must run AFTER _scale_search_space_to_the_objective, which only fires
+        while the space is byte-identical to the regression default -- writing a
+        range into the space first would suppress the classifier rescale
+        entirely.
+        """
+        space = self.optuna.search_space
+        if self.optuna.tune_n_estimators and space.n_estimators_range is None:
+            assert self.prediction_strategy is not None
+            default = N_ESTIMATORS_RANGES.get(self.prediction_strategy)
+            if default is None:
+                raise ValueError(
+                    "optuna.tune_n_estimators is on but no default n_estimators "
+                    f"range exists for {self.prediction_strategy.value!r}. State "
+                    "optuna.search_space.n_estimators_range explicitly."
+                )
+            space.n_estimators_range = default.model_copy(deep=True)
+        elif space.n_estimators_range is not None:
+            self.optuna.tune_n_estimators = True
+        return self
+
+    @model_validator(mode="after")
     def _default_objective_to_the_strategy(self) -> ExperimentConfig:
         """Point XGBoost at a loss that matches the model class.
 
@@ -1032,9 +1242,57 @@ class ExperimentConfig(BaseModel):
         return "TOTAL_POINTS"
 
     @property
+    def tunes_n_estimators(self) -> bool:
+        """Single authority: is the round count a sampled hyperparameter?
+
+        Everything that needs to know -- the param builder, the objective's
+        early-stopping decision, the final-params resolver -- reads this one
+        property rather than re-deriving the condition, which is how a filter
+        ends up applied at N-1 of N fit sites.
+        """
+        return self.optuna.search_space.n_estimators_range is not None
+
+    @property
+    def uses_fold_early_stopping(self) -> bool:
+        """Legacy mode: each CV fold early-stops on its own validation set."""
+        return not self.tunes_n_estimators
+
+    @property
+    def tunes_train_games(self) -> bool:
+        return self.walk_forward.tunes_train_games
+
+    @property
+    def pools_objective(self) -> bool:
+        return self.optuna.objective_aggregation == ObjectiveAggregation.POOLED
+
+    def resolve_pruner_warmup_steps(self, n_folds: int | None) -> int:
+        """Folds a trial must complete before the pruner may kill it.
+
+        Proportional by default because the fixed 5 was chosen against 12 folds
+        of ~50 games (~250 games seen). Under rolling_origin a fold is a few
+        game-days, so the same 5 would prune on ~35 games -- well inside the
+        noise of any metric here.
+
+        Floored at the historical 5 rather than replacing it, so the derived
+        value can only ever be MORE patient than before: 12 folds still gives 5
+        (every existing config is unchanged), 28 folds gives 7, 50 gives 13.
+        """
+        if self.optuna.pruner_warmup_steps is not None:
+            return max(1, int(self.optuna.pruner_warmup_steps))
+        if not n_folds:
+            return _LEGACY_PRUNER_WARMUP_STEPS
+        proportional = int(round(n_folds * self.optuna.pruner_warmup_fraction))
+        return max(_LEGACY_PRUNER_WARMUP_STEPS, proportional)
+
+    @property
     def resolved_window_dir_label(self) -> str:
         if self.window_dir_label:
             return self.window_dir_label
+        if self.walk_forward.tunes_train_games:
+            # The window is a tuned hyperparameter, so no single value names the
+            # run. Saying "tuned_window" is honest; naming one of the choices
+            # would label the run after a value it may not have selected.
+            return "tuned_window"
         train_games = self.walk_forward.train_games
         return f"{train_games}_games" if train_games else "full_dataset"
 

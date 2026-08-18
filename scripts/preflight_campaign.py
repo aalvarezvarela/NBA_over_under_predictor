@@ -43,7 +43,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from training_pipeline.cli import load_config  # noqa: E402
-from training_pipeline.config import ExperimentConfig  # noqa: E402
+from training_pipeline.config import CVStrategy, ExperimentConfig  # noqa: E402
 from training_pipeline.data import (  # noqa: E402
     compute_file_checksum,
     prepare_dataset,
@@ -51,6 +51,7 @@ from training_pipeline.data import (  # noqa: E402
 )
 from training_pipeline.splits import (  # noqa: E402
     build_holdout_split,
+    build_rolling_origin_plan,
     build_walk_forward_splits,
 )
 
@@ -195,6 +196,11 @@ def check_configs(
 
         for name in members:
             member = configs[name]
+            if member.walk_forward.strategy == CVStrategy.ROLLING_ORIGIN:
+                problems.extend(
+                    _check_rolling_origin(name, member, df_dev)
+                )
+                continue
             requested = member.walk_forward.train_games
             # Feasibility must be measured with training-row filters OFF.
             # build_walk_forward_splits applies them (overtime, etc.) AFTER
@@ -250,6 +256,60 @@ def check_configs(
         print()
 
     return _verdict(problems, checked_windows=True)
+
+
+def _check_rolling_origin(
+    name: str, member: ExperimentConfig, df_dev: Any
+) -> list[str]:
+    """Fold count, realised volume and window feasibility for a rolling-origin cell.
+
+    The two things worth catching here, both of which look healthy at runtime:
+
+    * ``eval_span_games`` is a target, not a promise -- the region grows in whole
+      game-days, so the realised volume must be printed rather than assumed.
+    * every ``train_games_choices`` value has to fit the EARLIEST fold's history.
+      One that does not would make that fold train short for some trials and not
+      others, so the window comparison would be measuring the shortfall.
+    """
+    problems: list[str] = []
+    unfiltered = member.model_dump()
+    unfiltered["data"]["exclude_overtime_from_training"] = False
+    unfiltered["cleaning"]["verbose"] = 0
+    probe = ExperimentConfig.model_validate(unfiltered)
+
+    try:
+        with redirect_stdout(StringIO()):
+            plan = build_rolling_origin_plan(df_dev, probe)
+    except Exception as exc:  # noqa: BLE001
+        problems.append(f"{name}: rolling-origin plan failed -- {exc}")
+        print(f"     {FAIL}  {name}: {type(exc).__name__}: {exc}")
+        return problems
+
+    wf = member.walk_forward
+    choices = wf.train_games_choices or ((wf.train_games,) if wf.train_games else ())
+    ceiling = plan.min_history_games
+    too_big = [choice for choice in choices if choice and choice > ceiling]
+
+    print(
+        f"     {FAIL if too_big else OK}    {name}: {plan.n_folds} folds, "
+        f"{plan.n_validation_days} game-days, {plan.n_validation_games} validation "
+        f"games (asked ~{wf.eval_span_games}); every-{wf.retrain_every_days}-day "
+        f"retrain; window ceiling {ceiling}"
+    )
+    if too_big:
+        problems.append(
+            f"{name}: train_games choices {too_big} exceed the {ceiling} games the "
+            "earliest fold has available. Those trials would train short on that "
+            f"fold. Largest window every fold supports: {ceiling}."
+        )
+    if member.data.exclude_overtime_from_training:
+        with redirect_stdout(StringIO()):
+            filtered = build_rolling_origin_plan(df_dev, member)
+        print(
+            f"           training filter leaves a {filtered.min_history_games}-game "
+            "history on the earliest fold (expected, not a misfit)"
+        )
+    return problems
 
 
 def check_campaign(campaign_dir: Path, *, skip_data: bool) -> int:

@@ -16,7 +16,7 @@ or optuna_error_line directly.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 import numpy as np
@@ -28,9 +28,12 @@ from nba_ou.modeling.modeling import build_recency_sample_weights
 from nba_ou.modeling.scorers import (
     evaluate_error_thresholds,
     evaluate_total_points_thresholds,
+    over_under_betting_accuracy_error_line,
+    over_under_betting_accuracy_total_points,
 )
 from optuna.pruners import MedianPruner
 from optuna.samplers import TPESampler
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from xgboost import XGBClassifier, XGBModel, XGBRegressor
 
 from training_pipeline.calibration import brier_score, log_loss
@@ -40,6 +43,7 @@ from training_pipeline.config import (
     SampleWeightConfig,
     SearchSpaceConfig,
 )
+from training_pipeline.splits import TRAIN_GAMES_PARAM, Split, SplitProvider
 
 
 class TargetFamilyStrategy(Protocol):
@@ -48,8 +52,9 @@ class TargetFamilyStrategy(Protocol):
         *,
         X: pd.DataFrame,
         y: pd.Series,
-        splits: list[tuple[np.ndarray, np.ndarray]],
         config: ExperimentConfig,
+        splits: list[tuple[np.ndarray, np.ndarray]] | None = None,
+        split_provider: SplitProvider | None = None,
         dates: pd.Series | None = None,
     ) -> optuna.Study: ...
 
@@ -101,6 +106,10 @@ def build_xgb_params(
 ) -> dict[str, Any]:
     """Sample XGBoost parameters from a configurable search space.
 
+    ``space.n_estimators_range`` switches the boosting rounds from "a ceiling
+    plus per-fold early stopping" to an ordinary sampled hyperparameter; see
+    ``OptunaConfig.tune_n_estimators`` for the measurements behind that.
+
     The suggest_* calls are issued in exactly the same order, with the same
     names and distributions, as
     ``nba_ou.modeling.optuna_total_points.build_xgb_params_total_points``. That
@@ -108,7 +117,7 @@ def build_xgb_params(
     so any reordering would change results even with identical ranges. A test
     asserts both builders yield identical draws under the same seed.
     """
-    return {
+    params: dict[str, Any] = {
         "booster": "gbtree",
         "tree_method": "hist",
         "device": device,
@@ -150,27 +159,80 @@ def build_xgb_params(
             space.reg_lambda.high,
             log=space.reg_lambda.log,
         ),
-        "n_estimators": space.n_estimators,
-        "early_stopping_rounds": space.early_stopping_rounds,
         "random_state": random_state,
         "n_jobs": -1,
         "verbosity": 0,
     }
+
+    if space.n_estimators_range is None:
+        # Legacy: a high ceiling that each fold's own early stopping cuts down.
+        params["n_estimators"] = space.n_estimators
+        params["early_stopping_rounds"] = space.early_stopping_rounds
+        return params
+
+    # Tuned: one value per trial, held across every fold, and no early stopping
+    # anywhere -- so the rounds the trial was scored at are exactly the rounds
+    # the holdout walk-forward and the production refit will use.
+    #
+    # Suggested LAST so that adding this dimension leaves the draw order of
+    # every parameter above unchanged; a seeded TPE sampler draws per-parameter
+    # in call order, so inserting it earlier would silently move every other
+    # range's samples.
+    params["n_estimators"] = trial.suggest_int(
+        "n_estimators",
+        space.n_estimators_range.low,
+        space.n_estimators_range.high,
+        log=space.n_estimators_range.log,
+    )
+    return params
 
 
 #: Optuna parameter name for the "weight at all?" decision.
 USE_SAMPLE_WEIGHT_PARAM = "use_sample_weight"
 
 #: Params belonging to the training protocol, not to XGBoost itself.
-NON_XGB_TRIAL_PARAMS = frozenset({"sample_weight_lambda", USE_SAMPLE_WEIGHT_PARAM})
+#: ``train_games`` is the size of the training window, which is a property of
+#: the CV layout rather than of the booster -- passing it to XGBRegressor would
+#: be silently accepted and ignored.
+NON_XGB_TRIAL_PARAMS = frozenset(
+    {"sample_weight_lambda", USE_SAMPLE_WEIGHT_PARAM, TRAIN_GAMES_PARAM}
+)
+
+
+def n_estimators_from_trial(trial: optuna.trial.FrozenTrial) -> int:
+    """Boosting rounds for the final fits, straight from the trial.
+
+    Order of preference, and why there is no ``max(50, ...)`` floor any more:
+
+    1. ``params["n_estimators"]`` -- the tuned value. Used verbatim. The floor
+       used to override this: it turned a selected 10.5 rounds into 50 in 16 of
+       the 38 runs in artifacts/experiments, i.e. the CV's answer was discarded
+       whenever it was small, silently and without a test covering it.
+    2. ``median_best_iteration`` / ``mean_best_iteration`` -- legacy runs, where
+       the rounds came from fold-level early stopping. Kept so an old trial can
+       still be replayed, but read the caveat: within one selected trial folds
+       stopped anywhere between 2 and 922 rounds, so this median summarises a
+       quantity with a 100x spread.
+    """
+    tuned = trial.params.get("n_estimators")
+    if tuned:
+        return int(tuned)
+
+    legacy = trial.user_attrs.get("median_best_iteration") or trial.user_attrs.get(
+        "mean_best_iteration"
+    )
+    if not legacy:
+        raise ValueError(
+            f"Trial {trial.number} records no n_estimators: neither a tuned "
+            "parameter nor a median/mean best_iteration from early stopping."
+        )
+    return int(round(float(legacy)))
 
 
 def resolve_final_params(
     trial: optuna.trial.FrozenTrial, config: ExperimentConfig
 ) -> tuple[dict[str, Any], int, float | None]:
     """Split a tuned trial into (xgb params, boosting rounds, decay rate)."""
-    from nba_ou.modeling.optuna_total_points import get_trial_n_estimators
-
     params = {k: v for k, v in trial.params.items() if k not in NON_XGB_TRIAL_PARAMS}
     lambda_ = trial.params.get("sample_weight_lambda")
 
@@ -182,7 +244,7 @@ def resolve_final_params(
     elif lambda_ is None and config.sample_weight.enabled:
         lambda_ = config.sample_weight.lambda_
 
-    return params, get_trial_n_estimators(trial), lambda_
+    return params, n_estimators_from_trial(trial), lambda_
 
 
 def fit_final_model(
@@ -279,25 +341,112 @@ def _resolve_trial_sample_weight_lambda(
     return float(trial.suggest_float("sample_weight_lambda", low, high, log=True))
 
 
+@dataclass
+class PooledPredictions:
+    """Every validation prediction of one trial, concatenated across folds."""
+
+    y_true: np.ndarray
+    y_pred: np.ndarray
+    #: The betting line per game. Only total_points needs it (its OU accuracy is
+    #: defined against the line); None for the other strategies.
+    line: np.ndarray | None = None
+
+    def __len__(self) -> int:
+        return int(len(self.y_true))
+
+
+@dataclass
+class _PooledCollector:
+    """Accumulates fold predictions so one metric can be computed over all games.
+
+    Exists because ``mean`` over folds weights a 4-game fold the same as a
+    12-game one. Under rolling_origin a fold is a few game-days and its size is
+    whatever the NBA schedule decided, so the fold means quietly reweight the
+    objective by calendar accident.
+    """
+
+    line_col: str | None = None
+    _y_true: list[np.ndarray] = field(default_factory=list)
+    _y_pred: list[np.ndarray] = field(default_factory=list)
+    _line: list[np.ndarray] = field(default_factory=list)
+
+    def add(
+        self, y_valid: pd.Series, y_pred: np.ndarray, X_valid: pd.DataFrame
+    ) -> None:
+        self._y_true.append(pd.to_numeric(y_valid, errors="coerce").to_numpy(float))
+        self._y_pred.append(np.asarray(y_pred, dtype=float))
+        if self.line_col is not None:
+            self._line.append(
+                pd.to_numeric(X_valid[self.line_col], errors="coerce").to_numpy(float)
+            )
+
+    @property
+    def n_games(self) -> int:
+        return int(sum(len(chunk) for chunk in self._y_true))
+
+    def pooled(self) -> PooledPredictions:
+        return PooledPredictions(
+            y_true=np.concatenate(self._y_true),
+            y_pred=np.concatenate(self._y_pred),
+            line=np.concatenate(self._line) if self._line else None,
+        )
+
+
+def _resolve_fold_set(
+    trial: optuna.Trial,
+    *,
+    config: ExperimentConfig,
+    splits: list[Split] | None,
+    split_provider: SplitProvider | None,
+) -> tuple[list[Split], int | None]:
+    """Fold set for this trial, plus the training window it was built at.
+
+    The window is sampled here, BEFORE any XGBoost parameter, so the draw order
+    a seeded sampler sees is fixed and documented. When it is not tuned no
+    ``suggest_*`` call happens at all, which is what keeps pre-existing studies
+    reproducible down to the byte.
+    """
+    if split_provider is not None:
+        train_games = split_provider.suggest_train_games(trial)
+        return split_provider.splits_for(train_games), train_games
+    if splits is None:
+        raise ValueError("run_objective needs either splits or a split_provider.")
+    return splits, config.walk_forward.train_games
+
+
 def run_objective(
     trial: optuna.Trial,
     *,
     X: pd.DataFrame,
     y: pd.Series,
-    splits: list[tuple[np.ndarray, np.ndarray]],
     config: ExperimentConfig,
     evaluate_fold: Callable[..., Any],
+    splits: list[Split] | None = None,
+    split_provider: SplitProvider | None = None,
+    pooled_metrics: Callable[[PooledPredictions], dict[str, float]] | None = None,
+    pooled_line_col: str | None = None,
     dates: pd.Series | None = None,
 ) -> float:
-    """Mean validation MAE across time-aware folds, minimised by Optuna.
+    """Validation MAE across time-aware folds, minimised by Optuna.
 
-    Mirrors the aggregation and ``user_attrs`` contract of the upstream
-    objectives (``mean_mae``/``mean_rmse``/``mean_ou_acc``/
-    ``median_best_iteration``/...), which downstream helpers such as
-    ``select_best_trial_lexicographic`` and ``summarize_optuna_trials`` read.
-    Per-fold metrics come from upstream's own ``evaluate_fold_*`` so metric
-    definitions cannot drift.
+    Two aggregations, chosen by ``optuna.objective_aggregation``: the mean of the
+    folds' own MAEs (legacy), or one MAE pooled over every validation game. Both
+    record ``mean_*`` user attrs; the pooled mode additionally records
+    ``pooled_*`` and returns the pooled value.
+
+    Two fitting modes, chosen by whether ``n_estimators`` is tuned. In the legacy
+    mode each fold early-stops on the very games that then score it. In the tuned
+    mode there is no ``eval_set`` at all: the sampled round count is trained in
+    full on every fold, which is exactly what the holdout walk-forward and the
+    production refit do.
+
+    Per-fold metrics still come from upstream's own ``evaluate_fold_*`` so those
+    definitions cannot drift; the pooled metrics call the same scorer functions
+    upstream calls, on the concatenated arrays.
     """
+    fold_set, train_games = _resolve_fold_set(
+        trial, config=config, splits=splits, split_provider=split_provider
+    )
     params = build_xgb_params(
         trial,
         config.optuna.search_space,
@@ -306,9 +455,12 @@ def run_objective(
         device=config.device,
     )
     weight_lambda = _resolve_trial_sample_weight_lambda(trial, config.sample_weight)
+    use_early_stopping = config.uses_fold_early_stopping
+    pool_objective = config.pools_objective and pooled_metrics is not None
 
     fold_metrics: list[Any] = []
-    for fold_num, (train_idx, valid_idx) in enumerate(splits, start=1):
+    collector = _PooledCollector(line_col=pooled_line_col)
+    for fold_num, (train_idx, valid_idx) in enumerate(fold_set, start=1):
         X_train, X_valid = X.iloc[train_idx], X.iloc[valid_idx]
         y_train, y_valid = y.iloc[train_idx], y.iloc[valid_idx]
 
@@ -323,15 +475,28 @@ def run_objective(
             X_train,
             y_train,
             sample_weight=sample_weight,
-            eval_set=[(X_valid, y_valid)],
+            # No eval_set once the rounds are tuned: there is nothing to stop
+            # early, and handing the fold's own answers to fit() is precisely
+            # the bias this mode removes.
+            eval_set=[(X_valid, y_valid)] if use_early_stopping else None,
             verbose=False,
         )
         fold_metrics.append(
             evaluate_fold(model, X_valid, y_valid, fold=fold_num, n_train=len(X_train))
         )
+        collector.add(y_valid, model.predict(X_valid), X_valid)
 
-        trial.report(float(np.mean([m.mae for m in fold_metrics])), step=fold_num)
+        running = (
+            float(mean_absolute_error(*_pooled_arrays(collector)))
+            if pool_objective
+            else float(np.mean([m.mae for m in fold_metrics]))
+        )
+        trial.report(running, step=fold_num)
         if trial.should_prune():
+            # Recorded so a pruned trial can be audited: "killed after 7 folds
+            # / 210 games" is a judgement you can check, "pruned" is not.
+            trial.set_user_attr("pruned_after_folds", fold_num)
+            trial.set_user_attr("pruned_after_games", collector.n_games)
             raise optuna.TrialPruned()
 
     def _mean(attr: str) -> float:
@@ -347,6 +512,58 @@ def run_objective(
     trial.set_user_attr("mean_ou_acc_edge_2", _mean("ou_accuracy_edge_2"))
     trial.set_user_attr("mean_ou_acc_edge_3", _mean("ou_accuracy_edge_3"))
     trial.set_user_attr("mean_ou_acc_edge_4", _mean("ou_accuracy_edge_4"))
+    _record_protocol_attrs(
+        trial,
+        config=config,
+        fold_metrics=fold_metrics,
+        n_folds=len(fold_set),
+        n_games=collector.n_games,
+        train_games=train_games,
+        params=params,
+    )
+    trial.set_user_attr("fold_metrics", [vars(m) for m in fold_metrics])
+
+    if not pool_objective:
+        return mean_mae
+
+    assert pooled_metrics is not None
+    pooled = collector.pooled()
+    for name, value in pooled_metrics(pooled).items():
+        trial.set_user_attr(f"pooled_{name}", value)
+    return float(trial.user_attrs["pooled_mae"])
+
+
+def _pooled_arrays(collector: _PooledCollector) -> tuple[np.ndarray, np.ndarray]:
+    pooled = collector.pooled()
+    return pooled.y_true, pooled.y_pred
+
+
+def _record_protocol_attrs(
+    trial: optuna.Trial,
+    *,
+    config: ExperimentConfig,
+    fold_metrics: list[Any],
+    n_folds: int,
+    n_games: int,
+    train_games: int | None,
+    params: dict[str, Any],
+) -> None:
+    """Record what the trial actually trained, so nothing has to be re-derived.
+
+    ``median_best_iteration`` is written ONLY in the legacy early-stopping mode.
+    Once the rounds are tuned there is no best iteration -- xgboost reports none
+    without an eval_set, and upstream's fold evaluator then falls back to
+    ``n_estimators - 1``, which would look like a measured stopping point and be
+    off by one if anything downstream read it. ``n_estimators`` lives in
+    ``trial.params``, which is where the resolver looks first.
+    """
+    trial.set_user_attr("n_folds", int(n_folds))
+    trial.set_user_attr("n_validation_games", int(n_games))
+    trial.set_user_attr("n_estimators", int(params["n_estimators"]))
+    if train_games is not None:
+        trial.set_user_attr("train_games", int(train_games))
+    if not config.uses_fold_early_stopping:
+        return
     trial.set_user_attr(
         "mean_best_iteration",
         int(round(np.mean([m.best_iteration for m in fold_metrics]))),
@@ -354,12 +571,19 @@ def run_objective(
     trial.set_user_attr(
         "median_best_iteration", int(np.median([m.best_iteration for m in fold_metrics]))
     )
-    trial.set_user_attr("fold_metrics", [vars(m) for m in fold_metrics])
-    return mean_mae
 
 
-def _create_study(config: ExperimentConfig) -> optuna.Study:
-    """One study construction path, persistent or in-memory."""
+def _create_study(
+    config: ExperimentConfig, *, n_folds: int | None = None
+) -> optuna.Study:
+    """One study construction path, persistent or in-memory.
+
+    ``n_folds`` sizes the pruner's warmup. A pruning step is one fold, so a
+    fixed warmup means something different at 12 folds of ~50 games than at 28
+    folds of ~30 -- see ExperimentConfig.resolve_pruner_warmup_steps, which
+    floors the derived value at the historical 5 so no existing config becomes
+    less patient.
+    """
     kwargs: dict[str, Any] = {}
     if config.optuna.persistent_storage:
         kwargs = {
@@ -369,10 +593,77 @@ def _create_study(config: ExperimentConfig) -> optuna.Study:
     return optuna.create_study(
         direction="minimize",
         sampler=TPESampler(seed=config.random_state),
-        pruner=MedianPruner(n_warmup_steps=5),
+        pruner=MedianPruner(
+            n_warmup_steps=config.resolve_pruner_warmup_steps(n_folds)
+        ),
         study_name=config.resolved_study_name,
         **kwargs,
     )
+
+
+def _provider_from(
+    splits: list[Split] | None,
+    split_provider: SplitProvider | None,
+    config: ExperimentConfig,
+) -> SplitProvider:
+    """Accept either shape at the tune() boundary.
+
+    Existing callers (and several tests) pass a plain list of splits. Wrapping it
+    in a provider whose window is fixed keeps one code path inside the objective
+    without changing what those callers get: a provider with no
+    ``train_games_choices`` issues no ``suggest_*`` call, so the sampler sees the
+    identical sequence of draws it always did.
+    """
+    if split_provider is not None:
+        return split_provider
+    if splits is None:
+        raise ValueError("Provide either splits or split_provider.")
+    return SplitProvider(
+        fold_info=pd.DataFrame(),
+        default_train_games=config.walk_forward.train_games,
+        fixed_splits=splits,
+    )
+
+
+def pooled_total_points_metrics(
+    pooled: PooledPredictions,
+) -> dict[str, float]:
+    """Pooled metrics for a total-points regressor.
+
+    Calls the same scorer functions ``evaluate_fold_total_points`` calls, on the
+    concatenated arrays, so a pooled number and a per-fold number can never mean
+    two different things.
+    """
+    assert pooled.line is not None, "total_points pooling needs the betting line"
+    return {
+        "mae": float(mean_absolute_error(pooled.y_true, pooled.y_pred)),
+        "rmse": float(np.sqrt(mean_squared_error(pooled.y_true, pooled.y_pred))),
+        "r2": float(r2_score(pooled.y_true, pooled.y_pred)),
+        "ou_acc": float(
+            over_under_betting_accuracy_total_points(
+                y_true=pooled.y_true,
+                y_pred=pooled.y_pred,
+                betting_line=pooled.line,
+            )
+        ),
+        "n_games": float(len(pooled)),
+    }
+
+
+def pooled_line_error_metrics(pooled: PooledPredictions) -> dict[str, float]:
+    """Pooled metrics for a line-error regressor."""
+    return {
+        "mae": float(mean_absolute_error(pooled.y_true, pooled.y_pred)),
+        "rmse": float(np.sqrt(mean_squared_error(pooled.y_true, pooled.y_pred))),
+        "r2": float(r2_score(pooled.y_true, pooled.y_pred)),
+        "ou_acc": float(
+            over_under_betting_accuracy_error_line(
+                y_true_error=pooled.y_true,
+                y_pred_error=pooled.y_pred,
+            )
+        ),
+        "n_games": float(len(pooled)),
+    }
 
 
 def _optimize(
@@ -415,14 +706,23 @@ def _persistent_storage_url(config: ExperimentConfig) -> str:
 @dataclass
 class TotalPointsStrategy:
     line_col: str
+    #: Rank trials on metrics pooled over every validation game rather than on
+    #: the mean of the folds' own metrics. Set from
+    #: ``optuna.objective_aggregation`` in get_strategy, and carried on the
+    #: strategy because select_best_trial/summarize_* take no config -- the
+    #: alternative, inferring it from which user_attrs happen to be present,
+    #: would silently rank a run one way or the other with nothing recording
+    #: which.
+    pooled: bool = False
 
     def tune(
         self,
         *,
         X: pd.DataFrame,
         y: pd.Series,
-        splits: list[tuple[np.ndarray, np.ndarray]],
         config: ExperimentConfig,
+        splits: list[tuple[np.ndarray, np.ndarray]] | None = None,
+        split_provider: SplitProvider | None = None,
         dates: pd.Series | None = None,
     ) -> optuna.Study:
         def evaluate_fold(
@@ -437,15 +737,18 @@ class TotalPointsStrategy:
                 model, X_valid, y_valid, self.line_col, fold=fold, n_train=n_train
             )
 
+        provider = _provider_from(splits, split_provider, config)
         return _optimize(
-            _create_study(config),
+            _create_study(config, n_folds=provider.n_folds),
             lambda trial: run_objective(
                 trial,
                 X=X,
                 y=y,
-                splits=splits,
+                split_provider=provider,
                 config=config,
                 evaluate_fold=evaluate_fold,
+                pooled_metrics=pooled_total_points_metrics,
+                pooled_line_col=self.line_col,
                 # Required, not optional: run_objective skips weighting entirely
                 # when dates are absent, so omitting this would let Optuna draw
                 # a sample_weight_lambda, record it on the trial, and score the
@@ -463,6 +766,12 @@ class TotalPointsStrategy:
         mae_tolerance_abs: float | None,
         mae_tolerance_pct: float | None,
     ) -> optuna.trial.FrozenTrial:
+        if self.pooled:
+            return select_best_trial_lexicographic_pooled(
+                study,
+                mae_tolerance_abs=mae_tolerance_abs,
+                mae_tolerance_pct=mae_tolerance_pct,
+            )
         return _total_points.select_best_trial_lexicographic(
             study,
             mae_tolerance_abs=mae_tolerance_abs,
@@ -470,6 +779,8 @@ class TotalPointsStrategy:
         )
 
     def summarize_trials(self, study: optuna.Study) -> pd.DataFrame:
+        if self.pooled:
+            return summarize_trials_pooled(study, keys=_POOLED_REGRESSOR_KEYS)
         return _total_points.summarize_optuna_trials(study)
 
     def summarize_candidates(
@@ -479,6 +790,14 @@ class TotalPointsStrategy:
         mae_tolerance_abs: float | None,
         mae_tolerance_pct: float | None,
     ) -> pd.DataFrame:
+        if self.pooled:
+            return summarize_candidates_pooled(
+                study,
+                primary_key="pooled_mae",
+                tolerance_abs=mae_tolerance_abs,
+                tolerance_pct=mae_tolerance_pct,
+                keys=_POOLED_REGRESSOR_KEYS,
+            )
         return _total_points.summarize_lexicographic_candidates(
             study,
             mae_tolerance_abs=mae_tolerance_abs,
@@ -525,6 +844,14 @@ class TotalPointsStrategy:
 @dataclass
 class LineErrorStrategy:
     sample_weight: SampleWeightConfig
+    #: Rank trials on metrics pooled over every validation game rather than on
+    #: the mean of the folds' own metrics. Set from
+    #: ``optuna.objective_aggregation`` in get_strategy, and carried on the
+    #: strategy because select_best_trial/summarize_* take no config -- the
+    #: alternative, inferring it from which user_attrs happen to be present,
+    #: would silently rank a run one way or the other with nothing recording
+    #: which.
+    pooled: bool = False
 
     def _tune_sample_weight_kwargs(self, *, dates: pd.Series | None) -> dict[str, Any]:
         if not self.sample_weight.enabled:
@@ -551,8 +878,9 @@ class LineErrorStrategy:
         *,
         X: pd.DataFrame,
         y: pd.Series,
-        splits: list[tuple[np.ndarray, np.ndarray]],
         config: ExperimentConfig,
+        splits: list[tuple[np.ndarray, np.ndarray]] | None = None,
+        split_provider: SplitProvider | None = None,
         dates: pd.Series | None = None,
     ) -> optuna.Study:
         def evaluate_fold(
@@ -567,15 +895,17 @@ class LineErrorStrategy:
                 model, X_valid, y_valid, fold=fold, n_train=n_train
             )
 
+        provider = _provider_from(splits, split_provider, config)
         return _optimize(
-            _create_study(config),
+            _create_study(config, n_folds=provider.n_folds),
             lambda trial: run_objective(
                 trial,
                 X=X,
                 y=y,
-                splits=splits,
+                split_provider=provider,
                 config=config,
                 evaluate_fold=evaluate_fold,
+                pooled_metrics=pooled_line_error_metrics,
                 dates=dates,
             ),
             config,
@@ -588,6 +918,12 @@ class LineErrorStrategy:
         mae_tolerance_abs: float | None,
         mae_tolerance_pct: float | None,
     ) -> optuna.trial.FrozenTrial:
+        if self.pooled:
+            return select_best_trial_lexicographic_pooled(
+                study,
+                mae_tolerance_abs=mae_tolerance_abs,
+                mae_tolerance_pct=mae_tolerance_pct,
+            )
         return _error_line.select_best_trial_lexicographic(
             study,
             mae_tolerance_abs=mae_tolerance_abs,
@@ -595,6 +931,8 @@ class LineErrorStrategy:
         )
 
     def summarize_trials(self, study: optuna.Study) -> pd.DataFrame:
+        if self.pooled:
+            return summarize_trials_pooled(study, keys=_POOLED_REGRESSOR_KEYS)
         return _error_line.summarize_optuna_trials(study)
 
     def summarize_candidates(
@@ -604,6 +942,14 @@ class LineErrorStrategy:
         mae_tolerance_abs: float | None,
         mae_tolerance_pct: float | None,
     ) -> pd.DataFrame:
+        if self.pooled:
+            return summarize_candidates_pooled(
+                study,
+                primary_key="pooled_mae",
+                tolerance_abs=mae_tolerance_abs,
+                tolerance_pct=mae_tolerance_pct,
+                keys=_POOLED_REGRESSOR_KEYS,
+            )
         return _error_line.summarize_lexicographic_candidates(
             study,
             mae_tolerance_abs=mae_tolerance_abs,
@@ -661,19 +1007,18 @@ class ClassifierFoldMetrics:
     best_iteration: int
 
 
-def _classifier_fold_metrics(
-    model: XGBClassifier,
-    X_valid: pd.DataFrame,
-    y_valid: pd.Series,
+def classifier_scores(
+    y: np.ndarray,
+    p_over: np.ndarray,
     *,
-    fold: int,
-    n_train: int,
     flat_decimal_odds: float,
     ev_threshold: float,
-) -> ClassifierFoldMetrics:
-    y = pd.to_numeric(y_valid, errors="coerce").to_numpy(dtype=float)
-    p_over = np.asarray(model.predict_proba(X_valid), dtype=float)[:, 1]
+) -> dict[str, float]:
+    """Probability quality and betting outcome for a set of games.
 
+    Shared by the per-fold metrics and the pooled ones, so "log loss" and "ROI"
+    cannot come to mean two different things depending on which table you read.
+    """
     ev_over = p_over * flat_decimal_odds - 1.0
     ev_under = (1.0 - p_over) * flat_decimal_odds - 1.0
     bet_over = ev_over >= ev_under
@@ -691,19 +1036,66 @@ def _classifier_fold_metrics(
     else:
         roi = 0.0
 
+    return {
+        "log_loss": log_loss(y, p_over),
+        "brier": brier_score(y, p_over),
+        "ou_acc": float(correct.mean()) if len(correct) else float("nan"),
+        "n_bets": float(n_bets),
+        "roi": float(roi),
+        "n_games": float(len(y)),
+    }
+
+
+def _classifier_fold_metrics(
+    model: XGBClassifier,
+    X_valid: pd.DataFrame,
+    y_valid: pd.Series,
+    *,
+    fold: int,
+    n_train: int,
+    flat_decimal_odds: float,
+    ev_threshold: float,
+) -> ClassifierFoldMetrics:
+    y = pd.to_numeric(y_valid, errors="coerce").to_numpy(dtype=float)
+    p_over = np.asarray(model.predict_proba(X_valid), dtype=float)[:, 1]
+    scores = classifier_scores(
+        y, p_over, flat_decimal_odds=flat_decimal_odds, ev_threshold=ev_threshold
+    )
+
     best_iteration = int(getattr(model, "best_iteration", 0) or 0) + 1
 
     return ClassifierFoldMetrics(
         fold=fold,
         n_train=n_train,
         n_valid=int(len(y)),
-        log_loss=log_loss(y, p_over),
-        brier=brier_score(y, p_over),
-        ou_accuracy=float(correct.mean()) if len(correct) else float("nan"),
-        n_bets=n_bets,
-        roi=roi,
+        log_loss=scores["log_loss"],
+        brier=scores["brier"],
+        ou_accuracy=scores["ou_acc"],
+        n_bets=int(scores["n_bets"]),
+        roi=scores["roi"],
         best_iteration=best_iteration,
     )
+
+
+def make_pooled_classifier_metrics(
+    config: ExperimentConfig,
+) -> Callable[[PooledPredictions], dict[str, float]]:
+    """Pooled classifier metrics, keyed the way run_objective expects.
+
+    ``pooled_mae`` is deliberately absent: point error against a 0/1 label is not
+    a points error. The classifier objective returns pooled LOG LOSS instead, and
+    reads it under its own key.
+    """
+
+    def pooled_metrics(pooled: PooledPredictions) -> dict[str, float]:
+        return classifier_scores(
+            pooled.y_true,
+            pooled.y_pred,
+            flat_decimal_odds=config.betting.flat_decimal_odds,
+            ev_threshold=config.betting.primary_ev_threshold,
+        )
+
+    return pooled_metrics
 
 
 def run_classifier_objective(
@@ -711,8 +1103,9 @@ def run_classifier_objective(
     *,
     X: pd.DataFrame,
     y: pd.Series,
-    splits: list[tuple[np.ndarray, np.ndarray]],
     config: ExperimentConfig,
+    splits: list[Split] | None = None,
+    split_provider: SplitProvider | None = None,
     dates: pd.Series | None = None,
 ) -> float:
     """Mean validation LOG LOSS across time-aware folds, minimised by Optuna.
@@ -726,7 +1119,13 @@ def run_classifier_objective(
     Keep the scale in mind when reading trial values: on a ~50/50 outcome a
     perfectly calibrated 55% model scores 0.68814 against 0.69315 for a coin
     flip. Differences between good and bad trials live in the third decimal.
+
+    Under ``objective_aggregation: pooled`` the returned value is log loss over
+    every validation game rather than the mean of the folds' own log losses.
     """
+    fold_set, train_games = _resolve_fold_set(
+        trial, config=config, splits=splits, split_provider=split_provider
+    )
     params = build_xgb_params(
         trial,
         config.optuna.search_space,
@@ -736,9 +1135,12 @@ def run_classifier_objective(
     )
     params["eval_metric"] = "logloss"
     weight_lambda = _resolve_trial_sample_weight_lambda(trial, config.sample_weight)
+    use_early_stopping = config.uses_fold_early_stopping
+    pool_objective = config.pools_objective
 
     fold_metrics: list[ClassifierFoldMetrics] = []
-    for fold_num, (train_idx, valid_idx) in enumerate(splits, start=1):
+    collector = _PooledCollector()
+    for fold_num, (train_idx, valid_idx) in enumerate(fold_set, start=1):
         X_train, X_valid = X.iloc[train_idx], X.iloc[valid_idx]
         y_train, y_valid = y.iloc[train_idx], y.iloc[valid_idx]
 
@@ -753,7 +1155,7 @@ def run_classifier_objective(
             X_train,
             y_train,
             sample_weight=sample_weight,
-            eval_set=[(X_valid, y_valid)],
+            eval_set=[(X_valid, y_valid)] if use_early_stopping else None,
             verbose=False,
         )
         fold_metrics.append(
@@ -767,9 +1169,25 @@ def run_classifier_objective(
                 ev_threshold=config.betting.primary_ev_threshold,
             )
         )
+        # P(OVER) travels as "y_pred" so one collector serves every strategy.
+        collector.add(
+            y_valid, np.asarray(model.predict_proba(X_valid), dtype=float)[:, 1], X_valid
+        )
 
-        trial.report(float(np.mean([m.log_loss for m in fold_metrics])), step=fold_num)
+        if pool_objective:
+            pooled_so_far = collector.pooled()
+            running = classifier_scores(
+                pooled_so_far.y_true,
+                pooled_so_far.y_pred,
+                flat_decimal_odds=config.betting.flat_decimal_odds,
+                ev_threshold=config.betting.primary_ev_threshold,
+            )["log_loss"]
+        else:
+            running = float(np.mean([m.log_loss for m in fold_metrics]))
+        trial.report(running, step=fold_num)
         if trial.should_prune():
+            trial.set_user_attr("pruned_after_folds", fold_num)
+            trial.set_user_attr("pruned_after_games", collector.n_games)
             raise optuna.TrialPruned()
 
     def _mean(attr: str) -> float:
@@ -783,16 +1201,25 @@ def run_classifier_objective(
     trial.set_user_attr("mean_ou_acc", _mean("ou_accuracy"))
     trial.set_user_attr("mean_roi", _mean("roi"))
     trial.set_user_attr("mean_n_bets", _mean("n_bets"))
-    trial.set_user_attr(
-        "mean_best_iteration",
-        int(round(np.mean([m.best_iteration for m in fold_metrics]))),
-    )
-    trial.set_user_attr(
-        "median_best_iteration",
-        int(np.median([m.best_iteration for m in fold_metrics])),
+    _record_protocol_attrs(
+        trial,
+        config=config,
+        fold_metrics=fold_metrics,
+        n_folds=len(fold_set),
+        n_games=collector.n_games,
+        train_games=train_games,
+        params=params,
     )
     trial.set_user_attr("fold_metrics", [vars(m) for m in fold_metrics])
-    return mean_logloss
+
+    if not pool_objective:
+        return mean_logloss
+
+    for name, value in make_pooled_classifier_metrics(config)(
+        collector.pooled()
+    ).items():
+        trial.set_user_attr(f"pooled_{name}", value)
+    return float(trial.user_attrs["pooled_log_loss"])
 
 
 def _completed_classifier_trials(study: optuna.Study) -> list[optuna.trial.FrozenTrial]:
@@ -804,6 +1231,189 @@ def _completed_classifier_trials(study: optuna.Study) -> list[optuna.trial.Froze
     if not trials:
         raise ValueError("No completed trials to select from.")
     return trials
+
+
+#: Metrics reported per trial under each aggregation. The pooled names are
+#: separate keys rather than a reuse of ``mean_*`` on purpose: one attribute that
+#: means "average of the folds" in some runs and "over all games" in others is
+#: exactly the overloading that has produced silent no-ops in this pipeline
+#: before. Both are always written, so a pooled run can still be read as means.
+_POOLED_REGRESSOR_KEYS: tuple[str, ...] = (
+    "pooled_mae",
+    "pooled_rmse",
+    "pooled_r2",
+    "pooled_ou_acc",
+    "pooled_n_games",
+)
+_POOLED_CLASSIFIER_KEYS: tuple[str, ...] = (
+    "pooled_log_loss",
+    "pooled_brier",
+    "pooled_ou_acc",
+    "pooled_roi",
+    "pooled_n_bets",
+    "pooled_n_games",
+)
+
+
+def _pooled_metric(trial: optuna.trial.FrozenTrial, key: str) -> float:
+    """A trial's pooled metric, falling back to its objective value.
+
+    ``_completed_classifier_trials`` has already excluded trials with no value,
+    so the fallback is always a real number -- but say so explicitly rather than
+    letting ``float(None)`` be the thing that would raise, several frames away
+    from the cause.
+    """
+    value = trial.user_attrs.get(key, trial.value)
+    if value is None:
+        raise ValueError(
+            f"Trial {trial.number} has neither a {key!r} user attribute nor an "
+            "objective value, so it cannot be ranked."
+        )
+    return float(value)
+
+
+def select_best_trial_lexicographic_pooled(
+    study: optuna.Study,
+    *,
+    mae_tolerance_abs: float | None = 0.10,
+    mae_tolerance_pct: float | None = None,
+) -> optuna.trial.FrozenTrial:
+    """Regressor selection on pooled metrics.
+
+    Identical rule to upstream's ``select_best_trial_lexicographic`` -- best MAE
+    within a tolerance, then maximum OU accuracy, then RMSE and MAE as
+    tiebreaks -- reading ``pooled_*`` instead of ``mean_*``. Kept separate rather
+    than made conditional inside upstream, so a legacy run cannot accidentally be
+    ranked on a mixture of the two scales.
+    """
+    trials = _completed_classifier_trials(study)
+    best = min(_pooled_metric(t, "pooled_mae") for t in trials)
+    if mae_tolerance_pct is not None:
+        cutoff = best * (1.0 + mae_tolerance_pct)
+    else:
+        cutoff = best + (mae_tolerance_abs or 0.0)
+
+    candidates = [
+        t for t in trials if _pooled_metric(t, "pooled_mae") <= cutoff
+    ]
+    if not candidates:
+        raise ValueError("No candidate trials found within the MAE tolerance.")
+
+    return min(
+        candidates,
+        key=lambda trial: (
+            -float(trial.user_attrs.get("pooled_ou_acc", float("-inf"))),
+            float(trial.user_attrs.get("pooled_rmse", float("inf"))),
+            _pooled_metric(trial, "pooled_mae"),
+            trial.number,
+        ),
+    )
+
+
+def select_best_classifier_trial_lexicographic_pooled(
+    study: optuna.Study, *, logloss_tolerance_abs: float | None = 0.002
+) -> optuna.trial.FrozenTrial:
+    """Classifier selection on pooled metrics; same rule, pooled keys."""
+    trials = _completed_classifier_trials(study)
+    best = min(_pooled_metric(t, "pooled_log_loss") for t in trials)
+    cutoff = best + (logloss_tolerance_abs or 0.0)
+
+    candidates = [
+        t
+        for t in trials
+        if _pooled_metric(t, "pooled_log_loss") <= cutoff
+    ]
+    if not candidates:
+        candidates = trials
+
+    return min(
+        candidates,
+        key=lambda trial: (
+            -float(trial.user_attrs.get("pooled_ou_acc", 0.0)),
+            -float(trial.user_attrs.get("pooled_roi", 0.0)),
+            _pooled_metric(trial, "pooled_log_loss"),
+            trial.number,
+        ),
+    )
+
+
+def summarize_trials_pooled(study: optuna.Study, *, keys: tuple[str, ...]) -> pd.DataFrame:
+    """One row per trial with both aggregations and the tuned parameters.
+
+    ``**trial.params`` is what makes ``n_estimators`` and ``train_games`` appear
+    as ordinary hyperparameter columns once they are tuned -- no special-casing
+    needed, and no chance of a selected value that never reaches the report.
+    """
+    protocol_keys = (
+        "n_folds",
+        "n_validation_games",
+        "n_estimators",
+        "train_games",
+        "sample_weight_lambda",
+        "pruned_after_folds",
+        "pruned_after_games",
+    )
+    mean_keys = (
+        "mean_mae",
+        "mean_rmse",
+        "mean_r2",
+        "mean_ou_acc",
+        "mean_logloss",
+        "mean_brier",
+        "mean_roi",
+        "mean_n_bets",
+    )
+    rows = [
+        {
+            "trial": trial.number,
+            "state": trial.state.name,
+            "value": trial.value,
+            **{key: trial.user_attrs.get(key) for key in keys},
+            **{
+                key: trial.user_attrs.get(key)
+                for key in mean_keys
+                if key in trial.user_attrs
+            },
+            **{key: trial.user_attrs.get(key) for key in protocol_keys},
+            **trial.params,
+        }
+        for trial in study.trials
+    ]
+    return pd.DataFrame(rows).sort_values("trial").reset_index(drop=True)
+
+
+def summarize_candidates_pooled(
+    study: optuna.Study,
+    *,
+    primary_key: str,
+    tolerance_abs: float | None,
+    tolerance_pct: float | None = None,
+    keys: tuple[str, ...],
+) -> pd.DataFrame:
+    """The trials inside the tolerance, in the order selection would rank them."""
+    trials = _completed_classifier_trials(study)
+    best = min(_pooled_metric(t, primary_key) for t in trials)
+    if tolerance_pct is not None:
+        cutoff = best * (1.0 + tolerance_pct)
+    else:
+        cutoff = best + (tolerance_abs or 0.0)
+
+    rows = [
+        {
+            "trial": trial.number,
+            **{key: trial.user_attrs.get(key) for key in keys},
+            **trial.params,
+        }
+        for trial in trials
+        if _pooled_metric(trial, primary_key) <= cutoff
+    ]
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        return frame
+    ou_column = "pooled_ou_acc" if "pooled_ou_acc" in frame.columns else primary_key
+    return frame.sort_values(
+        [ou_column, primary_key], ascending=[False, True]
+    ).reset_index(drop=True)
 
 
 def select_best_classifier_trial_lexicographic(
@@ -905,23 +1515,33 @@ class OverUnderClassifierStrategy:
     """
 
     line_col: str
+    #: Rank trials on metrics pooled over every validation game rather than on
+    #: the mean of the folds' own metrics. Set from
+    #: ``optuna.objective_aggregation`` in get_strategy, and carried on the
+    #: strategy because select_best_trial/summarize_* take no config -- the
+    #: alternative, inferring it from which user_attrs happen to be present,
+    #: would silently rank a run one way or the other with nothing recording
+    #: which.
+    pooled: bool = False
 
     def tune(
         self,
         *,
         X: pd.DataFrame,
         y: pd.Series,
-        splits: list[tuple[np.ndarray, np.ndarray]],
         config: ExperimentConfig,
+        splits: list[tuple[np.ndarray, np.ndarray]] | None = None,
+        split_provider: SplitProvider | None = None,
         dates: pd.Series | None = None,
     ) -> optuna.Study:
+        provider = _provider_from(splits, split_provider, config)
         return _optimize(
-            _create_study(config),
+            _create_study(config, n_folds=provider.n_folds),
             lambda trial: run_classifier_objective(
                 trial,
                 X=X,
                 y=y,
-                splits=splits,
+                split_provider=provider,
                 config=config,
                 dates=dates,
             ),
@@ -939,6 +1559,10 @@ class OverUnderClassifierStrategy:
         # whose scale is unrelated. The parameters stay in the signature so the
         # strategy remains interchangeable with the regressors for callers.
         del mae_tolerance_abs, mae_tolerance_pct
+        if self.pooled:
+            return select_best_classifier_trial_lexicographic_pooled(
+                study, logloss_tolerance_abs=self._logloss_tolerance
+            )
         return select_best_classifier_trial_lexicographic(
             study, logloss_tolerance_abs=self._logloss_tolerance
         )
@@ -948,6 +1572,8 @@ class OverUnderClassifierStrategy:
     _logloss_tolerance: float | None = 0.002
 
     def summarize_trials(self, study: optuna.Study) -> pd.DataFrame:
+        if self.pooled:
+            return summarize_trials_pooled(study, keys=_POOLED_CLASSIFIER_KEYS)
         return summarize_classifier_trials(study)
 
     def summarize_candidates(
@@ -958,6 +1584,13 @@ class OverUnderClassifierStrategy:
         mae_tolerance_pct: float | None,
     ) -> pd.DataFrame:
         del mae_tolerance_abs, mae_tolerance_pct
+        if self.pooled:
+            return summarize_candidates_pooled(
+                study,
+                primary_key="pooled_log_loss",
+                tolerance_abs=self._logloss_tolerance,
+                keys=_POOLED_CLASSIFIER_KEYS,
+            )
         return summarize_classifier_candidates(
             study, logloss_tolerance_abs=self._logloss_tolerance
         )
@@ -1028,9 +1661,14 @@ def get_strategy(config: ExperimentConfig) -> TargetFamilyStrategy:
         assert config.line_col is not None  # enforced by ExperimentConfig validation
         return OverUnderClassifierStrategy(
             line_col=config.line_col,
+            pooled=config.pools_objective,
             _logloss_tolerance=config.optuna.logloss_tolerance_abs,
         )
     if config.strategy == PredictionStrategy.TOTAL_POINTS_REGRESSOR:
         assert config.line_col is not None  # enforced by ExperimentConfig validation
-        return TotalPointsStrategy(line_col=config.line_col)
-    return LineErrorStrategy(sample_weight=config.sample_weight)
+        return TotalPointsStrategy(
+            line_col=config.line_col, pooled=config.pools_objective
+        )
+    return LineErrorStrategy(
+        sample_weight=config.sample_weight, pooled=config.pools_objective
+    )

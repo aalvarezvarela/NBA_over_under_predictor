@@ -112,9 +112,7 @@ def test_repo_experiment_definitions_are_valid(relative_path):
     assert config.data.exclude_playoffs is True
     # Compare to the code defaults rather than a literal, so this test
     # tracks intentional changes instead of blocking them.
-    from training_pipeline.config import SearchSpaceConfig
-
-    assert config.optuna.search_space == SearchSpaceConfig()
+    assert config.optuna.search_space == expected_search_space(config)
 
 
 def test_repo_line_error_definition_enables_recency_weighting():
@@ -126,14 +124,42 @@ def test_repo_line_error_definition_enables_recency_weighting():
     assert config.optuna.mae_tolerance_abs == 0.05  # overrides base 0.10
 
 
+def expected_search_space(config):
+    """The space a config should resolve to, given the defaults it inherits.
+
+    Two automatic transforms are applied by ExperimentConfig validation and both
+    are intentional, so a test comparing against a bare ``SearchSpaceConfig()``
+    would now fail on the transform rather than on drift:
+
+      * a classifier inherits CLASSIFIER_SEARCH_SPACE (hessian-scaled ranges);
+      * ``optuna.tune_n_estimators`` -- on by default in _base.yaml -- fills in
+        the strategy's n_estimators range from N_ESTIMATORS_RANGES.
+
+    Rebuilding the expectation from those same sources keeps the guard: change
+    any OTHER range in _base.yaml and this still fails.
+    """
+    from training_pipeline.config import (
+        CLASSIFIER_SEARCH_SPACE,
+        N_ESTIMATORS_RANGES,
+        SearchSpaceConfig,
+    )
+
+    base = (
+        CLASSIFIER_SEARCH_SPACE if config.is_classifier else SearchSpaceConfig()
+    ).model_copy(deep=True)
+    if config.optuna.tune_n_estimators:
+        base.n_estimators_range = N_ESTIMATORS_RANGES[config.strategy].model_copy(
+            deep=True
+        )
+    return base
+
+
 def test_base_yaml_search_space_matches_the_code_defaults():
     """_base.yaml documents the search space; if it drifts from the pydantic
     defaults the file becomes misleading.
     """
-    from training_pipeline.config import SearchSpaceConfig
-
     config = load_config(REPO_EXPERIMENTS / "total_points/3_seasons.yaml")
-    assert config.optuna.search_space == SearchSpaceConfig()
+    assert config.optuna.search_space == expected_search_space(config)
 
 
 # --- the checked-in campaign must be correct as written ---------------------
@@ -174,7 +200,10 @@ def test_campaign_classifiers_get_the_hessian_scaled_space():
 
     for window in (2500, 3750):
         config = load_config(CAMPAIGN / f"classifier_{window}.yaml")
-        assert config.optuna.search_space == CLASSIFIER_SEARCH_SPACE, window
+        assert config.optuna.search_space == expected_search_space(config), window
+        # The hessian-scaled ranges are what matters here; assert one directly
+        # so the test still fails if the swap stops firing.
+        assert config.optuna.search_space.gamma == CLASSIFIER_SEARCH_SPACE.gamma
         assert config.optuna.objective_name == "binary:logistic"
 
 
@@ -183,7 +212,8 @@ def test_campaign_regressors_keep_the_regression_space():
 
     for name in ("total_points_2500", "line_error_3750"):
         config = load_config(CAMPAIGN / f"{name}.yaml")
-        assert config.optuna.search_space == SearchSpaceConfig(), name
+        assert config.optuna.search_space == expected_search_space(config), name
+        assert config.optuna.search_space.gamma == SearchSpaceConfig().gamma, name
         assert config.optuna.objective_name == "reg:squarederror"
 
 

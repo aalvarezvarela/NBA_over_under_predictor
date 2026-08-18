@@ -54,7 +54,12 @@ from training_pipeline.evaluation import (
     HoldoutEvaluationResult,
     evaluate_on_holdout,
 )
-from training_pipeline.splits import build_holdout_split, build_walk_forward_splits
+from training_pipeline.season_phase import describe_phases, phases_present
+from training_pipeline.splits import (
+    TRAIN_GAMES_PARAM,
+    build_holdout_split,
+    build_split_provider,
+)
 from training_pipeline.tuning import fit_final_model, get_strategy
 
 
@@ -194,6 +199,37 @@ class ExperimentResult:
     meta_path: Path | None
 
 
+def _baseline_window(config: ExperimentConfig) -> int | None:
+    """A window that is certain to exist, for the pre-tuning baselines.
+
+    Those baselines score the LINE on each fold's validation rows, which are
+    identical whatever the training window is, so the choice is arbitrary -- but
+    it must be a window every fold can actually supply, or building the splits
+    raises. The smallest candidate always can.
+    """
+    choices = config.walk_forward.train_games_choices
+    return min(choices) if choices else config.walk_forward.train_games
+
+
+def resolve_selected_train_games(
+    trial: optuna.trial.FrozenTrial | None, config: ExperimentConfig
+) -> int | None:
+    """The training window the run must use everywhere after selection.
+
+    When Optuna tuned the window, the selected trial's value is authoritative and
+    has to reach the holdout walk-forward, the CV betting refits and the
+    production model -- otherwise hyperparameters would be chosen for one amount
+    of history and then applied to another, which is the exact failure
+    ``RefitConfig`` warns about for the fixed case.
+
+    Falls back to the configured value when there is no trial (``skip_tuning``)
+    or the trial did not sample a window.
+    """
+    if trial is not None and TRAIN_GAMES_PARAM in trial.params:
+        return int(trial.params[TRAIN_GAMES_PARAM])
+    return config.walk_forward.train_games
+
+
 def run_experiment(
     config: ExperimentConfig, *, save_model: bool | None = None
 ) -> ExperimentResult:
@@ -229,7 +265,12 @@ def run_experiment(
             overwrite_existing_model=config.overwrite_existing_model,
         )
 
-    splits, fold_info = build_walk_forward_splits(df_dev, config)
+    split_provider = build_split_provider(df_dev, config)
+    fold_info = split_provider.fold_info
+    # The fold set at the CONFIGURED window. When the window is tuned this is the
+    # layout used for the pre-tuning baselines only; everything scored after
+    # selection is re-materialised at the window the selected trial chose.
+    splits = split_provider.splits_for(_baseline_window(config))
 
     strategy = get_strategy(config)
 
@@ -238,7 +279,11 @@ def run_experiment(
     candidates_df: pd.DataFrame | None = None
     if not config.optuna.skip_tuning:
         study = strategy.tune(
-            X=X_dev, y=y_dev, splits=splits, config=config, dates=dates_dev
+            X=X_dev,
+            y=y_dev,
+            split_provider=split_provider,
+            config=config,
+            dates=dates_dev,
         )
         trials_df = strategy.summarize_trials(study)
         candidates_df = strategy.summarize_candidates(
@@ -285,6 +330,13 @@ def run_experiment(
             reporting_trial, config=config
         )
 
+    # The window the selected trial actually chose. Everything scored from here
+    # down uses THIS value, not config.walk_forward.train_games, so the model
+    # being evaluated is the model the tuning selected.
+    selected_train_games = resolve_selected_train_games(reporting_trial, config)
+    if selected_train_games != _baseline_window(config):
+        splits = split_provider.splits_for(selected_train_games)
+
     def evaluate_under_seed(
         seed: int,
     ) -> tuple[HoldoutEvaluationResult | None, DailyBacktestResult | None]:
@@ -303,7 +355,7 @@ def run_experiment(
                 prepared=prepared,
                 df_history=df_dev,
                 df_evaluation=df_test,
-                train_games=config.walk_forward.train_games,
+                train_games=selected_train_games,
                 xgb_params=tuned_params,
                 n_estimators=tuned_n_estimators,
                 sample_weight_lambda=tuned_lambda,
@@ -369,6 +421,7 @@ def run_experiment(
             y_dev=y_dev,
             dates_dev=dates_dev,
             splits=splits,
+            holdout_phases=phases_present(df_test[config.data.date_col]),
             params=tuned_params,
             n_estimators=tuned_n_estimators,
             target_line_col=prepared.target_line_col,
@@ -404,7 +457,10 @@ def run_experiment(
 
         X_full, y_full = _feature_target_subset(df_production, config)
         dates_full = df_production[config.data.date_col]
-        train_games = config.walk_forward.train_games
+        # The SELECTED window, not the configured one: when Optuna tuned it, the
+        # shipped model must be fitted on the amount of history the chosen
+        # hyperparameters were actually scored under.
+        train_games = selected_train_games
         if config.refit.strategy == RefitStrategy.ROLLING_WINDOW and train_games:
             X_full = X_full.tail(train_games)
             y_full = y_full.loc[X_full.index]
@@ -426,21 +482,29 @@ def run_experiment(
     cv_extra: dict[str, Any] = {}
     if reporting_trial is not None:
         attrs = reporting_trial.user_attrs
-        cv_ou_acc = attrs.get("mean_ou_acc")
+        # Pooled first when the run pooled, so the reported cv_* numbers are the
+        # ones selection actually ranked on. Falling back to the means would
+        # report a different quantity than the one that chose the model.
+        cv_ou_acc = attrs.get("pooled_ou_acc", attrs.get("mean_ou_acc"))
         if config.is_classifier:
             # The classifier's trial value is LOG LOSS. Falling back to
             # trial.value for a missing "mean_mae" would file it under cv_mae
             # and report 0.69 as though it were a points error.
             cv_extra = {
-                "log_loss": attrs.get("mean_logloss", reporting_trial.value),
-                "brier": attrs.get("mean_brier"),
-                "roi": attrs.get("mean_roi"),
-                "n_bets": attrs.get("mean_n_bets"),
+                "log_loss": attrs.get(
+                    "pooled_log_loss",
+                    attrs.get("mean_logloss", reporting_trial.value),
+                ),
+                "brier": attrs.get("pooled_brier", attrs.get("mean_brier")),
+                "roi": attrs.get("pooled_roi", attrs.get("mean_roi")),
+                "n_bets": attrs.get("pooled_n_bets", attrs.get("mean_n_bets")),
             }
         else:
-            reported_mae = attrs.get("mean_mae", reporting_trial.value)
+            reported_mae = attrs.get(
+                "pooled_mae", attrs.get("mean_mae", reporting_trial.value)
+            )
             cv_mae = None if reported_mae is None else float(reported_mae)
-            cv_rmse = attrs.get("mean_rmse")
+            cv_rmse = attrs.get("pooled_rmse", attrs.get("mean_rmse"))
 
     # One metric surface regardless of evaluation mode, so artifacts and the
     # leaderboard read the same either way (see _normalize_evaluation).
@@ -502,6 +566,33 @@ def run_experiment(
                 "holdout_n_games": int(len(df_test)),
                 "holdout_evaluation": config.holdout_evaluation.value,
                 "trained_production_model": bool(train_production),
+                # --- what the CV actually produced ---------------------------
+                # eval_span_games is a target and whole game-days are
+                # indivisible, so the realised volume is never assumed: it is
+                # recorded here and can be checked against the config.
+                "cv_strategy": config.walk_forward.strategy.value,
+                "cv_n_folds": int(split_provider.n_folds),
+                "cv_n_validation_games": int(split_provider.n_validation_games),
+                "cv_retrain_every_days": config.walk_forward.retrain_every_days,
+                "cv_eval_span_games": config.walk_forward.eval_span_games,
+                "cv_objective_aggregation": (
+                    config.optuna.objective_aggregation.value
+                ),
+                "cv_pruner_warmup_steps": config.resolve_pruner_warmup_steps(
+                    split_provider.n_folds
+                ),
+                # The window in force for every number in this run. When it was
+                # tuned this is the SELECTED value, not the configured fallback.
+                "train_games": selected_train_games,
+                "train_games_tuned": config.tunes_train_games,
+                "train_games_choices": list(
+                    config.walk_forward.train_games_choices or ()
+                ),
+                "n_estimators": int(tuned_n_estimators),
+                "n_estimators_tuned": config.tunes_n_estimators,
+                "holdout_phases": describe_phases(
+                    phases_present(df_test[config.data.date_col])
+                ),
             },
         )
         tracking.save_config_snapshot(run_dir, config)
