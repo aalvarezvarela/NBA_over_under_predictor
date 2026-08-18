@@ -112,12 +112,52 @@ def percent_frame(df: pd.DataFrame, percent: Any = (), decimals: Any = ()) -> An
     return df.style.format(formatters, na_rep="—")
 
 
-def prepare_runs(runs: pd.DataFrame) -> pd.DataFrame:
+#: Config fields that can distinguish one run from another, with how each
+#: renders as a label token. Order here is the order tokens appear.
+#:
+#: A token is only added when the field actually VARIES across the runs being
+#: compared, and only for runs that differ from the most common value. So a
+#: label says what is unusual about a run rather than restating the campaign's
+#: shared settings -- "line_error · 4500 · na200" reads as "the 4500 cell with
+#: the relaxed row cap", which is the question that cell exists to answer.
+LABEL_FIELDS: tuple[tuple[str, Any], ...] = (
+    ("data.csv_path", lambda v: "old-data" if "old_" in str(v) else "2.0-data"),
+    ("data.exclude_overtime_from_training", lambda v: "no-OT" if v else "with-OT"),
+    ("data.exclude_playoffs", lambda v: "no-playoffs" if v else "+playoffs"),
+    ("cleaning.max_na_per_row", lambda v: f"na{v}"),
+    ("cleaning.exclude_cols_containing",
+     lambda v: "no-consensus" if v and "consensus_pct" in str(v) else "std-cols"),
+    ("cleaning.nan_threshold", lambda v: f"nanthr{v:g}"),
+    ("optuna.n_trials", lambda v: f"{v}trials"),
+)
+
+
+def _label_tokens(configs: dict[str, dict[str, Any]]) -> dict[str, list[str]]:
+    """Per run, the tokens describing how it departs from the common setup."""
+    tokens: dict[str, list[str]] = {name: [] for name in configs}
+    for field, render in LABEL_FIELDS:
+        values = {name: cfg.get(field) for name, cfg in configs.items()}
+        present = {v for v in values.values() if v is not None}
+        if len(present) < 2:
+            continue  # not a discriminator among these runs
+        counts = pd.Series([str(v) for v in values.values()]).value_counts()
+        baseline = counts.index[0]
+        for name, value in values.items():
+            if value is not None and str(value) != baseline:
+                tokens[name].append(str(render(value)))
+    return tokens
+
+
+def prepare_runs(runs: pd.DataFrame, *, describe: bool = True) -> pd.DataFrame:
     """Add the strategy/label columns every chart keys off.
 
-    Labels are made unique so two runs never collapse into one another in a
-    chart or a groupby: the source folder is appended when more than one folder
-    is in play, and the experiment id when names still collide.
+    Labels start from strategy and training window, then gain a token for each
+    config field that differs from the rest of the comparison (see
+    LABEL_FIELDS) -- so runs from a campaign that varies overtime, playoffs or
+    the missing-data cap are told apart by name instead of by a hash.
+
+    ``describe=False`` falls back to strategy + window only, which is enough
+    when every run differs on those alone.
     """
     runs = runs.copy()
     runs["prediction_strategy"] = runs["prediction_strategy"].fillna(
@@ -131,8 +171,26 @@ def prepare_runs(runs: pd.DataFrame) -> pd.DataFrame:
     runs["label"] = (
         runs["strategy_short"] + " · " + runs["train_games"].astype("Int64").astype(str)
     )
+
+    if describe:
+        from training_pipeline.reporting import loaders
+
+        configs = {
+            str(row["run_name"]): loaders.load_config_flat(row)
+            for _, row in runs.iterrows()
+        }
+        configs = {k: v for k, v in configs.items() if v}
+        if configs:
+            tokens = _label_tokens(configs)
+            runs["label"] += runs["run_name"].map(
+                lambda name: "".join(f" · {t}" for t in tokens.get(str(name), []))
+            ).fillna("")
+
     if runs["source_root"].nunique() > 1:
         runs["label"] += " · " + runs["source_root"]
+
+    # Last resort. Reaching here means two runs are genuinely indistinguishable
+    # by configuration -- a repeat, or a difference in a field not listed above.
     duplicated = runs["label"].duplicated(keep=False)
     if duplicated.any():
         runs.loc[duplicated, "label"] = (

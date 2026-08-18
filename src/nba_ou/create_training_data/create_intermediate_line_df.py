@@ -1,0 +1,472 @@
+"""Build the intermediate-line training dataset.
+
+Grain: **one row per (game, pre-game snapshot)**, so a model can be trained to
+bet at whatever time before tip-off it is actually betting, rather than only at
+close.
+
+This is a separate pipeline that *reuses* existing feature functions. It does
+not modify, wrap or subclass ``create_df_to_predict``; both datasets can be
+built independently and neither can change the other's output.
+
+Scope: **historical training data only.** Serving same-day predictions is
+deliberately not implemented here.
+
+One naming decision deserves stating plainly, because it will otherwise be
+misread. In this dataset ``TOTAL_LINE_<book>`` holds that book's line **as of
+the snapshot**, not at close. That is not a fudge: it is genuinely that book's
+line, quoted at the moment this model bets. It is done this way because the
+training pipeline derives ``line_error`` against the main book column and
+settles bets against the same one, so target and settlement must agree. The
+actual closing line is carried separately as ``CLOSING_TOTAL_LINE_<book>`` and
+is excluded from features -- it exists only to measure closing-line value.
+"""
+
+from __future__ import annotations
+
+import pandas as pd
+
+from nba_ou.config.odds_columns import get_main_book, total_line_col
+from nba_ou.create_training_data.create_base_game_features import (
+    create_base_game_features,
+)
+from nba_ou.create_training_data.select_intermediate_columns import (
+    assert_no_bare_closing_odds,
+    audit_closing_line_reconstruction,
+    select_intermediate_training_columns,
+)
+from nba_ou.data_processing.line_history.cross_book import (
+    add_book_deviation,
+    aggregate_across_books,
+)
+from nba_ou.data_processing.line_history.history_features import (
+    add_prior_game_line_dynamics,
+)
+from nba_ou.data_processing.line_history.movement_features import (
+    DEFAULT_WINDOWS,
+    add_movement_features,
+)
+from nba_ou.data_processing.line_history.snapshots import (
+    DEFAULT_SNAPSHOT_GRID,
+    build_snapshot_panel,
+)
+from nba_ou.postgre_db.line_history_aiven.fetch import (
+    MARKET_MONEYLINE,
+    MARKET_SPREAD,
+    MARKET_TOTALS,
+    PARTIAL_COVERAGE_BOOKS,
+    available_seasons,
+    fetch_games,
+    fetch_pregame_ticks,
+)
+
+MARKET_SHORT = {MARKET_TOTALS: "TOT", MARKET_SPREAD: "SPR", MARKET_MONEYLINE: "ML"}
+
+#: The consensus OPENING line. Safe at every snapshot -- openers land a median
+#: ~25h before tip, well outside the 12h grid -- and it is the baseline
+#: ``betting.comparison_line_cols`` in experiments/_base.yaml is configured
+#: against, so it must survive under exactly this name.
+OPENER_LINE_COLUMN = "TOTAL_LINE_consensus_opener"
+
+#: Emitted for EVERY book, not just the anchor. The anchor is special only in
+#: that its line defines the target; there is no reason its odds should be the
+#: only ones exported in full. Previously the other four books carried a reduced
+#: nine-field summary with no raw prices and no normalised line, so "all five
+#: books' odds are in the dataset" was not literally true.
+FULL_BOOK_FEATURES: tuple[str, ...] = (
+    # --- raw quote, exactly as the book published it -------------------
+    "raw_line",
+    "price_left",
+    "price_right",
+    "has_quote",
+    "line_age_minutes",
+    # --- derived pricing ------------------------------------------------
+    "norm_line",
+    "norm_minus_raw",
+    "level",
+    "fair_left",
+    "fair_right",
+    "fair_up",
+    "overround",
+    # --- path so far ----------------------------------------------------
+    "n_ticks_total",
+    "n_moves_so_far",
+    "n_price_only_ticks",
+    "n_distinct_levels",
+    "line_std_so_far",
+    "opener_line",
+    "n_reversals",
+    "move_from_open",
+    "abs_move_from_open",
+    "pct_move_from_open",
+    "move_direction",
+    "first_move_direction",
+    "minutes_since_open",
+    "prob_move_from_open",
+    "line_range_so_far",
+    "position_in_range",
+    "n_moves_per_hour",
+    "opposes_opening_direction",
+    "net_opposes_opening_direction",
+    "move_acceleration",
+    # --- position against the rest of the market ------------------------
+    "deviation_from_consensus",
+    "abs_deviation_from_consensus",
+    "deviation_z",
+    "is_outlier_book",
+)
+
+CONSENSUS_FEATURES: tuple[str, ...] = (
+    "consensus_line",
+    "consensus_norm_line",
+    "consensus_raw_line",
+    "consensus_fair_left",
+    "consensus_overround",
+    "crossbook_std",
+    "crossbook_range",
+    "n_books_quoting",
+    "median_line_age",
+    "max_line_age",
+    "consensus_move_from_open",
+    "consensus_move_recent",
+    "consensus_has_quote",
+    "steam_movers",
+    "steam_agreement",
+    "consensus_n_moves",
+    "consensus_opener_line",
+    "steam_books_up",
+    "steam_books_down",
+    "steam_net",
+    "steam_fraction",
+)
+
+
+def _windowed_feature_names(windows: tuple[int, ...]) -> tuple[str, ...]:
+    names: list[str] = []
+    for window in windows:
+        names.extend(
+            [
+                f"has_window_{window}",
+                f"move_last_{window}",
+                f"abs_move_last_{window}",
+                f"velocity_last_{window}",
+                f"prob_move_last_{window}",
+            ]
+        )
+    return tuple(names)
+
+
+def _pivot_book_features(
+    panel: pd.DataFrame, features: tuple[str, ...], books: list[str]
+) -> pd.DataFrame:
+    """(game, snapshot) x (market, book, feature) -> wide columns."""
+    subset = panel[panel["book"].isin(books)]
+    present = [feature for feature in features if feature in subset.columns]
+    if subset.empty or not present:
+        return pd.DataFrame()
+
+    indexed = subset.set_index(["game_id", "snapshot_minutes", "market", "book"])[
+        present
+    ]
+    wide = indexed.unstack(["market", "book"])
+    wide.columns = [
+        f"SNAP_{MARKET_SHORT.get(market, market.upper())}_{book.upper()}_"
+        f"{feature.upper()}"
+        for feature, market, book in wide.columns
+    ]
+    return wide.reset_index()
+
+
+def _pivot_consensus(consensus: pd.DataFrame) -> pd.DataFrame:
+    present = [f for f in CONSENSUS_FEATURES if f in consensus.columns]
+    indexed = consensus.set_index(["game_id", "snapshot_minutes", "market"])[present]
+    wide = indexed.unstack("market")
+    wide.columns = [
+        f"SNAP_{MARKET_SHORT.get(market, market.upper())}_CONSENSUS_"
+        f"{feature.upper().replace('CONSENSUS_', '')}"
+        for feature, market in wide.columns
+    ]
+    return wide.reset_index()
+
+
+def _resolve_target_line(panel: pd.DataFrame, *, anchor: str) -> pd.DataFrame:
+    """The line the target is defined against, per (game, snapshot).
+
+    The anchor must be a real book. A cross-book consensus was considered and
+    rejected: it is steadier and better sampled, but it is not a price anyone
+    can take, so profit measured against it is hypothetical.
+
+    The **normalised** line is used, which is a deliberate trade. It is the
+    right modelling target -- comparable across books and across snapshots
+    rather than confounded with how each book happened to be pricing -- but it
+    is not literally the number on the board, so **ROI computed against it is
+    not executable**. On the default bet365 anchor the two differ on only a
+    handful of rows, because its totals are almost always -110/-110; on other
+    books the gap is material. The raw line and both side prices are exported
+    as features so the difference stays visible.
+    """
+    rows = panel[panel["market"].eq(MARKET_TOTALS) & panel["book"].eq(anchor)]
+    if rows.empty:
+        raise ValueError(
+            f"Anchor book {anchor!r} has no totals quotes in the line-history "
+            "store."
+        )
+    return rows[["game_id", "snapshot_minutes", "norm_line"]].rename(
+        columns={"norm_line": "target_line"}
+    )
+
+
+#: Columns that belong beside the predictions, never in the feature matrix.
+#: Keyed by (GAME_ID, TIME_TO_MATCH_MIN) so they can be joined back after
+#: scoring.
+SCORING_KEYS = ["GAME_ID", "TIME_TO_MATCH_MIN"]
+
+
+def _build_scoring_frame(merged: pd.DataFrame, gated: pd.DataFrame) -> pd.DataFrame:
+    """Closing lines, weights and timestamps -- everything X must never see.
+
+    These used to ride along in the training frame behind a ``CLOSING_`` prefix,
+    on the assumption that ``feature_columns()`` would filter them. It does not:
+    ``training_pipeline.data.build_feature_matrix`` drops only the *configured*
+    exclusions, so every closing line would have entered X and contaminated the
+    result. Physical separation is the only version of this that cannot be
+    forgotten at the call site.
+
+    ``SNAPSHOT_WEIGHT`` is ``1 / snapshots for that game``. Multiple snapshots
+    are not independent observations -- measured on this data, adjacent 30m/60m
+    rows resolve to the identical tick 65.7% of the time -- so pooling them
+    unweighted overstates the evidence by up to the configured snapshot count.
+    """
+    keys = merged[SCORING_KEYS].copy()
+    closing_columns = [c for c in merged.columns if c.startswith("CLOSING_")]
+    timestamp_columns = [
+        c for c in ["TIPOFF_UTC", "SNAPSHOT_TS_UTC"] if c in merged.columns
+    ]
+
+    scoring = pd.concat(
+        [keys, merged[closing_columns + timestamp_columns]], axis=1
+    )
+    snapshots_per_game = scoring.groupby("GAME_ID")["TIME_TO_MATCH_MIN"].transform(
+        "count"
+    )
+    scoring["SNAPSHOT_WEIGHT"] = 1.0 / snapshots_per_game
+
+    # Restrict to rows that actually survived into the training frame, so the
+    # two files line up row for row.
+    kept = gated[SCORING_KEYS].drop_duplicates()
+    scoring = scoring.merge(kept, on=SCORING_KEYS, how="inner")
+    return scoring.sort_values(SCORING_KEYS).reset_index(drop=True)
+
+
+def create_intermediate_line_df(
+    *,
+    recent_limit_to_include: str | pd.Timestamp | None = None,
+    season_years: list[int] | None = None,
+    snapshot_grid: tuple[int, ...] = DEFAULT_SNAPSHOT_GRID,
+    windows: tuple[int, ...] = DEFAULT_WINDOWS,
+    anchor_book: str | None = None,
+    exclude_fanatics: bool = True,
+    categorical_team_encoding: bool = False,
+    normalize_total_lines: bool = True,
+    return_scoring: bool = False,
+    verbose: bool = True,
+) -> pd.DataFrame | tuple[pd.DataFrame, pd.DataFrame]:
+    """Build the (game, snapshot) dataset.
+
+    Returns the training frame. With ``return_scoring=True`` returns
+    ``(training, scoring)``, where ``scoring`` holds the closing lines, the
+    per-row snapshot weight and the raw timestamps -- everything that must stay
+    out of the feature matrix. The default is the safe one: closing lines are
+    absent unless explicitly asked for.
+
+    ``exclude_fanatics`` defaults to True because ``fanatics_sportsbook`` only
+    exists from season 2025: a book present exactly when ``season_year == 2025``
+    lets a model recover the season from column availability alone. Excluding it
+    here rather than relying on the training config's
+    ``cleaning.exclude_cols_containing`` keeps those columns out of the CSV
+    entirely, so they also cannot inflate ``max_na_per_row`` for earlier rows.
+    """
+    anchor = anchor_book or get_main_book()
+    excluded_books = PARTIAL_COVERAGE_BOOKS if exclude_fanatics else ()
+
+    store_seasons = available_seasons()
+    if season_years is None:
+        season_years = store_seasons
+    else:
+        season_years = sorted(set(season_years) & set(store_seasons))
+    if not season_years:
+        raise ValueError(
+            f"No requested season is present in the line-history store "
+            f"(available: {store_seasons})."
+        )
+
+    if verbose:
+        print(f"Line-history seasons in scope: {season_years}")
+
+    # ---- snapshot side -------------------------------------------------
+    ticks = fetch_pregame_ticks(season_years, exclude_books=excluded_books)
+    lh_games = fetch_games(season_years)
+    if ticks.empty:
+        raise ValueError("No pre-game ticks returned for the requested seasons.")
+    if verbose:
+        print(f"✓ {len(ticks):,} pre-game ticks over {ticks.game_id.nunique()} games")
+
+    panel = build_snapshot_panel(
+        ticks, grid=snapshot_grid, normalize=normalize_total_lines
+    )
+    panel = add_movement_features(panel, ticks, grid=snapshot_grid, windows=windows)
+    consensus = aggregate_across_books(panel)
+    panel = add_book_deviation(panel, consensus)
+    if verbose:
+        print(f"✓ Snapshot panel: {len(panel):,} (game, market, book, snapshot) rows")
+
+    books = sorted(panel["book"].unique())
+    other_books = [book for book in books if book != anchor]
+
+    # Same fields for every book, including all configured movement windows.
+    book_features = FULL_BOOK_FEATURES + _windowed_feature_names(windows)
+    wide_parts = [
+        _pivot_book_features(panel, book_features, [anchor]),
+        _pivot_book_features(panel, book_features, other_books),
+        _pivot_consensus(consensus),
+        _pivot_consensus(consensus),
+    ]
+    snapshot_wide = wide_parts[0]
+    for part in wide_parts[1:]:
+        if not part.empty:
+            snapshot_wide = snapshot_wide.merge(
+                part, on=["game_id", "snapshot_minutes"], how="outer"
+            )
+
+    target_line = _resolve_target_line(panel, anchor=anchor)
+    snapshot_wide = snapshot_wide.merge(
+        target_line, on=["game_id", "snapshot_minutes"], how="left"
+    )
+
+    # ---- historical line dynamics (prior games only) -------------------
+    # Per market: how a team's spread and moneyline get re-priced is different
+    # information from how its totals do, and defaulting to totals alone threw
+    # two thirds of it away.
+    history = lh_games[["game_id"]].copy()
+    for market in (MARKET_TOTALS, MARKET_SPREAD, MARKET_MONEYLINE):
+        market_history = add_prior_game_line_dynamics(
+            lh_games, ticks, market=market
+        )
+        suffix = MARKET_SHORT[market]
+        market_history = market_history.rename(
+            columns={
+                column: f"{suffix}_{column}"
+                for column in market_history.columns
+                if column != "game_id"
+            }
+        )
+        history = history.merge(market_history, on="game_id", how="left")
+
+    # ---- base per-game features ---------------------------------------
+    base = create_base_game_features(
+        recent_limit_to_include=recent_limit_to_include,
+        season_start_date=pd.Timestamp(year=min(season_years), month=10, day=1),
+        categorical_team_encoding=categorical_team_encoding,
+        normalize_total_lines=normalize_total_lines,
+        verbose=verbose,
+    )
+    base["GAME_ID"] = base["GAME_ID"].astype(str)
+
+    # Closing lines are renamed, not kept: they leave in the scoring sidecar so
+    # they cannot reach the feature matrix. The opener is deliberately NOT swept
+    # up -- it is known ~25h before tip, so it is safe at every snapshot, and
+    # renaming it silently broke the `comparison_line_cols` baseline configured
+    # in experiments/_base.yaml.
+    closing_source_columns = [
+        column
+        for column in base.columns
+        if column.startswith("TOTAL_LINE_")
+        and "_BEFORE" not in column
+        and column != OPENER_LINE_COLUMN
+    ]
+    if exclude_fanatics:
+        closing_source_columns = [
+            column
+            for column in closing_source_columns
+            if not any(book in column for book in PARTIAL_COVERAGE_BOOKS)
+        ]
+        # Every column mentioning the book, including the ``_BEFORE`` rolling
+        # history features. Those are leakage-safe in the usual sense, but the
+        # book only exists from 2025: a column that is NaN for four seasons and
+        # populated for one IS a season indicator, whatever its suffix says.
+        base = base.drop(
+            columns=[
+                column
+                for column in base.columns
+                if any(book in column for book in PARTIAL_COVERAGE_BOOKS)
+            ],
+            errors="ignore",
+        )
+    base = base.rename(
+        columns={column: f"CLOSING_{column}" for column in closing_source_columns}
+    )
+
+    # ---- join ----------------------------------------------------------
+    merged = base.merge(
+        snapshot_wide, left_on="GAME_ID", right_on="game_id", how="inner"
+    ).merge(history, left_on="GAME_ID", right_on="game_id", how="left")
+    merged = merged.drop(columns=[c for c in ["game_id_x", "game_id_y", "game_id"] if c in merged.columns])
+
+    merged = merged.rename(columns={"snapshot_minutes": "TIME_TO_MATCH_MIN"})
+    merged = merged.merge(
+        lh_games[["game_id", "tipoff_utc"]].rename(
+            columns={"game_id": "GAME_ID", "tipoff_utc": "TIPOFF_UTC"}
+        ),
+        on="GAME_ID",
+        how="left",
+    )
+    merged["SNAPSHOT_TS_UTC"] = merged["TIPOFF_UTC"] - pd.to_timedelta(
+        merged["TIME_TO_MATCH_MIN"], unit="m"
+    )
+
+    # ---- targets -------------------------------------------------------
+    main_line_column = total_line_col(anchor)
+    # The main-book column now holds the SNAPSHOT line, so the derived target
+    # and the settlement price are the same number. See the module docstring.
+    merged[main_line_column] = merged["target_line"]
+    merged["LINE_ERROR"] = pd.to_numeric(
+        merged["TOTAL_POINTS"], errors="coerce"
+    ) - pd.to_numeric(merged[main_line_column], errors="coerce")
+
+    before = len(merged)
+    merged = merged[merged[main_line_column].notna()].copy()
+    if verbose and before != len(merged):
+        print(f"Dropped {before - len(merged)} rows with no anchor line at snapshot")
+
+    merged = merged.drop(columns=["target_line"])
+
+    # ---- leakage gate --------------------------------------------------
+    gated = select_intermediate_training_columns(merged)
+    gated = gated.assign(**{main_line_column: merged[main_line_column]})
+    assert_no_bare_closing_odds(gated, allowed=(main_line_column,))
+
+    closing_reference = merged.get(f"CLOSING_{main_line_column}")
+    if closing_reference is not None:
+        findings = audit_closing_line_reconstruction(gated, closing_reference)
+        if not findings.empty:
+            raise ValueError(
+                "Closing line is reconstructable from kept features:\n"
+                f"{findings.to_string(index=False)}"
+            )
+
+    gated = gated.sort_values(["GAME_DATE", "GAME_ID", "TIME_TO_MATCH_MIN"])
+    gated = gated.reset_index(drop=True)
+    scoring = _build_scoring_frame(merged, gated)
+
+    if verbose:
+        print()
+        print("--" * 20)
+        print(f"Intermediate-line dataset: {len(gated):,} rows")
+        print(f"Games: {gated['GAME_ID'].nunique():,}")
+        print(f"Snapshots per game: {sorted(gated['TIME_TO_MATCH_MIN'].unique())}")
+        print(f"Columns: {gated.shape[1]:,}")
+        print(f"Scoring sidecar: {scoring.shape[1]:,} columns (never features)")
+        print("--" * 20)
+
+    if return_scoring:
+        return gated, scoring
+    return gated

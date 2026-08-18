@@ -2,6 +2,13 @@
 
     poetry run python scripts/preflight_campaign.py experiments/window_overtime_2026_08
 
+Pass individual YAML files when a comparison group shares a directory with
+other campaigns:
+
+    poetry run python scripts/preflight_campaign.py \
+        experiments/intermediate_line_2026_08/pooled_7snapshot_line_error_no_time_decay.yaml \
+        experiments/intermediate_line_2026_08/t360_control_line_error_no_time_decay.yaml
+
 Exits non-zero if anything would block the campaign, so a runner can gate on it.
 
 The check that justifies this script's existence is the training-window one.
@@ -76,13 +83,15 @@ def _prepare_quietly(config: ExperimentConfig) -> tuple[Any, Any, Any]:
     return prepared, df_dev, df_test
 
 
-def check_campaign(campaign_dir: Path, *, skip_data: bool) -> int:
-    configs_paths = sorted(p for p in campaign_dir.glob("*.y*ml") if not p.name.startswith("_"))
+def check_configs(
+    configs_paths: list[Path], *, label: str, skip_data: bool
+) -> int:
+    """Check an explicit, already-resolved set of experiment definitions."""
     if not configs_paths:
-        print(f"No experiment configs found in {campaign_dir}")
+        print(f"No experiment configs found in {label}")
         return 1
 
-    print(f"Pre-flight: {campaign_dir}  ({len(configs_paths)} configs)\n")
+    print(f"Pre-flight: {label}  ({len(configs_paths)} configs)\n")
     problems: list[str] = []
 
     # --- 1. every config parses ---------------------------------------------
@@ -243,6 +252,68 @@ def check_campaign(campaign_dir: Path, *, skip_data: bool) -> int:
     return _verdict(problems, checked_windows=True)
 
 
+def check_campaign(campaign_dir: Path, *, skip_data: bool) -> int:
+    """Backward-compatible directory entry point used by existing callers."""
+    configs_paths = sorted(
+        path
+        for path in campaign_dir.glob("*.y*ml")
+        if not path.name.startswith("_")
+    )
+    return check_configs(
+        configs_paths,
+        label=str(campaign_dir),
+        skip_data=skip_data,
+    )
+
+
+def _resolve_config_paths(inputs: list[Path]) -> tuple[list[Path], list[str]]:
+    """Expand directories and retain explicitly selected YAML files.
+
+    A campaign directory remains the convenient default. Explicit files make
+    it possible to preflight one matched comparison group when several groups
+    intentionally live beside one another.
+    """
+    configs: list[Path] = []
+    errors: list[str] = []
+    seen: set[Path] = set()
+
+    for raw in inputs:
+        path = raw if raw.is_absolute() else REPO_ROOT / raw
+        if path.is_dir():
+            candidates = sorted(
+                candidate
+                for candidate in path.glob("*.y*ml")
+                if not candidate.name.startswith("_")
+            )
+            if not candidates:
+                errors.append(f"No experiment configs found in directory: {path}")
+        elif path.is_file() and path.suffix.lower() in {".yaml", ".yml"}:
+            candidates = [path]
+        elif path.exists():
+            errors.append(f"Not a YAML config or directory: {path}")
+            candidates = []
+        else:
+            errors.append(f"Path does not exist: {path}")
+            candidates = []
+
+        for candidate in candidates:
+            resolved = candidate.resolve()
+            if resolved not in seen:
+                seen.add(resolved)
+                configs.append(candidate)
+
+    duplicate_stems = {
+        path.stem for path in configs if sum(p.stem == path.stem for p in configs) > 1
+    }
+    if duplicate_stems:
+        errors.append(
+            "Config filenames must be unique across one preflight; duplicate stems: "
+            + ", ".join(sorted(duplicate_stems))
+        )
+
+    return configs, errors
+
+
 def _verdict(problems: list[str], *, checked_windows: bool) -> int:
     if problems:
         print(f"{len(problems)} blocking problem(s):")
@@ -262,19 +333,27 @@ def _verdict(problems: list[str], *, checked_windows: bool) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("campaign_dir", type=Path,
-                        help="Folder of experiment YAML files, e.g. experiments/<campaign>")
+    parser.add_argument(
+        "paths",
+        type=Path,
+        nargs="+",
+        help=(
+            "One or more experiment YAML files or folders. Folders contribute "
+            "all top-level YAML files except underscore-prefixed base files."
+        ),
+    )
     parser.add_argument("--skip-data", action="store_true",
                         help="Config and checksum checks only; skips cleaning, which is "
                              "the slow part but also the only way to verify the window.")
     args = parser.parse_args()
 
-    campaign = args.campaign_dir
-    campaign = campaign if campaign.is_absolute() else REPO_ROOT / campaign
-    if not campaign.is_dir():
-        print(f"Not a directory: {campaign}")
+    configs, errors = _resolve_config_paths(args.paths)
+    if errors:
+        for error in errors:
+            print(error)
         return 1
-    return check_campaign(campaign, skip_data=args.skip_data)
+    label = ", ".join(str(path) for path in args.paths)
+    return check_configs(configs, label=label, skip_data=args.skip_data)
 
 
 if __name__ == "__main__":

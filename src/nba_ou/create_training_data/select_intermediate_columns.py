@@ -1,0 +1,264 @@
+"""The leakage gate for the intermediate-line dataset.
+
+Fail-closed by construction: a column is dropped unless it is positively
+recognised. The closing-line dataset's ``select_training_columns`` cannot be
+reused for this, because its central rule -- "``_BEFORE`` means safe" -- is not
+true here. A closing line is known when the existing model bets and unknown when
+this one does, so several columns that are legitimately ``_BEFORE`` over there
+are leakage over here.
+
+Two such traps exist in the shared feature code, both found by measurement
+rather than by reading names:
+
+* ``THIS_GAME_CROSSBOOK_TOTAL_STD_BEFORE`` / ``_RANGE_BEFORE``
+  (``global_market_features.py``) -- dispersion of *this* game's closing lines
+  across books.
+* ``IMPLIED_PTS_HOME_BEFORE`` / ``IMPLIED_PTS_AWAY_BEFORE``
+  (``add_features_after_merging.py``) -- built from this game's closing total
+  and spread. These two **sum to the closing line exactly**: measured over 2,626
+  games the reconstruction error is 0.0. A model given both can simply add them
+  and read off the number it is supposed to be predicting.
+
+The rolled-up cousins are fine and are deliberately kept:
+``GLOBAL_CROSSBOOK_TOTAL_STD_AVG_*G_BEFORE`` goes through ``_rolling_game_agg``,
+which reads ``values[start - window : start]`` -- strictly earlier dates only.
+
+``audit_closing_line_reconstruction`` exists so this list does not have to stay
+correct by vigilance alone; it re-derives the check on real data.
+"""
+
+from __future__ import annotations
+
+import itertools
+
+import numpy as np
+import pandas as pd
+
+#: Columns that name themselves ``_BEFORE`` but are computed from the current
+#: game's CLOSING prices. Safe in the closing-line dataset, leakage here.
+LEAKY_BEFORE_COLUMNS: tuple[str, ...] = (
+    "THIS_GAME_CROSSBOOK_TOTAL_STD_BEFORE",
+    "THIS_GAME_CROSSBOOK_TOTAL_RANGE_BEFORE",
+    "IMPLIED_PTS_HOME_BEFORE",
+    "IMPLIED_PTS_AWAY_BEFORE",
+)
+
+#: Identity, scheduling and grain columns. No market content.
+METADATA_COLUMNS: tuple[str, ...] = (
+    "GAME_ID",
+    "GAME_DATE",
+    "SEASON_ID",
+    "SEASON_TYPE",
+    "SEASON_YEAR",
+    "IS_OVERTIME",
+    "TIME_TO_MATCH_MIN",
+    # TIPOFF_UTC / SNAPSHOT_TS_UTC deliberately absent: raw timestamps would let
+    # a model pin individual games, and nothing downstream needs them here. They
+    # live in the scoring sidecar.
+    "TEAM_ID_TEAM_HOME",
+    "TEAM_ID_TEAM_AWAY",
+    "TEAM_ABBREVIATION_TEAM_HOME",
+    "TEAM_ABBREVIATION_TEAM_AWAY",
+    "TEAM_NAME_TEAM_HOME",
+    "TEAM_NAME_TEAM_AWAY",
+    "TEAM_CITY_TEAM_HOME",
+    "TEAM_CITY_TEAM_AWAY",
+    "MATCHUP_TEAM_HOME",
+    "MATCHUP_TEAM_AWAY",
+    "GAME_NUMBER_TEAM_HOME",
+    "GAME_NUMBER_TEAM_AWAY",
+)
+
+#: Travel and schedule columns that carry no ``_BEFORE`` marker but are known
+#: from the fixture list alone, long before any line exists.
+SCHEDULE_COLUMN_PREFIXES: tuple[str, ...] = (
+    "TOTAL_KM_IN_LAST_",
+    "JETLAG_HOURS_FROM_LAST_GAME_",
+    "PLAYOFF_GAMES_LAST_SEASON",
+    "TEAM_IS_",
+)
+
+#: Snapshot-derived features. Everything under these prefixes is built only from
+#: ticks at or before the snapshot horizon.
+SNAPSHOT_COLUMN_PREFIXES: tuple[str, ...] = ("SNAP_", "LINE_HIST_")
+
+TARGET_COLUMNS: tuple[str, ...] = ("TOTAL_POINTS", "LINE_ERROR")
+
+#: Never enter the training frame at all. They are split into a separate scoring
+#: file by ``create_intermediate_line_df``.
+#:
+#: They used to be *kept* here behind this prefix, on the assumption that
+#: ``feature_columns()`` would filter them downstream. It does not:
+#: ``training_pipeline.data.build_feature_matrix`` drops only the configured
+#: exclusions, so a ``CLOSING_`` column left in the CSV lands in X. Presence in
+#: the file is what matters, not presence in a helper's output.
+SCORING_ONLY_PREFIXES: tuple[str, ...] = ("CLOSING_",)
+
+#: The consensus OPENING line. Known ~25h before tip, so safe at every snapshot
+#: on the grid, and the configured ``betting.comparison_line_cols`` baseline.
+#: Must survive under its own name despite matching the closing-odds shape.
+SAFE_ODDS_COLUMNS: tuple[str, ...] = ("TOTAL_LINE_consensus_opener",)
+
+
+def _is_snapshot_column(column: str) -> bool:
+    return column.startswith(SNAPSHOT_COLUMN_PREFIXES)
+
+
+def _is_schedule_column(column: str) -> bool:
+    return column.startswith(SCHEDULE_COLUMN_PREFIXES)
+
+
+def _is_scoring_only_column(column: str) -> bool:
+    return column.startswith(SCORING_ONLY_PREFIXES)
+
+
+def is_kept_column(column: str) -> bool:
+    """Whether ``column`` survives the gate."""
+    if column in LEAKY_BEFORE_COLUMNS:
+        return False
+    if _is_scoring_only_column(column):
+        return False
+    if column in METADATA_COLUMNS or column in TARGET_COLUMNS:
+        return True
+    if column in SAFE_ODDS_COLUMNS:
+        return True
+    if _is_snapshot_column(column) or _is_schedule_column(column):
+        return True
+    return "_BEFORE" in column
+
+
+def feature_columns(df: pd.DataFrame) -> list[str]:
+    """Columns a model may train on: kept, minus metadata and targets.
+
+    A reporting convenience only. It is **not** what the training pipeline uses
+    to build X, so it must never be the sole thing standing between a leaky
+    column and the model -- keep such columns out of the frame instead.
+    """
+    return [
+        column
+        for column in df.columns
+        if is_kept_column(column)
+        and column not in METADATA_COLUMNS
+        and column not in TARGET_COLUMNS
+    ]
+
+
+def select_intermediate_training_columns(
+    df: pd.DataFrame, *, debug: bool = False
+) -> pd.DataFrame:
+    """Apply the gate, then verify it actually closed.
+
+    Raises rather than warns: a silently-passed leak produces a model that looks
+    excellent and is worthless, which is far more expensive than a failed build.
+    """
+    kept = [column for column in df.columns if is_kept_column(column)]
+    dropped = [column for column in df.columns if column not in set(kept)]
+
+    if debug:
+        print(f"Intermediate gate: keeping {len(kept)}, dropping {len(dropped)}")
+        for column in dropped[:40]:
+            print(f"  - {column}")
+
+    out = df[kept].copy()
+
+    survivors = [
+        column for column in out.columns if column in LEAKY_BEFORE_COLUMNS
+    ]
+    if survivors:
+        raise ValueError(
+            "Closing-line-derived columns survived the intermediate gate: "
+            f"{survivors}. These carry a _BEFORE name but are computed from "
+            "this game's closing prices."
+        )
+
+    return out
+
+
+def assert_no_bare_closing_odds(df: pd.DataFrame, *, allowed: tuple[str, ...]) -> None:
+    """Fail if a current-game closing odds column is present as a feature.
+
+    ``allowed`` names the columns that legitimately hold a *snapshot* value
+    despite a closing-style name -- ``TOTAL_LINE_<book>`` is the snapshot line in
+    this dataset, by design, so the target and the settlement price agree.
+
+    Deliberately scans ``df.columns`` rather than ``feature_columns(df)``. Those
+    two are not interchangeable here: ``feature_columns`` already excludes
+    everything this function looks for, so screening it would make the check a
+    no-op that passes no matter what. Independent defence has to look at the
+    raw frame.
+    """
+    offenders = []
+    for column in df.columns:
+        if "_BEFORE" in column or _is_snapshot_column(column):
+            continue
+        if column in allowed or column in METADATA_COLUMNS:
+            continue
+        if column in SAFE_ODDS_COLUMNS:
+            continue
+        if column in TARGET_COLUMNS:
+            continue
+        if _is_scoring_only_column(column):
+            offenders.append(column)
+            continue
+        if column.startswith(("TOTAL_LINE_", "SPREAD_", "MONEYLINE_")):
+            offenders.append(column)
+        if column.startswith(("total_", "spread_", "ml_", "moneyline_")):
+            offenders.append(column)
+    if offenders:
+        raise ValueError(
+            f"Bare closing-odds columns present as features: {sorted(set(offenders))}"
+        )
+
+
+def audit_closing_line_reconstruction(
+    df: pd.DataFrame,
+    closing_line: pd.Series,
+    *,
+    candidate_threshold: float = 0.5,
+    tolerance: float = 1e-6,
+) -> pd.DataFrame:
+    """Look for feature columns that rebuild the closing line.
+
+    Single columns are checked by correlation; pairs are then checked for an
+    exact additive reconstruction, but only among columns that already correlate
+    above ``candidate_threshold``. That keeps the pair search to a few hundred
+    combinations instead of a million, and it is what catches the
+    ``IMPLIED_PTS_*`` case -- neither column alone looks alarming at r ~ 0.8,
+    while the two together are the line exactly.
+
+    Returns the findings; an empty frame means nothing was detected.
+    """
+    line = pd.to_numeric(closing_line, errors="coerce")
+    findings: list[dict] = []
+
+    candidates: dict[str, pd.Series] = {}
+    for column in feature_columns(df):
+        values = pd.to_numeric(df[column], errors="coerce")
+        usable = line.notna() & values.notna()
+        if usable.sum() < 100 or values[usable].std() == 0:
+            continue
+        correlation = abs(np.corrcoef(line[usable], values[usable])[0, 1])
+        if np.isnan(correlation):
+            continue
+        if correlation > candidate_threshold:
+            candidates[column] = values
+        if correlation > 0.999:
+            findings.append(
+                {"kind": "single", "columns": column, "detail": round(correlation, 6)}
+            )
+
+    for left, right in itertools.combinations(sorted(candidates), 2):
+        total = candidates[left] + candidates[right]
+        usable = line.notna() & total.notna()
+        if usable.sum() < 100:
+            continue
+        if float((total[usable] - line[usable]).abs().max()) <= tolerance:
+            findings.append(
+                {
+                    "kind": "pair_sum",
+                    "columns": f"{left} + {right}",
+                    "detail": int(usable.sum()),
+                }
+            )
+
+    return pd.DataFrame(findings, columns=["kind", "columns", "detail"])

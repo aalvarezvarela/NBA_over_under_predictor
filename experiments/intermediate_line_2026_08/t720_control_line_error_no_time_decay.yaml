@@ -1,0 +1,61 @@
+# T=720 LINE_ERROR control with recency decay forced off.
+#
+# Same one-row-per-game 12-hour control as t720_control_line_error.yaml, but
+# without the sample-weight Optuna branch.
+#
+# Build its CSV first:
+#   poetry run python scripts/create_train_data/slice_intermediate_snapshot.py --snapshot 720
+#
+# Then run with the ordinary CLI:
+#   poetry run python -m training_pipeline.cli \
+#       experiments/intermediate_line_2026_08/t720_control_line_error_no_time_decay.yaml
+
+experiment_name: intermediate_t720_control_line_error_no_time_decay
+training_version: "intermediate-line-1.0"
+comparison_group: intermediate_line_2026_08
+hypothesis: >
+  A 12-hour-only line-error control with recency decay disabled. Read this
+  against t720_control_line_error.yaml to isolate the sample-weight decision
+  for the single-snapshot control.
+tags: [intermediate_line, single_snapshot, control, line_error, no_time_decay]
+
+prediction_strategy: line_error_regressor
+device: cuda
+
+data:
+  csv_path: data/train_data/intermediate_line_data_20260412_7snap_t720.csv
+  data_version: "20260412-intermediate-line-7-snapshots-t720"
+  expected_checksum: null
+  season_year_floor: 2021
+  exclude_playoffs: true
+  allowed_season_types: ["Regular Season", "Play-In Tournament"]
+
+walk_forward:
+  train_games: 3750
+  min_train_games: 1875
+  test_games: 50
+  step_games_between_tests: 60
+  max_folds: 12
+
+backtest:
+  test_games: 300
+
+sample_weight:
+  enabled: false
+
+optuna:
+  n_trials: 50
+  timeout: null
+
+# SEVEN seeds in total (random_state 16 plus the six below). Three was not
+# enough: measured on the 12h control, the SAME config swung from -6.46% to
+# +5.43% holdout ROI across its three seeds, and the pooled-vs-control ordering
+# flipped depending on which one you read. Each extra seed re-runs the whole
+# 53-day holdout (~53 fits) but leaves tuning and CV untouched.
+#
+# Caveat worth keeping in view: this measures FIT noise only. The extra seeds
+# reuse the hyperparameters selected under seed 16, so selection noise is not
+# in this range -- and on the pooled cell 25 of 50 trials tied within
+# mae_tolerance_abs, so selection noise is likely the larger of the two.
+# Treat the seed range as a floor on total variability, never as a CI.
+evaluation_seeds: [101, 202, 303, 404, 505, 606]

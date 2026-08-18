@@ -207,3 +207,66 @@ def test_campaign_cells_are_pairwise_distinct_studies():
     ]
     fingerprints = {load_config(CAMPAIGN / f"{n}.yaml").fingerprint() for n in names}
     assert len(fingerprints) == len(names)
+
+
+# --- seven-snapshot intermediate-line campaign -----------------------------
+
+INTERMEDIATE_CAMPAIGN = REPO_EXPERIMENTS / "intermediate_line_2026_08"
+INTERMEDIATE_COMPARISON_GROUP = "intermediate_line_7snapshot_6h_4h_2026_08"
+
+# Six, not the two the rest of the repo uses: the snapshot cells are separated
+# by fractions of a point, so the seed spread has to be narrow enough to tell
+# them apart. Every `_no_time_decay` config in this campaign sets the same six,
+# and the comparison is only meaningful if they all agree.
+INTERMEDIATE_EVALUATION_SEEDS = (101, 202, 303, 404, 505, 606)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "pooled_7snapshot_line_error_no_time_decay",
+        "t360_control_line_error_no_time_decay",
+        "t240_control_line_error_no_time_decay",
+    ],
+)
+def test_intermediate_7snapshot_campaign_is_line_error_only_and_unweighted(name):
+    config = load_config(INTERMEDIATE_CAMPAIGN / f"{name}.yaml")
+
+    assert config.comparison_group == INTERMEDIATE_COMPARISON_GROUP
+    assert config.target_family == "line_error"
+    assert config.line_col is None
+    assert config.sample_weight.enabled is False
+    assert config.sample_weight.lambda_ is None
+    assert config.sample_weight.tune_lambda is False
+    assert config.optuna.n_trials == 50
+    assert config.optuna.timeout is None
+    assert config.holdout.test_days == 60
+    assert config.evaluation_seeds == INTERMEDIATE_EVALUATION_SEEDS
+
+
+def test_intermediate_7snapshot_pooled_window_is_scaled_by_seven():
+    config = load_config(
+        INTERMEDIATE_CAMPAIGN / "pooled_7snapshot_line_error_no_time_decay.yaml"
+    )
+
+    assert Path(config.data.csv_path).name == "intermediate_line_data_20260412_7snap.csv"
+    assert config.walk_forward.train_games == 26_250
+    assert config.walk_forward.min_train_games == 13_125
+    assert config.walk_forward.test_games == 350
+    assert config.walk_forward.step_games_between_tests == 420
+    assert config.backtest.test_games == 2_100
+
+
+@pytest.mark.parametrize("horizon", [360, 240])
+def test_intermediate_single_snapshot_controls_keep_unscaled_windows(horizon):
+    config = load_config(
+        INTERMEDIATE_CAMPAIGN
+        / f"t{horizon}_control_line_error_no_time_decay.yaml"
+    )
+
+    assert Path(config.data.csv_path).name.endswith(f"_7snap_t{horizon}.csv")
+    assert config.walk_forward.train_games == 3_750
+    assert config.walk_forward.min_train_games == 1_875
+    assert config.walk_forward.test_games == 50
+    assert config.walk_forward.step_games_between_tests == 60
+    assert config.backtest.test_games == 300

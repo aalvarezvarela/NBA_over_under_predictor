@@ -1,0 +1,155 @@
+# Campaign: can a model bet the line that is on the board NOW, at any hour
+# before tip, rather than only the closing line?
+#
+# THE deliverable of this campaign. One model trained on every pre-game
+# snapshot at once (30/60/120/240/480/720 minutes before tip), with
+# TIME_TO_MATCH_MIN as an ordinary feature, so it learns how the mapping changes
+# with time to tip and can be used at whatever hour the bet actually gets
+# placed. Six separate per-horizon models would force clock-watching and could
+# not interpolate to a time not on the grid.
+#
+# Run it with the snapshot-aware wrapper, NOT the plain CLI:
+#   poetry run python scripts/run_intermediate_snapshot_experiment.py \
+#       experiments/intermediate_line_2026_08/pooled.yaml
+#
+# The plain CLI trains and evaluates identically, but reports only the pooled
+# betting numbers -- and those are the ones that must not be read. See below.
+#
+# WHY THE POOLED n_bets IS NOT READABLE
+# evaluate_betting counts every ROW as an independent bet and wilson_interval
+# builds its interval from that count. Here one game contributes up to six rows
+# that share a single outcome -- within a game the snapshot lines differ by a
+# median of 0.75 points against ~18 points of outcome noise. n_bets is therefore
+# inflated and the interval too narrow. The exact factor is NOT sqrt(6): that
+# assumes all six horizons present and identically decided, whereas coverage
+# varies (T=720 reaches 97.6% of games) and the min-edge filter selects
+# differently per snapshot. Direction certain, magnitude not -- so the report
+# leaves the pooled row's interval and significance BLANK rather than printing
+# a number it cannot justify. Read the per-snapshot rows, where there really is
+# one row per game and the binomial maths holds.
+
+experiment_name: intermediate_pooled_line_error
+training_version: "intermediate-line-1.0"
+comparison_group: intermediate_line_2026_08
+hypothesis: >
+  A model trained on every pre-game snapshot, conditioning on time-to-tip, can
+  bet the line available at any hour before tip. Read the per-snapshot table,
+  not the pooled row: the question is whether the edge at 12 hours out survives
+  at all, and how much of it is given up relative to betting near tip-off.
+  .
+  Target: LINE_ERROR. Pre-registered favourite of the two targets -- the
+  nuisance part is subtracted out, so the whole target is the quantity being
+  bet, and the earlier closing-line campaign gave +12.96% ROI here versus
+  -6.11% for total points. Paired with pooled_total_points.yaml, which differs
+  in the target and nothing else.
+  .
+  No closing line is available to this model at any snapshot -- the CLOSING_*
+  columns are physically held in a separate scoring sidecar so they cannot
+  reach the feature matrix.
+tags: [intermediate_line, pooled_snapshots, line_error]
+
+prediction_strategy: line_error_regressor
+
+# Hardware, not part of the hypothesis -- but it must be set identically on
+# every cell of the campaign, or a timing difference becomes a results
+# difference through the trial/pruning path.
+#
+# VERIFY THE BUILD ACTUALLY HAS CUDA before trusting this. XGBoost 2.1.4 does
+# NOT error on device: cuda when it was compiled without CUDA support -- it
+# emits "XGBoost is not compiled with CUDA support" as a *warning* and silently
+# runs on CPU, so a run can look configured for GPU and take CPU time:
+#   poetry run python -c "import xgboost, numpy as np; \
+#     xgboost.train({'device':'cuda'}, xgboost.DMatrix(np.random.rand(50,3), \
+#     label=np.random.rand(50)), num_boost_round=2)"
+# Silence means real CUDA. VRAM is not a concern: the pooled training matrix is
+# 15000 x 2400 float32, about 144 MB.
+device: cuda
+
+# line_col deliberately absent: TOTAL_LINE_bet365 in this dataset is already the
+# NORMALIZED SNAPSHOT line, and LINE_ERROR is TOTAL_POINTS minus that. The
+# target is therefore the error against the line that was actually on the board
+# at that moment, which is the quantity being bet.
+
+data:
+  csv_path: data/train_data/intermediate_line_data_20260412.csv
+  data_version: "20260412-intermediate-line-6-snapshots"
+  # Fill this in before running. It changes whenever the CSV is rebuilt --
+  # including the fanatics-column removal:
+  #   poetry run python -c "from training_pipeline.data import compute_file_checksum as c; print(c('data/train_data/intermediate_line_data_20260412.csv'))"
+  expected_checksum: null
+  # Matches the line-history store exactly: its oldest game is 2021-10-19, so
+  # this floor drops nothing here. Stated explicitly so the closing-line
+  # reference run can be given the identical floor.
+  season_year_floor: 2021
+  # Regular season + play-in only, resolved from the GAME_ID prefix. Leaves
+  # 34,686 rows / 5,808 games. Playoff basketball is a different distribution
+  # and the campaign it is being compared against excludes it too.
+  exclude_playoffs: true
+  allowed_season_types: ["Regular Season", "Play-In Tournament"]
+
+# --- WINDOW: 3750 GAMES, x6 FOR THE ROW GRAIN ------------------------------
+# Every *_games setting counts ROWS, not games (train_pool.tail(n)), so a
+# six-snapshot dataset needs x6 to mean the same history as a one-row-per-game
+# one. Left unscaled, each fold would train on ~625 games.
+#
+# WHY 3750. Chosen from the window_sweep_2026_08 + strategy_window_2026_08
+# runs, re-scored at a common 0.1-point threshold (each run freezes its own
+# threshold, so the raw leaderboard compares different measurements):
+#
+#   line_error, matched on every other factor    CV ROI    holdout ROI
+#     2500                                        -0.9%       +5.9%
+#     3000                                        +0.4%       +2.8%
+#     3750                                        +2.9%       +6.8%   <- best on both
+#     3850                                        -1.7%       -0.8%
+#     4500                                        +1.2%       +6.3%   (contaminated)
+#
+# READ THAT SPREAD HONESTLY: it is 4.6 points of CV ROI across the whole axis,
+# while a SINGLE config re-run under different seeds moves ROI by 3.4-10.6
+# points. The window effect is inside the noise floor, so 3750 is the best
+# available choice, NOT a demonstrated optimum. Do not report it as one.
+#
+# The decisive argument is cleanliness, not ROI. Measured on this dataset with
+# the real splitter, 12 folds:
+#     3750 games (22,500 rows) -> every fold exactly 22,500  [clean]
+#     3850 games (23,100 rows) -> every fold exactly 23,100  [clean, but see below]
+#     4500 games (27,000 rows) -> folds 23,450-27,000        [SILENTLY SHRANK]
+# and on the T=720 control's one-row-per-game pool (5,262 dev games):
+#     3750 -> exactly 3,750 every fold   [clean]
+#     3850 -> 3,798-3,850                [SILENTLY SHRANK]
+# 3750 is therefore the largest window that is exact on BOTH the pooled arms
+# and the control, which is what lets the two be read against each other.
+# 4500 was the same trap in the closing-line campaign: its runs recorded
+# per-fold training sizes of 3,950-4,500, so "4500" there was never one level.
+#
+# holdout.test_days is deliberately NOT rescaled: it is calendar-based, and it
+# is what gives two datasets the identical evaluation window.
+walk_forward:
+  train_games: 22500          # 3750 games
+  min_train_games: 11250      # 1875 games -- half, as in _base.yaml
+  test_games: 300             # 50 games
+  step_games_between_tests: 360  # 60 games
+  max_folds: 12               # the 16-fold variant bought volume (812 vs 608
+                              # CV bets) but cost ROI (+1.2% vs +2.9%) and
+                              # forced the window down to 3400.
+
+backtest:
+  test_games: 1800            # 300 games
+
+# Recency weighting stays OFF. Measured on the same campaign, at 3750:
+#   line_error   weighted CV +1.2% / holdout +1.4%  vs unweighted +2.9% / +6.8%
+#   total_points weighted CV -0.9% / holdout +1.6%  vs unweighted +3.6% / +1.7%
+# Worse on both targets in CV. Inside the noise floor like everything else
+# here, but there is no evidence for turning it on.
+sample_weight:
+  enabled: true
+
+optuna:
+  # Fixed trial count, no timeout: a timeout makes the number of completed
+  # trials a function of the machine, which silently breaks comparability
+  # across the cells of a campaign.
+  n_trials: 50
+  timeout: null
+
+# Turns each number into a number-with-an-error-bar. A gap smaller than one
+# run's own seed spread is not a result.
+evaluation_seeds: [101, 202]

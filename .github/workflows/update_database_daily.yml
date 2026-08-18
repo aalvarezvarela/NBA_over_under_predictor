@@ -23,6 +23,11 @@ jobs:
       SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
       ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
 
+      # Aiven — the SBR line-history store. Read alongside Supabase: the line
+      # history is keyed on nba_games, so both connections are needed.
+      AIVEN_DB_URL: ${{ secrets.AIVEN_DB_URL }}
+      AIVEN_DB_PASSWORD: ${{ secrets.AIVEN_DB_PASSWORD }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -56,3 +61,10 @@ jobs:
       - name: Update all databases
         run: |
           python scripts/update_databases/update_all_databases.py --start 2025 --end 2025
+
+      # Must run after the games update: the line history is keyed on
+      # nba_games, so last night's games have to be there first. Seasons
+      # default to the current one, so this needs no yearly edit.
+      - name: Update SBR line history
+        run: |
+          python scripts/update_databases/update_line_history_database.py

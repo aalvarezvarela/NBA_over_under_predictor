@@ -16,6 +16,10 @@ _PROJECT_ROOT = _CURRENT_DIR.parent.parent
 
 _CONFIG_INI = _PROJECT_ROOT / "config.ini"
 _SECRETS_INI = _PROJECT_ROOT / "config.secrets.ini"
+# A second secrets file lives at the repo root. Both are gitignored and in use,
+# so read both; the package-local one is read last and therefore wins on any
+# key the two files share.
+_REPO_ROOT_SECRETS_INI = _PROJECT_ROOT.parent.parent / "config.secrets.ini"
 
 
 def get_config() -> configparser.ConfigParser:
@@ -26,7 +30,9 @@ def get_config() -> configparser.ConfigParser:
     config = configparser.ConfigParser()
     config.read(_CONFIG_INI)
 
-    # Overlay optional local secrets file (gitignored)
+    # Overlay optional local secrets files (gitignored)
+    if _REPO_ROOT_SECRETS_INI.exists():
+        config.read(_REPO_ROOT_SECRETS_INI)
     if _SECRETS_INI.exists():
         config.read(_SECRETS_INI)
 
@@ -65,7 +71,7 @@ def _get_env_or_config(
 
 
 def get_db_env() -> str:
-    """Return current DB environment: local|supabase."""
+    """Return current default DB environment: local|supabase|aiven."""
     config = get_config()
     return (
         os.getenv("DB_ENV", config.get("Database", "DB_ENV", fallback="local"))
@@ -74,13 +80,40 @@ def get_db_env() -> str:
     )
 
 
-def get_db_credentials() -> dict[str, Any]:
+# Environments that are configured by a full connection URI rather than by
+# discrete host/user/port settings, as (config section, key, env var).
+_DSN_SOURCES: dict[str, tuple[str, str, str]] = {
+    "supabase": ("DatabaseSupabase", "SUPABASE_DB_URL", "SUPABASE_DB_URL"),
+    "aiven": ("Aiven", "AIVEN_DB_URL", "AIVEN_DB_URL"),
+}
+
+_CREDENTIAL_SECTIONS: dict[str, str] = {
+    "supabase": "DatabaseSupabase",
+    "aiven": "DatabaseAiven",
+    "local": "DatabaseLocal",
+}
+
+
+def get_db_dsn(env: str | None = None) -> str:
+    """Return the connection URI for ``env``, or "" if it is not URI-configured."""
+    resolved = (env or get_db_env()).strip().lower()
+    spec = _DSN_SOURCES.get(resolved)
+    if spec is None:
+        return ""
+
+    section, key, env_var = spec
+    return _get_env_or_config(
+        get_config(), section, key, env_var, required=False, fallback=""
+    )
+
+
+def get_db_credentials(env: str | None = None) -> dict[str, Any]:
     """
     Get database credentials with env var overrides and secrets support.
     """
     config = get_config()
-    db_env = get_db_env()
-    section = "DatabaseSupabase" if db_env == "supabase" else "DatabaseLocal"
+    db_env = (env or get_db_env()).strip().lower()
+    section = _CREDENTIAL_SECTIONS.get(db_env, "DatabaseLocal")
 
     # Non-secret settings (config.ini)
     user = config.get(section, "DB_USER")
@@ -93,9 +126,10 @@ def get_db_credentials() -> dict[str, Any]:
     dbname = dbname.strip().strip('"').strip("'")
 
     # Secret password: env var preferred, else secrets file
-    password_env = (
-        "SUPABASE_DB_PASSWORD" if db_env == "supabase" else "LOCAL_DB_PASSWORD"
-    )
+    password_env = {
+        "supabase": "SUPABASE_DB_PASSWORD",
+        "aiven": "AIVEN_DB_PASSWORD",
+    }.get(db_env, "LOCAL_DB_PASSWORD")
     password = _get_env_or_config(
         config, section, "DB_PASSWORD", password_env, required=True
     )
@@ -218,23 +252,22 @@ def connect_postgres_db() -> psycopg.Connection:
     return psycopg.connect(**kwargs)
 
 
-def connect_nba_db() -> psycopg.Connection:
-    """Connect to the configured database (local or Supabase)."""
-    c = get_db_credentials()
+def connect_nba_db(env: str | None = None) -> psycopg.Connection:
+    """Connect to a configured database (local, Supabase or Aiven).
 
-    # Prefer DSN for Supabase (pooler/session mode). This also fixes IPv6 issues in GitHub runners.
-    if c["env"] == "supabase":
-        # get it from config if not getenv
-        dsn = _get_env_or_config(
-            get_config(),
-            "DatabaseSupabase",
-            "SUPABASE_DB_URL",
-            "SUPABASE_DB_URL",
-        )
-        # dsn = os.getenv("SUPABASE_DB_URL")
-        if dsn:
-            return psycopg.connect(dsn)
+    ``env`` overrides the process-wide ``DB_ENV`` for this connection only, so a
+    single process can read one environment and write another -- which the
+    line-history load needs (read games from Supabase, write to Aiven).
+    """
+    resolved_env = (env or get_db_env()).strip().lower()
 
+    # Prefer DSN where one is configured (Supabase pooler/session mode, Aiven
+    # service URI). This also fixes IPv6 issues in GitHub runners.
+    dsn = get_db_dsn(resolved_env)
+    if dsn:
+        return psycopg.connect(dsn)
+
+    c = get_db_credentials(env=resolved_env)
     kwargs: dict[str, Any] = dict(
         dbname=c["dbname"],
         user=c["user"],
@@ -246,6 +279,11 @@ def connect_nba_db() -> psycopg.Connection:
         kwargs["sslmode"] = c["sslmode"]
 
     return psycopg.connect(**kwargs)
+
+
+def connect_line_history_db() -> psycopg.Connection:
+    """Connect to the Aiven instance that hosts the line-history store."""
+    return connect_nba_db(env="aiven")
 
 
 def connect_schema_db(schema: str) -> psycopg.Connection:

@@ -1,0 +1,80 @@
+# Control run for the TOTAL_POINTS arm: is pooling the six snapshots earning
+# its complexity?
+#
+# NOT a deliverable, and LOWEST priority in this campaign. It trains on 12-hour
+# rows only, so it can serve exactly one betting time and is useless as a
+# product. Run it only after the two pooled arms have been read and the
+# total-points arm is still in contention -- if line_error wins the pooled
+# comparison decisively, this cell answers a question about a target you are
+# not going to use.
+#
+# Build its CSV first (shared with t720_control_line_error.yaml -- one slice
+# serves both targets, so this costs nothing extra if that control already ran):
+#   poetry run python scripts/create_train_data/slice_intermediate_snapshot.py --snapshot 720
+#
+# Then run with the ORDINARY CLI -- one row per game means the standard betting
+# report is already correct and there is nothing to group:
+#   poetry run python -m training_pipeline.cli \
+#       experiments/intermediate_line_2026_08/t720_control_total_points.yaml
+
+experiment_name: intermediate_t720_control_total_points
+training_version: "intermediate-line-1.0"
+comparison_group: intermediate_line_2026_08
+hypothesis: >
+  A total-points model trained only on 12-hour-out rows, as a control for the
+  pooled total-points arm. If pooling helps, pooled_total_points scored at
+  snapshot 720 should beat this; if it does not, the shared model is diluting
+  the horizon rather than informing it.
+tags: [intermediate_line, single_snapshot, control, total_points]
+
+prediction_strategy: total_points_regressor
+
+# The snapshot line, exactly as in pooled_total_points.yaml. The control must
+# differ from the pooled arm in ONE thing only: which rows it sees.
+line_col: TOTAL_LINE_bet365
+
+# Must match every other cell in the comparison_group.
+device: cuda
+
+data:
+  csv_path: data/train_data/intermediate_line_data_20260412_t720.csv
+  data_version: "20260412-intermediate-line-t720"
+  # Printed by slice_intermediate_snapshot.py when it writes the file. Must be
+  # the same value as t720_control_line_error.yaml -- both read this one file.
+  expected_checksum: null
+  season_year_floor: 2021
+  exclude_playoffs: true
+  allowed_season_types: ["Regular Season", "Play-In Tournament"]
+
+# --- WINDOW: 3750 GAMES, NOT RESCALED --------------------------------------
+# This file is one row per game, so 3750 already means 3750 games -- and that
+# is exactly the pooled arms' 22,500 rows / 3750 games. The two must match or
+# the control is controlling for the wrong thing.
+#
+# 3750 is also the ceiling here. Measured with the real splitter on this
+# dataset's 5,262-game T=720 dev pool, 12 folds:
+#     3750 -> exactly 3,750 every fold   [clean]
+#     3850 -> 3,798-3,850                [SILENTLY SHRANK]
+# See pooled_line_error.yaml for why 3750 was chosen and, more importantly,
+# for why the window effect sits inside the seed-noise floor and must not be
+# reported as a demonstrated optimum.
+walk_forward:
+  train_games: 3750
+  min_train_games: 1875
+  test_games: 50
+  step_games_between_tests: 60
+  max_folds: 12
+
+backtest:
+  test_games: 300
+
+# Off, matching the pooled arms -- see pooled_line_error.yaml for the measured
+# comparison.
+sample_weight:
+  enabled: true
+
+optuna:
+  n_trials: 50
+  timeout: null
+
+evaluation_seeds: [101, 202]
