@@ -16,7 +16,11 @@ from training_pipeline.pipeline import run_experiment
 
 #: Shared defaults every experiment file is merged on top of. Looked up by
 #: walking upwards from the experiment file, so nested directories such as
-#: experiments/total_points/ inherit experiments/_base.yaml.
+#: experiments/rolling_origin_2026_08/ inherit experiments/_base.yaml.
+#:
+#: Nearest wins, which is what keeps experiments/archived/ reproducible: it
+#: holds its own frozen _base.yaml, so the campaigns beneath it still resolve
+#: to the protocol they actually ran under rather than to today's defaults.
 BASE_CONFIG_FILENAME = "_base.yaml"
 
 

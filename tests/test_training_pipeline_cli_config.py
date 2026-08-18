@@ -101,7 +101,7 @@ def test_load_config_rejects_non_mapping_yaml(tmp_path):
 
 @pytest.mark.parametrize(
     "relative_path",
-    ["total_points/3_seasons.yaml", "line_error/3_seasons_weighted.yaml"],
+    ["archived/total_points/3_seasons.yaml", "archived/line_error/3_seasons_weighted.yaml"],
 )
 def test_repo_experiment_definitions_are_valid(relative_path):
     config = load_config(REPO_EXPERIMENTS / relative_path)
@@ -116,7 +116,7 @@ def test_repo_experiment_definitions_are_valid(relative_path):
 
 
 def test_repo_line_error_definition_enables_recency_weighting():
-    config = load_config(REPO_EXPERIMENTS / "line_error/3_seasons_weighted.yaml")
+    config = load_config(REPO_EXPERIMENTS / "archived/line_error/3_seasons_weighted.yaml")
     assert config.target_family == "line_error"
     assert config.line_col is None
     assert config.sample_weight.enabled is True
@@ -158,13 +158,13 @@ def test_base_yaml_search_space_matches_the_code_defaults():
     """_base.yaml documents the search space; if it drifts from the pydantic
     defaults the file becomes misleading.
     """
-    config = load_config(REPO_EXPERIMENTS / "total_points/3_seasons.yaml")
+    config = load_config(REPO_EXPERIMENTS / "archived/total_points/3_seasons.yaml")
     assert config.optuna.search_space == expected_search_space(config)
 
 
 # --- the checked-in campaign must be correct as written ---------------------
 
-CAMPAIGN = REPO_EXPERIMENTS / "strategy_window_2026_08"
+CAMPAIGN = REPO_EXPERIMENTS / "archived" / "strategy_window_2026_08"
 
 
 @pytest.mark.parametrize(
@@ -241,7 +241,7 @@ def test_campaign_cells_are_pairwise_distinct_studies():
 
 # --- seven-snapshot intermediate-line campaign -----------------------------
 
-INTERMEDIATE_CAMPAIGN = REPO_EXPERIMENTS / "intermediate_line_2026_08"
+INTERMEDIATE_CAMPAIGN = REPO_EXPERIMENTS / "archived" / "intermediate_line_2026_08"
 INTERMEDIATE_COMPARISON_GROUP = "intermediate_line_7snapshot_6h_4h_2026_08"
 
 # Six, not the two the rest of the repo uses: the snapshot cells are separated

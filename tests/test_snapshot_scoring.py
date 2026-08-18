@@ -241,7 +241,7 @@ from training_pipeline.snapshot_scoring import (  # noqa: E402
 )
 
 REPO_CONFIG = (
-    "experiments/intermediate_line_2026_08/pooled_line_error.yaml"
+    "experiments/archived/intermediate_line_2026_08/pooled_line_error.yaml"
 )
 
 

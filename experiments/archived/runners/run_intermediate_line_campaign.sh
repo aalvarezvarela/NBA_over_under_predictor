@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Intermediate-line campaign: pooled snapshot models plus controls.
 #
-#   bash experiments/runners/run_intermediate_line_campaign.sh
+#   bash experiments/archived/runners/run_intermediate_line_campaign.sh
 #
 # Detached, so closing the terminal does not kill it:
-#   nohup bash experiments/runners/run_intermediate_line_campaign.sh > /dev/null 2>&1 &
+#   nohup bash experiments/archived/runners/run_intermediate_line_campaign.sh > /dev/null 2>&1 &
 #
 # Follow along:
 #   tail -f artifacts/logs/campaign_*/campaign.log      # the summary
@@ -12,7 +12,7 @@
 #
 # Interrupted or extending the campaign? Existing experiment artifacts are
 # skipped by default. Set SKIP_EXISTING=0 to force a full rerun:
-#   SKIP_EXISTING=0 bash experiments/runners/run_intermediate_line_campaign.sh
+#   SKIP_EXISTING=0 bash experiments/archived/runners/run_intermediate_line_campaign.sh
 #
 # The pooled configs MUST use scripts/run_intermediate_snapshot_experiment.py so
 # their artifacts include per-snapshot betting reports. The single-snapshot
@@ -22,10 +22,10 @@
 # NOT `set -e`: one failing run must not cancel the remaining campaign cells.
 set -uo pipefail
 
-cd "$(dirname "$0")/../.." || exit 1
+cd "$(dirname "$0")/../../.." || exit 1
 
 CAMPAIGN="intermediate_line_2026_08"
-CONFIG_DIR="experiments/${CAMPAIGN}"
+CONFIG_DIR="experiments/archived/${CAMPAIGN}"
 POOLED_DATASET="data/train_data/intermediate_line_data_20260412.csv"
 T720_DATASET="data/train_data/intermediate_line_data_20260412_t720.csv"
 T480_DATASET="data/train_data/intermediate_line_data_20260412_t480.csv"
@@ -236,7 +236,7 @@ log "Read the pooled runs from their snapshot_cv_metrics.csv and"
 log "snapshot_holdout_metrics.csv files, not from the pooled betting row."
 log ""
 log "Survey with, in experiments/notebooks/survey_experiments.ipynb:"
-log "  SOURCES = [\"experiments/intermediate_line_2026_08\"]"
+log "  SOURCES = [\"experiments/archived/intermediate_line_2026_08\"]"
 log ""
 log "Primary read order:"
 log "  1. pooled_line_error vs pooled_total_points by per-snapshot cv_roi"

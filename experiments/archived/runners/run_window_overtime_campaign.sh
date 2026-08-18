@@ -1,26 +1,26 @@
 #!/usr/bin/env bash
 # Window / dataset / overtime campaign -- 8 runs, sequentially.
 #
-#   bash experiments/runners/run_window_overtime_campaign.sh
+#   bash experiments/archived/runners/run_window_overtime_campaign.sh
 #
 # Detached (survives closing the terminal):
-#   nohup bash experiments/runners/run_window_overtime_campaign.sh > /dev/null 2>&1 &
+#   nohup bash experiments/archived/runners/run_window_overtime_campaign.sh > /dev/null 2>&1 &
 #
 # Follow along:
 #   tail -f artifacts/logs/window_overtime_*.log
 #
 # Then survey it together with the campaign it follows up on, by setting
 # SOURCES in experiments/notebooks/survey_experiments.ipynb to:
-#   ["experiments/window_overtime_2026_08", "experiments/strategy_window_2026_08"]
+#   ["experiments/archived/window_overtime_2026_08", "experiments/archived/strategy_window_2026_08"]
 set -uo pipefail          # NOT -e: one failed run must not cancel the rest
 
-cd "$(dirname "$0")/../.." || exit 1
+cd "$(dirname "$0")/../../.." || exit 1
 
 LOG_DIR="artifacts/logs"
 mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/window_overtime_$(date +%Y%m%d_%H%M%S).log"
 
-CONFIG_DIR="experiments/window_overtime_2026_08"
+CONFIG_DIR="experiments/archived/window_overtime_2026_08"
 # Ordered cheapest-signal-first: the two single-change line_error cells answer
 # the campaign's main questions, so a run that dies overnight still leaves the
 # comparison interpretable.
@@ -101,8 +101,8 @@ log ""
 log "=========================================================="
 log "Finished $(date) -- $FAILED of ${#CONFIGS[@]} runs failed"
 log "Survey with, in experiments/notebooks/survey_experiments.ipynb:"
-log "  SOURCES = [\"experiments/window_overtime_2026_08\","
-log "             \"experiments/strategy_window_2026_08\"]"
+log "  SOURCES = [\"experiments/archived/window_overtime_2026_08\","
+log "             \"experiments/archived/strategy_window_2026_08\"]"
 log "Read seed_roi_range FIRST: with ${#CONFIGS[@]} new cells, about one will look good"
 log "by luck alone."
 log "=========================================================="

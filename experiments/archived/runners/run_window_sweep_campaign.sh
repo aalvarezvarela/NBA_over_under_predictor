@@ -1,27 +1,27 @@
 #!/usr/bin/env bash
 # Window sweep + sample weighting + fold-count precision -- 11 runs, sequential.
 #
-#   bash experiments/runners/run_window_sweep_campaign.sh
+#   bash experiments/archived/runners/run_window_sweep_campaign.sh
 #
 # Detached (survives closing the terminal):
-#   nohup bash experiments/runners/run_window_sweep_campaign.sh > /dev/null 2>&1 &
+#   nohup bash experiments/archived/runners/run_window_sweep_campaign.sh > /dev/null 2>&1 &
 #
 # Follow along:
 #   tail -f artifacts/logs/window_sweep_*.log
 #
 # Survey afterwards in experiments/notebooks/survey_experiments.ipynb with
-#   SOURCES = ["experiments/window_sweep_2026_08",
-#              "experiments/strategy_window_2026_08"]
+#   SOURCES = ["experiments/archived/window_sweep_2026_08",
+#              "experiments/archived/strategy_window_2026_08"]
 # so the new 3000/3850 points read against the existing 2500/3750 ones.
 set -uo pipefail          # NOT -e: one failed run must not cancel the rest
 
-cd "$(dirname "$0")/../.." || exit 1
+cd "$(dirname "$0")/../../.." || exit 1
 
 LOG_DIR="artifacts/logs"
 mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/window_sweep_$(date +%Y%m%d_%H%M%S).log"
 
-CONFIG_DIR="experiments/window_sweep_2026_08"
+CONFIG_DIR="experiments/archived/window_sweep_2026_08"
 # Ordered so the questions most likely to change what gets trained run first.
 # A campaign that dies overnight then still leaves the useful half done.
 CONFIGS=(

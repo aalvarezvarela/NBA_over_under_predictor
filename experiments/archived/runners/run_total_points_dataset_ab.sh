@@ -4,16 +4,16 @@
 # Both aligned datasets must already exist. The script checks them before
 # validating and running the experiments; it does not generate training data.
 #
-#   bash experiments/runners/run_total_points_dataset_ab.sh
+#   bash experiments/archived/runners/run_total_points_dataset_ab.sh
 #
 # Detached (survives closing the terminal):
-#   nohup bash experiments/runners/run_total_points_dataset_ab.sh > /dev/null 2>&1 &
+#   nohup bash experiments/archived/runners/run_total_points_dataset_ab.sh > /dev/null 2>&1 &
 #
 # Follow along:
 #   tail -f artifacts/logs/overnight_*.log
 set -uo pipefail          # NOT -e: run 2 should still start if run 1 fails
 
-cd "$(dirname "$0")/../.." || exit 1
+cd "$(dirname "$0")/../../.." || exit 1
 
 LOG_DIR="artifacts/logs"
 mkdir -p "$LOG_DIR"
@@ -24,8 +24,8 @@ DATASET_A="data/train_data/old_training_data_until_20260704.csv"
 DATASET_B="data/train_data/training_data_2_0_20260704.csv"
 
 CONFIGS=(
-  "experiments/total_points/2500_games_20260704.yaml"            # 3.5 h tuning
-  "experiments/total_points/2500_games_train_2_0_20260704.yaml"  # 3.0 h tuning
+  "experiments/archived/total_points/2500_games_20260704.yaml"            # 3.5 h tuning
+  "experiments/archived/total_points/2500_games_train_2_0_20260704.yaml"  # 3.0 h tuning
 )
 
 # -u keeps output unbuffered so `tail -f` shows progress live.
