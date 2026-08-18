@@ -20,6 +20,27 @@ hypothesis: >
   control? Measures the protocol, not the market.
 tags: [line_error, diagnostic, planted_signal]
 
+# This campaign runs on the 2.0 build rather than _base.yaml's default. Stated
+# in all four cells rather than in one shared place because a campaign-local
+# _base.yaml would REPLACE the root one outright (find_base_config takes the
+# nearest, it does not merge two of them), which would silently discard the
+# rolling-origin protocol this diagnostic exists to test.
+#
+# Kept in sync by a test, not by care:
+# test_the_four_cells_differ_only_in_planted_strength asserts every cell's
+# `data` block is byte-identical, so a drift here fails the suite rather than
+# quietly turning the comparison into a two-variable one.
+#
+# Measured on this CSV (scripts/preflight_campaign.py):
+#   cleaned 5752, dev 5336, holdout 416 (2026-02-19 -> 2026-04-17),
+#   30 folds, 117 game-days, 850 validation games, window ceiling 4486.
+# The inherited train_games_choices [2500, 3000, 3500, 4000] all fit, with 486
+# games of headroom on the largest.
+data:
+  csv_path: data/train_data/training_data_2_0_20260704.csv
+  data_version: "20260704-2_0"
+  expected_checksum: "sha256:2fc9ed86d2f42a78"
+
 diagnostics:
   planted_signal:
     enabled: true

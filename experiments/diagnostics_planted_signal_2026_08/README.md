@@ -18,6 +18,25 @@ byte-identical across the four cells. If pooled out-of-fold performance does not
 improve as the planted strength rises, then "no signal found" was never evidence
 about the market.
 
+## Dataset
+
+`data/train_data/training_data_2_0_20260704.csv` (pinned:
+`sha256:2fc9ed86d2f42a78`), overriding `../_base.yaml`'s default. Measured:
+
+| | value |
+|---|---|
+| cleaned rows / features | 5,752 / 1,458 (+ `PLANTED_SIGNAL`) |
+| dev / holdout | 5,336 / 416 |
+| holdout window | 2026-02-19 → 2026-04-17 |
+| rolling-origin folds | 30 (117 game-days, 850 validation games) |
+| window ceiling | 4,486 — the inherited `[2500, 3000, 3500, 4000]` all fit |
+
+**If the real `rolling_origin_2026_08` campaign runs on a different CSV, this
+diagnostic's conclusion does not transfer to it.** The whole point is to
+exercise the pipeline you intend to trust, and the dataset is part of that
+pipeline. Keep the two campaigns on the same build, or read the diagnostic as a
+statement about this build only.
+
 ## The cells
 
 | cell | `variance_explained` | expected corr | role |
