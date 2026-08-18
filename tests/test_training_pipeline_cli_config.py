@@ -214,6 +214,12 @@ def test_campaign_cells_are_pairwise_distinct_studies():
 INTERMEDIATE_CAMPAIGN = REPO_EXPERIMENTS / "intermediate_line_2026_08"
 INTERMEDIATE_COMPARISON_GROUP = "intermediate_line_7snapshot_6h_4h_2026_08"
 
+# Six, not the two the rest of the repo uses: the snapshot cells are separated
+# by fractions of a point, so the seed spread has to be narrow enough to tell
+# them apart. Every `_no_time_decay` config in this campaign sets the same six,
+# and the comparison is only meaningful if they all agree.
+INTERMEDIATE_EVALUATION_SEEDS = (101, 202, 303, 404, 505, 606)
+
 
 @pytest.mark.parametrize(
     "name",
@@ -235,7 +241,7 @@ def test_intermediate_7snapshot_campaign_is_line_error_only_and_unweighted(name)
     assert config.optuna.n_trials == 50
     assert config.optuna.timeout is None
     assert config.holdout.test_days == 60
-    assert config.evaluation_seeds == (101, 202)
+    assert config.evaluation_seeds == INTERMEDIATE_EVALUATION_SEEDS
 
 
 def test_intermediate_7snapshot_pooled_window_is_scaled_by_seven():
