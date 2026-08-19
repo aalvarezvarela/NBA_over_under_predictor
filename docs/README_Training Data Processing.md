@@ -131,9 +131,35 @@ The active sportsbook is configured through `nba_ou.config.odds_columns`.
 it falls back to `consensus_opener`. The configured book controls canonical
 column names such as:
 
-- `TOTAL_LINE_<book>`
-- `SPREAD_<book>`
-- `MONEYLINE_<book>`
+- `ODDS_TOTAL_LINE_<book>`
+- `ODDS_SPREAD_<book>`
+- `ODDS_MONEYLINE_<book>`
+
+`fanatics_sportsbook` only exists from the 2025 season, and the odds-fetching
+pipeline no longer scrapes the now-discontinued Caesars, so left alone
+fanatics_sportsbook is a de facto season indicator. `create_df_to_predict()`
+and `create_intermediate_line_df()` both take `exclude_caesars`,
+`exclude_fanatics`, and `combine_fanatics_and_caesars` to reconcile this -- see
+`nba_ou.data_processing.odds.book_combination` (wide, per-book columns) and
+`nba_ou.data_processing.line_history.book_merge` (tidy Aiven ticks).
+
+Combining is the **default**: it folds Caesars into fanatics_sportsbook
+(fanatics values kept where present, Caesars fills the gap), giving one
+continuously-covered book instead of two disjoint, season-correlated ones. It
+is the only option that fixes the season-leak without discarding a book's data.
+
+`combine_fanatics_and_caesars` is tri-state so that "default on" cannot turn an
+explicit exclusion into an error (`resolve_combine_books`):
+
+- `None` (default) -- combine, unless `exclude_caesars` or `exclude_fanatics`
+  was explicitly asked for, in which case the exclusion wins.
+- `True` -- combine, and reject a simultaneous exclusion as the genuine
+  contradiction it is: there is no standalone book left to exclude.
+- `False` -- leave both books as they are.
+
+The intermediate CLI follows the same default: `--exclude-fanatics` and
+`--exclude-caesars` are escape hatches, and running the script with no flags
+produces the merged book.
 
 ## Same-Day Prediction Inputs
 
@@ -199,14 +225,14 @@ The major steps are:
 3. `merge_total_spread_moneyline_by_game_id()`
    - Merges the selected book's spread and moneyline by `GAME_ID`.
    - Merges total lines for all known total sources when `total_lines_mode="all"`.
-   - Creates canonical columns such as `TOTAL_LINE_betmgm`, `TOTAL_LINE_bet365`,
-     `SPREAD_<book>`, and `MONEYLINE_<book>`.
+   - Creates canonical columns such as `ODDS_TOTAL_LINE_betmgm`,
+     `ODDS_TOTAL_LINE_bet365`, `ODDS_SPREAD_<book>`, and `ODDS_MONEYLINE_<book>`.
    - Assigns spread and moneyline from the current team's perspective.
 
 4. `compute_total_points_features()`
    - Creates `TOTAL_POINTS` as home plus away points, repeated on both team rows.
-   - For each `TOTAL_LINE_*` column, creates `DIFF_FROM_LINE_<book>` as actual
-     total points minus that line.
+   - For each `ODDS_TOTAL_LINE_*` column, creates `DIFF_FROM_LINE_<book>` as
+     actual total points minus that line.
 
 5. `filter_valid_games()`
    - Keeps only games with exactly two team entries.
@@ -315,7 +341,7 @@ Feature patterns include:
 - `*_TREND_SLOPE_LAST_10_GAMES_BEFORE` and
   `*_TREND_SLOPE_LAST_5_MINUS_LAST_10_GAMES_BEFORE`: trend comparison features.
 
-`compute_all_rolling_statistics()` dynamically discovers new `TOTAL_LINE_*`,
+`compute_all_rolling_statistics()` dynamically discovers new `ODDS_TOTAL_LINE_*`,
 `DIFF_FROM_*`, percentage, consensus, and eligible spread/moneyline price
 columns, so adding a new book can automatically expand the rolling feature set
 when the column naming convention matches the existing patterns. Total-market
@@ -418,6 +444,51 @@ After home/away merging, player columns are suffixed by side, for example:
 - `TOP1_INJURED_PLAYER_PTS_BEFORE_TEAM_AWAY`
 - `TOTAL_INJURED_PLAYER_PTS_BEFORE_TEAM_HOME`
 - `N_ACTIVE_PLAYERS_BEFORE_TEAM_AWAY`
+
+Each top-N statistic also produces an id and a name column
+(`TOP1_PLAYER_ID_PTS_BEFORE`, `TOP1_PLAYER_NAME_PTS_BEFORE`). **These are
+bookkeeping, not features.** They exist so
+`add_top3_availability_effect_features_for_columns()` can locate each team's
+leading players; an id is meaningless as a numeric input (player 1610612747 is
+not "greater than" player 201939) and a name is a string. Both are removed at the
+end of the pipeline by `drop_player_identifier_columns()`, which must run *after*
+the availability-effect features have consumed the id columns.
+
+### Season Openers
+
+Three subsystems used to reset at the season boundary and leave a team's opening
+games empty. All three now follow the same fallback chain — **current season →
+previous REGULAR season → a defined no-history value** — restricted to regular
+season because that is the regime these models target and because only 16 teams
+play a postseason, which would otherwise make the carried-over value mean
+something different per team:
+
+- `compute_trend_slope()` (`team/rolling.py`) grouped by `(TEAM_ID, SEASON_YEAR)`
+  with `min_periods=2`, leaving every slope column empty for the first two games
+  of a season. It now falls back to the trend the team ended its previous regular
+  season with, then to `0` (which is also what `calculate_slope` returns for
+  insufficient data).
+- `precompute_cumulative_avg_stat()` (`players/players_statistics.py`) grouped its
+  EWMA by `(SEASON_YEAR, PLAYER_ID)`. It now seeds from the player's previous
+  regular season average, then `0`.
+- `create_player_lookup()` (`past_injuries/past_injuries.py`) resolves a roster by
+  asking who last played for the team *earlier in the same season*, so it returned
+  nobody at an opener and every top-N player column stayed missing.
+  `add_player_history_features()` now falls back to the game's own roster in that
+  case — no new lookahead, since the primary path already selects on
+  `GAME_DATE == date`, and every value attached is a prior-season average.
+
+The availability-effect aggregates are the one place a plain `0` is correct:
+`_shrink_effect` computes `raw * n/(n+k)`, whose value at `n=0` is `0`, so a row
+with no evidence has a fully shrunk estimate of zero rather than an unknown. The
+fill is applied to the aggregates only, never to per-player values, so rows where
+some players do have evidence keep the mean over those players.
+
+Filling the *level* features (ratings, TS%, pace, minutes, counts) with `0` would
+be wrong, not merely lossy: `OFF_RATING` runs 87–165 and `TS_PCT` 0.38–1.33 in
+real data, so `0` is an extreme that never occurs and a tree would read a season
+opener as the worst offense on record. That is why they get a previous-season
+value instead.
 
 ### Minutes-Weighted Roster Continuity
 
@@ -666,8 +737,8 @@ During this stage, the pipeline also:
 - Creates star contribution features, such as
   `STAR_OFFENSIVE_RATIO_IMPROVEMENT_BEFORE` and
   `STAR_PTS_PERCENTAGE_BEFORE`.
-- Deduplicates game-level `TOTAL_LINE_*` columns that were duplicated by the
-  home/away merge.
+- Deduplicates game-level `ODDS_TOTAL_LINE_*` columns that were duplicated by
+  the home/away merge.
 - Creates game-level `TOTAL_POINTS` and `TOTAL_PF`.
 - Adds `IS_PLAYOFF_GAME_BEFORE`.
 - Computes home/away points-conceded features and historical matchup features.
@@ -726,7 +797,7 @@ unchanged. Set `normalize_total_lines=False` to preserve the source values; the
 live prediction script exposes the same choice as
 `--no-normalize-total-lines`.
 
-`engineer_odds_features()` creates `odds_*` features, including:
+`engineer_odds_features()` creates `ODDS_*` features, including:
 
 - Per-book total line midpoints.
 - Cross-book total line mean, median, standard deviation, range, IQR, and MAD.
@@ -740,7 +811,7 @@ live prediction script exposes the same choice as
 - Interactions such as total line times probability skew, total line times
   favorite spread, and line disagreement times vig.
 - Implied home and away points from total and spread.
-- `close_total_consensus`, based on cross-book close total median or mean.
+- `ODDS_close_total_consensus`, based on cross-book close total median or mean.
 
 ## Betting Difference Features
 
@@ -992,8 +1063,9 @@ The selection rules intentionally favor features that are known before the game:
 - All-star voting columns that survive the post-merge auxiliary-column drop are
   kept because they include `_BEFORE`.
 - Known odds columns are kept.
-- Columns beginning with `odds_` are kept.
-- Columns beginning with `TOTAL_LINE_` are kept.
+- Columns beginning with `ODDS_` are kept (the unified odds-derived marker;
+  see Naming Conventions below).
+- Columns beginning with `ODDS_TOTAL_LINE_` are kept.
 - `GAME_TIME` is kept only for same-day prediction mode.
 - `TOTAL_POINTS` is kept as the target when present.
 
@@ -1043,12 +1115,37 @@ Important conventions for future agents:
   categorical team identity features.
 - `ALL_STAR_*_BEFORE_TEAM_HOME` and `ALL_STAR_*_BEFORE_TEAM_AWAY` are
   side-specific All-Star fan-vote and score features.
-- `TOTAL_LINE_<book>` is the canonical total line for a book.
-- `SPREAD_<book>` and `MONEYLINE_<book>` are canonical selected-book team-side
-  columns before the home/away merge.
-- Raw game-level odds columns generally use lowercase prefixes like `total_`,
-  `spread_`, and `ml_`.
-- Odds-engineered features use the `odds_` prefix.
+- `ODDS_` is the unified marker for every odds-derived column (mirroring
+  `_BEFORE` for leakage safety) so odds features can be selected as a group,
+  e.g. `[c for c in df.columns if is_odds_column(c)]`
+  (`nba_ou.config.odds_columns.is_odds_column`). It sits in front of any other
+  odds-specific tag, e.g. `ODDS_CLOSING_TOTAL_LINE_<book>` in the
+  intermediate-line dataset.
+- **This is an enforced invariant, not a convention.** Each pipeline entry
+  point ends with `apply_odds_prefix()` followed by
+  `assert_odds_columns_prefixed()`, which raises if any column named like a
+  bookmaker market reached the output without the marker. The recognised
+  shapes are `ODDS_SHAPED_PREFIXES` in `nba_ou/config/odds_columns.py`:
+  `TOTAL_LINE_`, `SPREAD_`, `MONEYLINE_`, `total_`, `spread_`, `ml_`,
+  `moneyline_`. A new odds feature named in any of those shapes fails the
+  build rather than silently disappearing from every odds-based selection.
+  `DIFF_FROM_` and `IS_OVER_` are deliberately outside the guard — they are
+  named after the target relationship rather than the market, and prefixing
+  them would be a separate rename.
+- **Where the marker is applied matters.** It goes on *last*, after
+  `engineer_odds_features()` and `add_high_value_features_for_team_points()`,
+  because both resolve their inputs by raw market name
+  (`total_<book>_price_over`, `spread_consensus_opener_line_home`). Prefixing
+  earlier hides those inputs and silently drops every vig / no-vig /
+  price-dispersion feature. Do not move the rename into
+  `select_training_columns`.
+- `ODDS_TOTAL_LINE_<book>` is the canonical total line for a book.
+- `ODDS_SPREAD_<book>` and `ODDS_MONEYLINE_<book>` are canonical selected-book
+  team-side columns before the home/away merge.
+- Raw game-level odds columns use lowercase prefixes like `total_`, `spread_`,
+  and `ml_` throughout the pipeline; the final pass prepends `ODDS_`.
+- Odds-engineered features use the `ODDS_` prefix (see
+  `engineer_odds_features(prefix=...)`).
 
 When adding new features, prefer using `_BEFORE` for any historical, rolling,
 estimated, or pre-game-derived column that should be eligible for training
@@ -1085,12 +1182,11 @@ Use these guidelines when extending the training data:
 3. Follow naming conventions.
    - Add `_BEFORE` to any feature that should be selected automatically.
    - Use `_TEAM_HOME` and `_TEAM_AWAY` only after the home/away merge.
-   - Use `odds_` for features created by odds engineering.
+   - Use `ODDS_` for features created by odds engineering.
 
 4. Check final selection.
    - If the feature is not selected, verify whether it contains `BEFORE`, starts
-     with `odds_`, starts with `TOTAL_LINE_`, or is in the explicit odds/static
-     allow lists.
+     with `ODDS_`, or is in the explicit odds/static allow lists.
 
 5. Be careful with new sportsbook columns.
    - If the raw column follows existing naming conventions, many rolling and odds

@@ -1,3 +1,5 @@
+import re
+
 import pandas as pd
 from tqdm import tqdm
 
@@ -13,6 +15,40 @@ from nba_ou.data_processing.players.players_statistics import (
     precompute_cumulative_avg_stat,
 )
 from nba_ou.utils.general_utils import _with_before_suffix
+
+#: The top-N player columns come in three flavours per statistic: the value
+#: (``TOP1_PLAYER_PTS_BEFORE``), the player's id (``TOP1_PLAYER_ID_PTS_BEFORE``)
+#: and their name (``TOP1_PLAYER_NAME_PTS_BEFORE``). Only the first is a feature.
+#:
+#: The id and name are bookkeeping: they say *who* the top scorer was, which is
+#: how ``add_top3_availability_effect_features_for_columns`` locates the player,
+#: not a quantity a model can learn from. An id is worse than useless as a
+#: numeric feature -- player 1610612747 is not "greater than" player 201939, so
+#: every split on it is arbitrary -- and a name is a string that only survives to
+#: be discarded later by ``clean_df_for_training``'s string-column pass.
+#:
+#: They are dropped at the very end of the pipeline, after the availability-effect
+#: features have consumed the id columns.
+PLAYER_IDENTIFIER_PATTERN = re.compile(r"^TOP\d+_(?:INJURED_)?PLAYER_(?:ID|NAME)_")
+
+
+def is_player_identifier_column(column: str) -> bool:
+    """True for a top-N player id/name bookkeeping column."""
+    return bool(PLAYER_IDENTIFIER_PATTERN.match(column))
+
+
+def drop_player_identifier_columns(df: pd.DataFrame, *, verbose: bool = False):
+    """Remove the top-N player id and name columns from a training frame.
+
+    Must run *after* ``add_top3_availability_effect_features_for_columns``,
+    which reads the id columns to find each team's leading players.
+    """
+    identifiers = [c for c in df.columns if is_player_identifier_column(c)]
+    if not identifiers:
+        return df
+    if verbose:
+        print(f"Dropping {len(identifiers)} player id/name bookkeeping columns")
+    return df.drop(columns=identifiers)
 
 
 def _parse_minutes_series(min_series: pd.Series) -> pd.Series:
@@ -132,6 +168,40 @@ def _build_bench_stats_lookup(df_players):
     return bench_lookup
 
 
+def _build_game_roster_lookup(df_players):
+    """Roster for a specific (game, team), used when the season lookup is empty.
+
+    ``create_player_lookup`` resolves a team's players by asking who last played
+    for it *earlier in the same season*. At a team's season opener nobody has such
+    a game, so it returns nothing and every top-N player column on that row stays
+    missing -- roughly 190 numeric columns per opener, enough for the row to be
+    discarded by the downstream NaN-per-row limit.
+
+    This is not "no data exists": those players played last season, and their
+    averages now carry over via ``precompute_cumulative_avg_stat``. What is
+    missing is only the mapping from team to players, which this recovers from
+    the game's own rows.
+
+    Reading the game's roster introduces no target leakage, and no new kind of
+    lookahead either -- it is what the primary path already does, since
+    ``get_top_n_averages_with_names`` selects on ``GAME_DATE == date``. Who dresses
+    is known before tip-off from the injury report, and every *value* attached to
+    those players is a strictly prior-season average.
+    """
+    if "GAME_ID" not in df_players.columns or "TEAM_ID" not in df_players.columns:
+        return lambda game_id, team_id: None
+
+    grouped = {
+        (str(game_id), str(team_id)): group
+        for (game_id, team_id), group in df_players.groupby(["GAME_ID", "TEAM_ID"])
+    }
+
+    def game_roster_lookup(game_id, team_id):
+        return grouped.get((str(game_id), str(team_id)))
+
+    return game_roster_lookup
+
+
 def add_player_history_features(
     df_team, df_players, df_injuries, stat_cols=["PTS"], injury_dict_scheduled=None
 ):
@@ -240,6 +310,7 @@ def add_player_history_features(
         df_team, injured_dict, max_seasons_back=2
     )
     bench_lookup = _build_bench_stats_lookup(df_players)
+    game_roster_lookup = _build_game_roster_lookup(df_players)
 
     # 3) Iterate over each row in df_team (only needed columns for efficiency)
     cols_needed = ["GAME_ID", "TEAM_ID", "SEASON_ID", "GAME_DATE"]
@@ -256,6 +327,12 @@ def add_player_history_features(
     ):
         # Identify active players using optimized lookup
         df_active = player_lookup(season_id, team_id, game_date, game_id=game_id)
+        if df_active.empty:
+            # Season opener: nobody has an earlier game this season for the
+            # lookup to resolve the roster from. See _build_game_roster_lookup.
+            fallback_roster = game_roster_lookup(game_id, team_id)
+            if fallback_roster is not None:
+                df_active = fallback_roster
         if df_active.empty:
             updates_list.append({})
             continue

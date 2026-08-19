@@ -35,7 +35,11 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from nba_ou.config.odds_columns import get_main_book
+from nba_ou.config.odds_columns import (
+    apply_odds_prefix,
+    assert_odds_columns_prefixed,
+    get_main_book,
+)
 
 # Imported rather than reimplemented: this is the same team pipeline the
 # closing-line dataset runs, so rolling statistics are identical between them.
@@ -67,9 +71,7 @@ from nba_ou.data_processing.merged_home_away_data.select_train_columns import (
 from nba_ou.data_processing.merged_home_away_data.team_one_hot_features import (
     add_team_one_hot_features,
 )
-from nba_ou.data_processing.past_injuries.past_injuries import (
-    get_injured_players_dict,
-)
+from nba_ou.data_processing.past_injuries.past_injuries import get_injured_players_dict
 from nba_ou.data_processing.players.attach_player_features import (
     clear_player_statistics,
 )
@@ -256,6 +258,8 @@ def create_base_game_features(
     include_all_star: bool = True,
     include_roster_continuity: bool = True,
     roster_injury_reports: str = "lagged",
+    exclude_caesars: bool = False,
+    combine_fanatics_and_caesars: bool | None = None,
     verbose: bool = True,
 ) -> pd.DataFrame:
     """One row per game, carrying only leakage-safe pre-game team features.
@@ -282,6 +286,11 @@ def create_base_game_features(
       the report moves 27-54% of team-games.
     * ``"full"`` -- as the closing-line pipeline does. Uses the current game's
       report, which may not have existed at a 12h snapshot.
+
+    ``exclude_caesars`` / ``combine_fanatics_and_caesars`` reconcile the
+    discontinued Caesars book with fanatics_sportsbook. Combining is the
+    default; passing ``exclude_caesars=True`` switches to dropping it instead.
+    See ``nba_ou.data_processing.odds.book_combination``.
     """
     if recent_limit_to_include is None:
         recent_limit_to_include = pd.Timestamp.now(
@@ -341,7 +350,10 @@ def create_base_game_features(
             print(f"✓ Loaded {len(df_players)} player rows for roster context")
 
     df_odds = load_and_merge_odds_yahoo_sportsbookreview(
-        season_years=seasons, normalize_total_lines=normalize_total_lines
+        season_years=seasons,
+        normalize_total_lines=normalize_total_lines,
+        exclude_caesars=exclude_caesars,
+        combine_fanatics_and_caesars=combine_fanatics_and_caesars,
     )
 
     if verbose:
@@ -412,6 +424,14 @@ def create_base_game_features(
     df_training = add_high_value_features_for_team_points(df_training)
     df_training = add_style_matchup_features(df_training)
     df_training = add_game_date_features(df_training)
+
+    # Applied last, for the same reason as in create_df_to_predict: the feature
+    # adders above still resolve market columns by their raw names, so the ODDS_
+    # marker goes on only once nothing reads them unprefixed.
+    df_training = apply_odds_prefix(df_training)
+    assert_odds_columns_prefixed(
+        df_training.columns, context="create_base_game_features"
+    )
 
     if verbose:
         print(

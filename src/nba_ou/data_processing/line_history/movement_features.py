@@ -40,7 +40,18 @@ from .snapshots import (
 )
 
 #: Look-back windows, in minutes before the snapshot.
-DEFAULT_WINDOWS: tuple[int, ...] = (60, 180, 360, 720)
+#:
+#: The short end (15, 30) is where late sharp money lands and is the reason the
+#: 30-minute snapshot previously had no window shorter than itself. It is also
+#: sparse: measured on the store a given book moves in the trailing 60 minutes
+#: on only 32% of (row, book), and 37% of rows have no book moving at all -- so
+#: expect ``move_last_15`` to be zero far more often than not. That is a real
+#: reading of a quiet market, not missing data, and ``has_window_15`` separates
+#: the two.
+#:
+#: Cost scales with ``len(grid) * len(windows)``, not with either alone: every
+#: pair needs its own as-of read at ``T + w`` (see ``extended_grid``).
+DEFAULT_WINDOWS: tuple[int, ...] = (15, 30, 60, 120, 180, 360, 720)
 
 #: Value used where a window's history does not reach back far enough. Paired
 #: with a ``HAS_`` flag so the model can tell "no movement" from "no history",

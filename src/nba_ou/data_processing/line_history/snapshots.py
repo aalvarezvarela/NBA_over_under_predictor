@@ -46,7 +46,32 @@ from .normalization import (
 #: game-book pairs out to 12h and collapses to ~60% at 24h, which is why the
 #: grid stops there. 30 and 60 are both kept even though they often resolve to
 #: the same tick -- they bracket the most common betting window.
-DEFAULT_SNAPSHOT_GRID: tuple[int, ...] = (30, 60, 120, 240, 480, 720)
+#:
+#: ``0`` is the closing snapshot: bet as late as the market allows. It is not
+#: literally tip-off -- ``fetch_pregame_ticks`` already refuses anything inside
+#: ``DEFAULT_MIN_MINUTES_BEFORE_TIP``, so T=0 resolves to the last tick at least
+#: five minutes out. That makes it this store's closing line, and it is the row
+#: that puts the intermediate dataset on the same footing as the closing-line
+#: dataset: same bet, same moment, different feature construction. Keep in mind
+#: that closing-line value is ~0 by construction on those rows, so any CLV
+#: measured over a pooled dataset is diluted by them.
+#:
+#: The grid is deliberately denser than any single model needs. Snapshots are
+#: rows, so an unwanted horizon is removed with a filter on
+#: ``TIME_TO_MATCH_MIN`` -- no rebuild required -- whereas adding one back means
+#: regenerating the whole dataset. Over-sampling here is the cheap direction.
+DEFAULT_SNAPSHOT_GRID: tuple[int, ...] = (
+    0,
+    30,
+    60,
+    120,
+    180,
+    240,
+    300,
+    360,
+    480,
+    720,
+)
 
 #: Per-market sigma for the -110 centering. Moneyline has no line to center.
 MARKET_SIGMAS: dict[str, float] = {
@@ -187,8 +212,15 @@ def build_snapshot_panel(
     """
     if not grid:
         raise ValueError("grid must not be empty.")
-    if any(minutes <= 0 for minutes in grid):
-        raise ValueError("snapshot horizons must be positive minutes before tip.")
+    # 0 is allowed and means "as late as the store allows" -- the closing
+    # snapshot. Negative is not: it would place the horizon *after* tip-off and
+    # admit in-play ticks, which is a direct look-ahead that every downstream
+    # column-name check would pass.
+    if any(minutes < 0 for minutes in grid):
+        raise ValueError(
+            "snapshot horizons must be non-negative minutes before tip; a "
+            f"negative horizon reads the market after tip-off. Got {grid}."
+        )
 
     if ticks.empty:
         return pd.DataFrame(columns=PANEL_COLUMNS)

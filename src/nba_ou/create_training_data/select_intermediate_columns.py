@@ -34,6 +34,12 @@ import itertools
 import numpy as np
 import pandas as pd
 
+from nba_ou.config.odds_columns import (
+    assert_odds_columns_prefixed,
+    strip_odds_prefix,
+    total_line_col,
+)
+
 #: Columns that name themselves ``_BEFORE`` but are computed from the current
 #: game's CLOSING prices. Safe in the closing-line dataset, leakage here.
 LEAKY_BEFORE_COLUMNS: tuple[str, ...] = (
@@ -80,7 +86,7 @@ SCHEDULE_COLUMN_PREFIXES: tuple[str, ...] = (
 
 #: Snapshot-derived features. Everything under these prefixes is built only from
 #: ticks at or before the snapshot horizon.
-SNAPSHOT_COLUMN_PREFIXES: tuple[str, ...] = ("SNAP_", "LINE_HIST_")
+SNAPSHOT_COLUMN_PREFIXES: tuple[str, ...] = ("ODDS_SNAP_", "ODDS_LINE_HIST_")
 
 TARGET_COLUMNS: tuple[str, ...] = ("TOTAL_POINTS", "LINE_ERROR")
 
@@ -90,14 +96,14 @@ TARGET_COLUMNS: tuple[str, ...] = ("TOTAL_POINTS", "LINE_ERROR")
 #: They used to be *kept* here behind this prefix, on the assumption that
 #: ``feature_columns()`` would filter them downstream. It does not:
 #: ``training_pipeline.data.build_feature_matrix`` drops only the configured
-#: exclusions, so a ``CLOSING_`` column left in the CSV lands in X. Presence in
-#: the file is what matters, not presence in a helper's output.
-SCORING_ONLY_PREFIXES: tuple[str, ...] = ("CLOSING_",)
+#: exclusions, so a ``ODDS_CLOSING_`` column left in the CSV lands in X.
+#: Presence in the file is what matters, not presence in a helper's output.
+SCORING_ONLY_PREFIXES: tuple[str, ...] = ("ODDS_CLOSING_",)
 
 #: The consensus OPENING line. Known ~25h before tip, so safe at every snapshot
 #: on the grid, and the configured ``betting.comparison_line_cols`` baseline.
 #: Must survive under its own name despite matching the closing-odds shape.
-SAFE_ODDS_COLUMNS: tuple[str, ...] = ("TOTAL_LINE_consensus_opener",)
+SAFE_ODDS_COLUMNS: tuple[str, ...] = (total_line_col("consensus_opener"),)
 
 
 def _is_snapshot_column(column: str) -> bool:
@@ -161,15 +167,20 @@ def select_intermediate_training_columns(
 
     out = df[kept].copy()
 
-    survivors = [
-        column for column in out.columns if column in LEAKY_BEFORE_COLUMNS
-    ]
+    survivors = [column for column in out.columns if column in LEAKY_BEFORE_COLUMNS]
     if survivors:
         raise ValueError(
             "Closing-line-derived columns survived the intermediate gate: "
             f"{survivors}. These carry a _BEFORE name but are computed from "
             "this game's closing prices."
         )
+
+    # Same invariant the closing-line pipeline enforces, checked independently
+    # here: this dataset is built from a different set of sources (tick history,
+    # snapshot panel) and must not be able to drift out of the convention.
+    assert_odds_columns_prefixed(
+        out.columns, context="select_intermediate_training_columns"
+    )
 
     return out
 
@@ -178,8 +189,9 @@ def assert_no_bare_closing_odds(df: pd.DataFrame, *, allowed: tuple[str, ...]) -
     """Fail if a current-game closing odds column is present as a feature.
 
     ``allowed`` names the columns that legitimately hold a *snapshot* value
-    despite a closing-style name -- ``TOTAL_LINE_<book>`` is the snapshot line in
-    this dataset, by design, so the target and the settlement price agree.
+    despite a closing-style name -- ``ODDS_TOTAL_LINE_<book>`` is the snapshot
+    line in this dataset, by design, so the target and the settlement price
+    agree.
 
     Deliberately scans ``df.columns`` rather than ``feature_columns(df)``. Those
     two are not interchangeable here: ``feature_columns`` already excludes
@@ -200,9 +212,15 @@ def assert_no_bare_closing_odds(df: pd.DataFrame, *, allowed: tuple[str, ...]) -
         if _is_scoring_only_column(column):
             offenders.append(column)
             continue
-        if column.startswith(("TOTAL_LINE_", "SPREAD_", "MONEYLINE_")):
+        # Shape-match on the name with the unified marker removed. Every
+        # odds-derived column now carries ``ODDS_``, so matching the prefixed
+        # spellings directly would quietly stop recognising the lowercase raw
+        # market columns (``ODDS_total_<book>_price_over``) this check exists
+        # to catch.
+        bare = strip_odds_prefix(column)
+        if bare.startswith(("TOTAL_LINE_", "SPREAD_", "MONEYLINE_")):
             offenders.append(column)
-        if column.startswith(("total_", "spread_", "ml_", "moneyline_")):
+        if bare.startswith(("total_", "spread_", "ml_", "moneyline_")):
             offenders.append(column)
     if offenders:
         raise ValueError(

@@ -54,24 +54,24 @@ def _frame(n_games: int = 260, games_per_day: int = 4) -> pd.DataFrame:
             "GAME_DATE": dates,
             "SEASON_YEAR": 2025,
             "TOTAL_POINTS": (line + rng.normal(0, 12, n_games)).round(1),
-            "TOTAL_LINE_bet365": line,
+            "ODDS_TOTAL_LINE_bet365": line,
             "FEATURE_A": rng.normal(size=n_games),
             "FEATURE_B": rng.normal(size=n_games),
         }
     )
-    df["LINE_ERROR"] = df["TOTAL_POINTS"] - df["TOTAL_LINE_bet365"]
+    df["LINE_ERROR"] = df["TOTAL_POINTS"] - df["ODDS_TOTAL_LINE_bet365"]
     df[OVER_LABEL_COL] = (df["LINE_ERROR"] > 0).astype(int)
     return df
 
 
 def _prepared(df: pd.DataFrame, config: ExperimentConfig) -> PreparedDataset:
-    features = ["TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]
+    features = ["ODDS_TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]
     return PreparedDataset(
         df_full=df,
         X=df[features],
         y=df[config.target_col],
-        baseline_line_col="TOTAL_LINE_bet365",
-        target_line_col="TOTAL_LINE_bet365",
+        baseline_line_col="ODDS_TOTAL_LINE_bet365",
+        target_line_col="ODDS_TOTAL_LINE_bet365",
         feature_names=features,
         dataset_checksum="sha256:test",
     )
@@ -81,7 +81,7 @@ def _config(tmp_path, **overrides) -> ExperimentConfig:
     kwargs = {
         "experiment_name": "clf",
         "prediction_strategy": PredictionStrategy.OVER_UNDER_CLASSIFIER,
-        "line_col": "TOTAL_LINE_bet365",
+        "line_col": "ODDS_TOTAL_LINE_bet365",
         "data": DataConfig(csv_path="x.csv"),
         "cleaning": CleaningConfig(verbose=0),
         "holdout": HoldoutConfig(test_size=None, test_games=20),
@@ -127,7 +127,7 @@ def test_a_legacy_config_setting_only_target_family_still_loads(
     config = ExperimentConfig(
         experiment_name="legacy",
         target_family=family,
-        line_col="TOTAL_LINE_bet365" if family == "total_points" else None,
+        line_col="ODDS_TOTAL_LINE_bet365" if family == "total_points" else None,
         data=DataConfig(csv_path="x.csv"),
     )
     assert config.strategy == expected
@@ -139,7 +139,7 @@ def test_contradictory_strategy_and_family_are_rejected(tmp_path):
             experiment_name="bad",
             prediction_strategy=PredictionStrategy.OVER_UNDER_CLASSIFIER,
             target_family="total_points",
-            line_col="TOTAL_LINE_bet365",
+            line_col="ODDS_TOTAL_LINE_bet365",
             data=DataConfig(csv_path="x.csv"),
         )
 
@@ -347,7 +347,7 @@ def test_classifier_has_no_alternative_line_comparison(patched_classifier):
     prediction cannot be re-scored against a different one.
     """
     config = patched_classifier
-    config.betting.comparison_line_cols = ("TOTAL_LINE_consensus_opener",)
+    config.betting.comparison_line_cols = ("ODDS_TOTAL_LINE_consensus_opener",)
     assert run_experiment(config).walk_forward_result.line_comparison is None
 
 
@@ -389,7 +389,7 @@ def test_primary_threshold_switches_units_with_the_strategy(tmp_path):
 @pytest.mark.parametrize(
     ("strategy", "line_col", "expected_target"),
     [
-        (PredictionStrategy.TOTAL_POINTS_REGRESSOR, "TOTAL_LINE_bet365", "TOTAL_POINTS"),
+        (PredictionStrategy.TOTAL_POINTS_REGRESSOR, "ODDS_TOTAL_LINE_bet365", "TOTAL_POINTS"),
         (PredictionStrategy.LINE_ERROR_REGRESSOR, None, "LINE_ERROR"),
     ],
 )
@@ -445,9 +445,9 @@ def test_outcome_derived_columns_are_excluded_for_every_strategy(tmp_path):
     this is a live hazard, not a hypothetical one.
     """
     for strategy, line_col in (
-        (PredictionStrategy.TOTAL_POINTS_REGRESSOR, "TOTAL_LINE_bet365"),
+        (PredictionStrategy.TOTAL_POINTS_REGRESSOR, "ODDS_TOTAL_LINE_bet365"),
         (PredictionStrategy.LINE_ERROR_REGRESSOR, None),
-        (PredictionStrategy.OVER_UNDER_CLASSIFIER, "TOTAL_LINE_bet365"),
+        (PredictionStrategy.OVER_UNDER_CLASSIFIER, "ODDS_TOTAL_LINE_bet365"),
     ):
         config = _config(tmp_path, prediction_strategy=strategy, line_col=line_col)
         for column in ("TOTAL_POINTS", "LINE_ERROR", OVER_LABEL_COL):
@@ -471,7 +471,7 @@ def test_leak_guard_keeps_the_engineered_before_rollups():
         pd.DataFrame(
             {
                 "DIFF_FROM_LINE_LAST_ALL_5_MATCHES_BEFORE_TEAM_HOME": [1.0],
-                "TOTAL_LINE_bet365_SEASON_BEFORE_AVG_TEAM_HOME": [2.0],
+                "ODDS_TOTAL_LINE_bet365_SEASON_BEFORE_AVG_TEAM_HOME": [2.0],
             }
         )
     )
@@ -615,7 +615,7 @@ def _space_config(tmp_path, **overrides) -> ExperimentConfig:
     kwargs = {
         "experiment_name": "space",
         "prediction_strategy": PredictionStrategy.OVER_UNDER_CLASSIFIER,
-        "line_col": "TOTAL_LINE_bet365",
+        "line_col": "ODDS_TOTAL_LINE_bet365",
         "data": DataConfig(csv_path="x.csv"),
         "save_experiment_artifacts": False,
         "experiment_root_dir": tmp_path / "artifacts",
@@ -680,7 +680,7 @@ def test_regressors_are_completely_unaffected(tmp_path):
     from training_pipeline.config import SearchSpaceConfig
 
     for strategy, line_col in (
-        (PredictionStrategy.TOTAL_POINTS_REGRESSOR, "TOTAL_LINE_bet365"),
+        (PredictionStrategy.TOTAL_POINTS_REGRESSOR, "ODDS_TOTAL_LINE_bet365"),
         (PredictionStrategy.LINE_ERROR_REGRESSOR, None),
     ):
         config = _space_config(

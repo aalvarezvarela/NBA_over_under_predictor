@@ -12,7 +12,7 @@
 
 experiment_name: total_points_rolling
 prediction_strategy: total_points_regressor
-line_col: TOTAL_LINE_bet365
+line_col: ODDS_TOTAL_LINE_bet365
 training_version: "2.1-rolling-origin"
 comparison_group: rolling_origin_2026_08
 hypothesis: >

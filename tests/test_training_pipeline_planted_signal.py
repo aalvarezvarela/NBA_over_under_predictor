@@ -65,9 +65,9 @@ def training_csv(tmp_path) -> tuple[str, int]:
     ]
     frame = pd.DataFrame(rows)
     n = len(frame)
-    frame["TOTAL_LINE_bet365"] = rng.uniform(205, 240, n).round(1)
+    frame["ODDS_TOTAL_LINE_bet365"] = rng.uniform(205, 240, n).round(1)
     frame["TOTAL_POINTS"] = (
-        frame["TOTAL_LINE_bet365"] + rng.normal(0, 12, n)
+        frame["ODDS_TOTAL_LINE_bet365"] + rng.normal(0, 12, n)
     ).round(1)
     for index in range(10):
         frame[f"FEAT_{index}_BEFORE"] = rng.normal(size=n)
@@ -283,7 +283,7 @@ def test_enabling_it_changes_nothing_else(training_csv, tmp_path):
     assert on.X[list(off.X.columns)].equals(off.X)
     assert on.y.equals(off.y)
     assert len(on.df_full) == len(off.df_full)
-    for column in ("GAME_DATE", "TOTAL_POINTS", "TOTAL_LINE_bet365", "LINE_ERROR"):
+    for column in ("GAME_DATE", "TOTAL_POINTS", "ODDS_TOTAL_LINE_bet365", "LINE_ERROR"):
         pd.testing.assert_series_equal(on.df_full[column], off.df_full[column])
 
 

@@ -38,20 +38,20 @@ def _synthetic_prepared(n_games: int = 60, games_per_day: int = 3) -> PreparedDa
             "GAME_DATE": dates,
             "SEASON_YEAR": 2025,
             "TOTAL_POINTS": total_points,
-            "TOTAL_LINE_bet365": line,
+            "ODDS_TOTAL_LINE_bet365": line,
             "FEATURE_A": rng.normal(size=n_games),
             "FEATURE_B": rng.normal(size=n_games),
         }
     )
-    df["LINE_ERROR"] = df["TOTAL_POINTS"] - df["TOTAL_LINE_bet365"]
+    df["LINE_ERROR"] = df["TOTAL_POINTS"] - df["ODDS_TOTAL_LINE_bet365"]
 
-    feature_names = ["TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]
+    feature_names = ["ODDS_TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]
     return PreparedDataset(
         df_full=df,
         X=df[feature_names],
         y=df["TOTAL_POINTS"],
-        baseline_line_col="TOTAL_LINE_bet365",
-        target_line_col="TOTAL_LINE_bet365",
+        baseline_line_col="ODDS_TOTAL_LINE_bet365",
+        target_line_col="ODDS_TOTAL_LINE_bet365",
         feature_names=feature_names,
     )
 
@@ -60,7 +60,7 @@ def _config(**overrides) -> ExperimentConfig:
     kwargs = {
         "experiment_name": "backtest_test",
         "target_family": TargetFamily.TOTAL_POINTS,
-        "line_col": "TOTAL_LINE_bet365",
+        "line_col": "ODDS_TOTAL_LINE_bet365",
         "data": DataConfig(csv_path="x.csv"),
         "cleaning": CleaningConfig(verbose=0),
         "backtest": BacktestConfig(test_games=15, n_estimators=5, show_progress=False),

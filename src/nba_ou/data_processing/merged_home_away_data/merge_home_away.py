@@ -51,7 +51,7 @@ def deduplicate_game_level_columns(df_merged):
 
             # Check if this should be deduplicated
             # 1. Must be a total line column
-            is_total_line = base_col.startswith("TOTAL_LINE_")
+            is_total_line = base_col.startswith("ODDS_TOTAL_LINE_")
 
             # 2. Must NOT contain team-specific keywords
             is_team_specific = any(
@@ -87,9 +87,7 @@ def merge_home_away_data(df, todays_prediction=False):
     # Rename columns that start with 'TOP' by adding '_BEFORE' at the end
     df.rename(
         columns=lambda x: (
-            f"{x}_BEFORE"
-            if x.startswith("TOP") and not x.endswith("_BEFORE")
-            else x
+            f"{x}_BEFORE" if x.startswith("TOP") and not x.endswith("_BEFORE") else x
         ),
         inplace=True,
     )

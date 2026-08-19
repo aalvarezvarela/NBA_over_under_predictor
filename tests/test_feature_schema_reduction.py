@@ -25,7 +25,7 @@ def _availability_input() -> pd.DataFrame:
             "TEAM_ID_TEAM_HOME": [10],
             "TEAM_ID_TEAM_AWAY": [20],
             "TOTAL_POINTS": [220.0],
-            "TOTAL_LINE_bet365": [215.5],
+            "ODDS_TOTAL_LINE_bet365": [215.5],
             "HOME_PLAYER": [101],
             "AWAY_PLAYER": [201],
         }
@@ -75,7 +75,7 @@ def test_total_prices_are_not_selected_for_historical_rolling_features():
         "total_consensus_opener_price_over",
         "spread_bet365_price_home",
         "ml_bet365_price_home",
-        "TOTAL_LINE_bet365",
+        "ODDS_TOTAL_LINE_bet365",
     ]
 
     assert _get_rolling_price_columns(columns) == [
@@ -85,8 +85,8 @@ def test_total_prices_are_not_selected_for_historical_rolling_features():
 
 
 def test_trends_are_only_computed_for_source_columns(monkeypatch):
-    source_total_line = "TOTAL_LINE_bet365"
-    source_diff = "DIFF_FROM_LINE_bet365"
+    source_total_line = "ODDS_TOTAL_LINE_bet365"
+    source_diff = "DIFF_FROM_ODDS_LINE_bet365"
     trended_parameters = []
 
     def fake_rolling_stats(df, parameter, **kwargs):
@@ -210,3 +210,27 @@ def test_overtime_history_features_are_selected_for_both_teams():
     )
 
     assert set(overtime_features).issubset(selected.columns)
+
+
+def test_availability_aggregates_use_the_estimators_zero_prior_when_blank():
+    """`_shrink_effect` computes raw * n/(n+k), which is 0 at n=0 -- so a row with
+    no evidence for any player has a fully shrunk estimate of zero, not "unknown".
+    Leaving NaN made the feature discontinuous exactly where the shrinkage was
+    meant to be smooth: one weak game gives ~0, no games gave missing, and the
+    row then had enough NaN to be discarded by the downstream per-row limit."""
+    result = _add_availability_features(include_detailed=False)
+
+    aggregates = [
+        "TEST_AVAILABILITY_HOME_MEAN_TOTAL_POINTS",
+        "TEST_AVAILABILITY_AWAY_MEAN_TOTAL_POINTS",
+        "TEST_AVAILABILITY_HOME_MAX_ABS_TOTAL_POINTS",
+        "TEST_AVAILABILITY_AWAY_MAX_ABS_TOTAL_POINTS",
+        "TEST_AVAILABILITY_HOME_MEAN_DIFF_FROM_LINE",
+        "TEST_AVAILABILITY_AWAY_MEAN_DIFF_FROM_LINE",
+        "TEST_AVAILABILITY_HOME_MAX_ABS_DIFF_FROM_LINE",
+        "TEST_AVAILABILITY_AWAY_MAX_ABS_DIFF_FROM_LINE",
+    ]
+    for column in aggregates:
+        assert column in result.columns, column
+        assert not result[column].isna().any(), column
+        assert result[column].iloc[0] == 0.0, column

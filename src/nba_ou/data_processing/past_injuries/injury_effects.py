@@ -87,9 +87,9 @@ def _compute_player_availability_effect(
     if df_team_hist.empty:
         return np.nan, np.nan, 0, 0, 0
 
-    valid_mask = pd.to_numeric(df_team_hist["TOTAL_POINTS"], errors="coerce").notna() & (
-        pd.to_numeric(df_team_hist["DIFF_FROM_LINE"], errors="coerce").notna()
-    )
+    valid_mask = pd.to_numeric(
+        df_team_hist["TOTAL_POINTS"], errors="coerce"
+    ).notna() & (pd.to_numeric(df_team_hist["DIFF_FROM_LINE"], errors="coerce").notna())
     df_team_hist = df_team_hist.loc[valid_mask]
     if df_team_hist.empty:
         return np.nan, np.nan, 0, 0, 0
@@ -124,7 +124,13 @@ def _compute_player_availability_effect(
     ):
         return np.nan, np.nan, n_inj, n_present, n_total
 
-    return float(tot_present - tot_inj), float(dfl_present - dfl_inj), n_inj, n_present, n_total
+    return (
+        float(tot_present - tot_inj),
+        float(dfl_present - dfl_inj),
+        n_inj,
+        n_present,
+        n_total,
+    )
 
 
 def _shrink_effect(
@@ -193,9 +199,9 @@ def add_top3_availability_effect_features_for_columns(
 
     # Always align DIFF_FROM_LINE computation to selected main total line.
     internal_diff_col = "__DIFF_FROM_MAIN_LINE_INTERNAL__"
-    df[internal_diff_col] = pd.to_numeric(df[total_points_col], errors="coerce") - pd.to_numeric(
-        df[selected_total_line_col], errors="coerce"
-    )
+    df[internal_diff_col] = pd.to_numeric(
+        df[total_points_col], errors="coerce"
+    ) - pd.to_numeric(df[selected_total_line_col], errors="coerce")
 
     required = [
         home_team_id_col,
@@ -267,7 +273,9 @@ def add_top3_availability_effect_features_for_columns(
             before_date=before_date,
         )
         injured_games_for_player = injured_index.get(team_id, {}).get(player_id, set())
-        return _compute_player_availability_effect(df_team_hist, injured_games_for_player)
+        return _compute_player_availability_effect(
+            df_team_hist, injured_games_for_player
+        )
 
     def _out_col(side: str, i: int, metric: str) -> str:
         return f"{out_prefix}_{side}_P{i}_{metric}"
@@ -290,7 +298,9 @@ def add_top3_availability_effect_features_for_columns(
     # itertuples is faster than apply for 25k rows
     for i, row in enumerate(
         tqdm(
-            df.itertuples(index=False), total=len(df), desc="Computing availability effects"
+            df.itertuples(index=False),
+            total=len(df),
+            desc="Computing availability effects",
         )
     ):
         date = getattr(row, game_date_col)
@@ -398,6 +408,28 @@ def add_top3_availability_effect_features_for_columns(
     df[f"{out_prefix}_AWAY_MAX_ABS_TOTAL_POINTS"] = _nanmaxabs_axis1(away_tp)
     df[f"{out_prefix}_HOME_MAX_ABS_{diff_from_line_col}"] = _nanmaxabs_axis1(home_dfl)
     df[f"{out_prefix}_AWAY_MAX_ABS_{diff_from_line_col}"] = _nanmaxabs_axis1(away_dfl)
+
+    # No evidence for any of the players means the fully shrunk estimate, which
+    # for an estimator that shrinks toward zero is zero -- `_shrink_effect`
+    # computes raw * n/(n+k), and that is 0 at n=0. Leaving NaN made the feature
+    # discontinuous at exactly the point the shrinkage was designed to handle
+    # smoothly: one weak game gives ~0, and no games gave "unknown".
+    #
+    # Applied to the aggregates only, never to the per-player values, so rows
+    # where at least one player has evidence keep the mean over the players who
+    # actually have it rather than being pulled toward zero by the others.
+    aggregate_columns = [
+        f"{out_prefix}_{side}_{statistic}"
+        for side in ("HOME", "AWAY")
+        for statistic in (
+            "MEAN_TOTAL_POINTS",
+            f"MEAN_{diff_from_line_col}",
+            "MAX_ABS_TOTAL_POINTS",
+            f"MAX_ABS_{diff_from_line_col}",
+        )
+    ]
+    for column in aggregate_columns:
+        df[column] = df[column].fillna(0.0)
     df[f"{out_prefix}_HOME_SUM_N_TOTAL_GAMES"] = home_n_total.sum(axis=1)
     df[f"{out_prefix}_AWAY_SUM_N_TOTAL_GAMES"] = away_n_total.sum(axis=1)
 

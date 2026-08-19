@@ -69,12 +69,8 @@ COLS_FOR_SHORT_WINDOWS = [
 ]
 
 IS_OVERTIME_LAST_GAME_BEFORE = "IS_OVERTIME_LAST_GAME_BEFORE"
-OVERTIME_FREQUENCY_LAST_5_GAMES_BEFORE = (
-    "OVERTIME_FREQUENCY_LAST_5_GAMES_BEFORE"
-)
-OVERTIME_FREQUENCY_SEASON_YEAR_BEFORE = (
-    "OVERTIME_FREQUENCY_SEASON_YEAR_BEFORE"
-)
+OVERTIME_FREQUENCY_LAST_5_GAMES_BEFORE = "OVERTIME_FREQUENCY_LAST_5_GAMES_BEFORE"
+OVERTIME_FREQUENCY_SEASON_YEAR_BEFORE = "OVERTIME_FREQUENCY_SEASON_YEAR_BEFORE"
 OVERTIME_HISTORY_FEATURE_COLUMNS = (
     IS_OVERTIME_LAST_GAME_BEFORE,
     OVERTIME_FREQUENCY_LAST_5_GAMES_BEFORE,
@@ -120,18 +116,14 @@ def add_overtime_history_features(df):
 
     result = df.copy()
     result[original_order_column] = np.arange(len(result))
-    result[parsed_date_column] = pd.to_datetime(
-        result["GAME_DATE"], errors="coerce"
-    )
+    result[parsed_date_column] = pd.to_datetime(result["GAME_DATE"], errors="coerce")
     if result[parsed_date_column].isna().any():
         raise ValueError(
             "Cannot compute overtime history; GAME_DATE contains missing or invalid values"
         )
 
     result[source_column] = pd.to_numeric(result["IS_OVERTIME"], errors="coerce")
-    non_numeric_overtime = (
-        result["IS_OVERTIME"].notna() & result[source_column].isna()
-    )
+    non_numeric_overtime = result["IS_OVERTIME"].notna() & result[source_column].isna()
     invalid_overtime = result[source_column].notna() & ~result[source_column].isin(
         [0, 1]
     )
@@ -164,9 +156,7 @@ def add_overtime_history_features(df):
             float(sum(last_five) / len(last_five)) if last_five else 0.0
         )
         season_frequencies.append(
-            float(sum(season_history) / len(season_history))
-            if season_history
-            else 0.0
+            float(sum(season_history) / len(season_history)) if season_history else 0.0
         )
 
         if pd.notna(overtime_value):
@@ -178,9 +168,8 @@ def add_overtime_history_features(df):
     result[OVERTIME_FREQUENCY_LAST_5_GAMES_BEFORE] = last_five_frequencies
     result[OVERTIME_FREQUENCY_SEASON_YEAR_BEFORE] = season_frequencies
 
-    return (
-        result.sort_values(original_order_column, kind="mergesort")
-        .drop(columns=list(temporary_columns))
+    return result.sort_values(original_order_column, kind="mergesort").drop(
+        columns=list(temporary_columns)
     )
 
 
@@ -205,6 +194,88 @@ def _get_rolling_price_columns(columns) -> list[str]:
         and column.startswith(("total_", "spread_", "ml_"))
         and not _is_total_over_under_price_column(column)
     ]
+
+
+#: Season types the previous-season trend fallback is allowed to read.
+#: Deliberately regular-season only. A playoff run is a different competitive
+#: regime and only 16 teams have one, so sourcing the carried-over trend from
+#: whatever a team happened to play last would make the fallback mean something
+#: different for a finalist than for a lottery team. Restricting it keeps the
+#: value comparable across all 30 teams, which matters because this model is
+#: aimed at regular-season games.
+TREND_FALLBACK_SEASON_TYPES: tuple[str, ...] = ("Regular Season",)
+
+#: Used when a team has no prior regular season at all -- its first games in the
+#: dataset. Matches ``calculate_slope``'s own "not enough data" return value, so
+#: "no trend" has one representation throughout this module rather than two.
+TREND_NO_HISTORY_VALUE = 0.0
+
+SEASON_TYPE_COLUMN = "SEASON_TYPE"
+
+
+def _previous_regular_season_trend(df, values, *, extra_keys=()):
+    """The trend each team ended its PREVIOUS regular season with.
+
+    Same shape of fallback as ``_SEASON_BEFORE_AVG`` in
+    ``statistics.compute_rolling_stats``, adapted to a slope: for a mean the
+    natural carried-over value is the previous season's mean, and for a trend it
+    is the last trend the team actually held -- the slope over its final regular
+    season games. Both are strictly-past quantities, so neither leaks.
+
+    ``extra_keys`` mirrors the grouping of the column being filled, so the
+    home/away slope falls back to the previous season's home/away slope rather
+    than to its overall one.
+
+    Returns a positional array; the caller never relies on index alignment,
+    since the frame may carry a duplicated index.
+    """
+    values = pd.Series(values).to_numpy(dtype="float64", na_value=np.nan)
+    if SEASON_TYPE_COLUMN not in df.columns:
+        # Minimal frames (tests, ad hoc use) have no season type to filter on.
+        # Falling back to "no history" is the honest answer -- better than
+        # quietly sourcing the value from playoff games.
+        return np.full(len(df), np.nan)
+
+    keys = ["TEAM_ID", *extra_keys]
+    frame = df[[*keys, "SEASON_YEAR"]].reset_index(drop=True)
+    frame["_trend"] = values
+
+    is_regular = (
+        df[SEASON_TYPE_COLUMN].isin(TREND_FALLBACK_SEASON_TYPES).to_numpy(dtype=bool)
+    )
+    # groupby.last() skips NaN, so this is the last *computed* trend of the
+    # season -- not whatever happened to sit in the final row.
+    season_end = (
+        frame[is_regular]
+        .groupby([*keys, "SEASON_YEAR"], as_index=False, dropna=False)["_trend"]
+        .last()
+    )
+    if season_end.empty:
+        return np.full(len(df), np.nan)
+
+    # Carry each season's closing trend forward into the season that follows it.
+    season_end["SEASON_YEAR"] = season_end["SEASON_YEAR"] + 1
+    season_end = season_end.rename(columns={"_trend": "_previous_trend"})
+
+    merged = frame.merge(season_end, on=[*keys, "SEASON_YEAR"], how="left")
+    return merged["_previous_trend"].to_numpy(dtype="float64", na_value=np.nan)
+
+
+def _fill_trend_from_history(df, values, *, extra_keys=()):
+    """Resolve a trend column through the full fallback chain.
+
+    Current season (preferred) -> previous regular season's closing trend -> 0.
+
+    Without this the first two games of every season are NaN in every slope
+    column: the rolling window resets at the season boundary and ``min_periods=2``
+    needs two prior games to produce anything. That is ~1,100 columns in the
+    closing-line dataset, which is enough NaN to get the whole row discarded
+    downstream -- so the model never sees the start of a season at all.
+    """
+    values = pd.Series(values).to_numpy(dtype="float64", na_value=np.nan)
+    previous = _previous_regular_season_trend(df, values, extra_keys=extra_keys)
+    filled = np.where(np.isnan(values), previous, values)
+    return np.where(np.isnan(filled), TREND_NO_HISTORY_VALUE, filled)
 
 
 def compute_trend_slope(
@@ -257,13 +328,17 @@ def compute_trend_slope(
 
     # 1. Overall trend (all games for each team)
     trend_col = f"{parameter}_TREND_SLOPE_LAST_{window}_GAMES_BEFORE"
-    df[trend_col] = df.groupby(["TEAM_ID", "SEASON_YEAR"])[parameter].transform(
+    within_season_trend = df.groupby(["TEAM_ID", "SEASON_YEAR"])[parameter].transform(
         lambda s: (
             (s.shift(1) if shift_current_game else s)
             .rolling(window, min_periods=2)
             .apply(calculate_slope, raw=True)
         )
     )
+    # The grouping stays per season on purpose -- a slope spanning the offseason
+    # is not a trend. The gap it leaves at the start of each season is closed by
+    # the fallback chain instead.
+    df[trend_col] = _fill_trend_from_history(df, within_season_trend)
 
     if add_relative_column:
         if include_home_away_relative:
@@ -277,8 +352,10 @@ def compute_trend_slope(
             )
 
             home_mask = df["HOME"] == 1
-            df_temp_home = df[home_mask].copy().sort_values(
-                ["TEAM_ID", "SEASON_YEAR", "GAME_DATE"], ascending=True
+            df_temp_home = (
+                df[home_mask]
+                .copy()
+                .sort_values(["TEAM_ID", "SEASON_YEAR", "GAME_DATE"], ascending=True)
             )
             df.loc[home_mask, trend_col_location_raw] = (
                 df_temp_home.groupby(["TEAM_ID", "SEASON_YEAR"])[parameter]
@@ -293,8 +370,10 @@ def compute_trend_slope(
             )
 
             away_mask = df["HOME"] == 0
-            df_temp_away = df[away_mask].copy().sort_values(
-                ["TEAM_ID", "SEASON_YEAR", "GAME_DATE"], ascending=True
+            df_temp_away = (
+                df[away_mask]
+                .copy()
+                .sort_values(["TEAM_ID", "SEASON_YEAR", "GAME_DATE"], ascending=True)
             )
             df.loc[away_mask, trend_col_location_raw] = (
                 df_temp_away.groupby(["TEAM_ID", "SEASON_YEAR"])[parameter]
@@ -308,28 +387,35 @@ def compute_trend_slope(
                 .values
             )
 
+            # Filled before the subtraction, and keyed on HOME so the fallback is
+            # the previous season's home/away trend rather than its overall one.
+            # Filling afterwards would be too late: NaN - filled is still NaN.
+            df[trend_col_location_raw] = _fill_trend_from_history(
+                df, df[trend_col_location_raw], extra_keys=["HOME"]
+            )
+
             df[trend_col_location] = df[trend_col_location_raw] - df[trend_col]
             df.drop(columns=[trend_col_location_raw], inplace=True)
         elif relative_to_window is not None:
             # 2B. Relative strict trend across windows (e.g., last_5 - last_10)
-            relative_col = (
-                f"{parameter}_TREND_SLOPE_LAST_{relative_to_window}_MINUS_LAST_{window}_GAMES_BEFORE"
-            )
+            relative_col = f"{parameter}_TREND_SLOPE_LAST_{relative_to_window}_MINUS_LAST_{window}_GAMES_BEFORE"
             if relative_to_window <= 0:
                 raise ValueError("relative_to_window must be > 0 when provided.")
 
-            ref_col = (
-                f"{parameter}_TREND_SLOPE_LAST_{relative_to_window}_GAMES_BEFORE"
-            )
+            ref_col = f"{parameter}_TREND_SLOPE_LAST_{relative_to_window}_GAMES_BEFORE"
             if ref_col in df.columns:
-                reference_trend = df[ref_col]
+                # Already produced by an earlier call, so already filled.
+                reference_trend = df[ref_col].to_numpy(dtype="float64", na_value=np.nan)
             else:
-                reference_trend = df.groupby(["TEAM_ID", "SEASON_YEAR"])[parameter].transform(
-                    lambda s: (
-                        (s.shift(1) if shift_current_game else s)
-                        .rolling(relative_to_window, min_periods=2)
-                        .apply(calculate_slope, raw=True)
-                    )
+                reference_trend = _fill_trend_from_history(
+                    df,
+                    df.groupby(["TEAM_ID", "SEASON_YEAR"])[parameter].transform(
+                        lambda s: (
+                            (s.shift(1) if shift_current_game else s)
+                            .rolling(relative_to_window, min_periods=2)
+                            .apply(calculate_slope, raw=True)
+                        )
+                    ),
                 )
 
             df[relative_col] = reference_trend - df[trend_col]
@@ -340,7 +426,7 @@ def compute_trend_slope(
 def compute_all_rolling_statistics(df, exclude_yahoo=False):
     """
     Compute rolling statistics, weighted averages, and seasonal standard deviations,
-    dynamically including new DIFF_FROM_* columns, TOTAL_LINE_* columns, and
+    dynamically including new DIFF_FROM_* columns, ODDS_TOTAL_LINE_* columns, and
     selected odds data.
 
     Args:
@@ -348,7 +434,7 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
         exclude_yahoo (bool): If True, exclude Yahoo-specific betting columns (pct_bets, pct_money)
                              from rolling statistics. Default is False (include Yahoo columns).
 
-    Includes all total line columns (TOTAL_LINE_*) and their
+    Includes all total line columns (ODDS_TOTAL_LINE_*) and their
     corresponding DIFF_FROM_* columns in rolling stats, weighted stats, and season std.
     Also includes odds percentages and spread/moneyline prices. Raw total-market
     over/under prices are retained without historical rolling derivatives.
@@ -356,12 +442,10 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
     original_columns = set(df.columns)
 
     # 1) Dynamically discover new diff columns
-    new_diff_cols = [
-        c for c in df.columns if c.startswith("DIFF_FROM_")
-    ]
+    new_diff_cols = [c for c in df.columns if c.startswith("DIFF_FROM_")]
 
-    # 2) Dynamically discover all TOTAL_LINE_* columns
-    new_total_line_cols = [c for c in df.columns if c.startswith("TOTAL_LINE_")]
+    # 2) Dynamically discover all ODDS_TOTAL_LINE_* columns
+    new_total_line_cols = [c for c in df.columns if c.startswith("ODDS_TOTAL_LINE_")]
 
     # 3) Dynamically discover Yahoo betting columns (percentage of bets/money)
     # Note: spread/ml yahoo columns are now team-specific (without _home/_away suffix after merge)
@@ -390,7 +474,7 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
 
     # 6) Optional: ensure we only include diffs that correspond to totals lines
     # (keeps things tight if you have other DIFF_FROM_* features in the future)
-    total_line_cols = {c for c in df.columns if c.startswith("TOTAL_LINE_")}
+    total_line_cols = {c for c in df.columns if c.startswith("ODDS_TOTAL_LINE_")}
     allowed_suffixes = set()
     for tl in total_line_cols:
         allowed_suffixes.add(
@@ -427,7 +511,9 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
 
     # 8) Rolling stats loop
     rolling_columns = list(
-        dict.fromkeys(COLS_TO_AVERAGE + cols_to_average_odds + list(STYLE_SOURCE_COLUMNS))
+        dict.fromkeys(
+            COLS_TO_AVERAGE + cols_to_average_odds + list(STYLE_SOURCE_COLUMNS)
+        )
     )
     for col in tqdm(rolling_columns, desc="Computing rolling stats"):
         is_style_source = col in STYLE_SOURCE_COLUMNS
@@ -450,7 +536,13 @@ def compute_all_rolling_statistics(df, exclude_yahoo=False):
                 errors="ignore",
             )
 
-        if col in COLS_FOR_SHORT_WINDOWS + new_total_line_cols + new_diff_cols + consensus_pct_cols:
+        if (
+            col
+            in COLS_FOR_SHORT_WINDOWS
+            + new_total_line_cols
+            + new_diff_cols
+            + consensus_pct_cols
+        ):
             df = compute_rolling_stats(
                 df,
                 col,

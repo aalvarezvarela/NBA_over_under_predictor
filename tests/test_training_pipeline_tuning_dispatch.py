@@ -23,7 +23,7 @@ def _total_points_config(**overrides) -> ExperimentConfig:
     kwargs = {
         "experiment_name": "dispatch_test",
         "target_family": TargetFamily.TOTAL_POINTS,
-        "line_col": "TOTAL_LINE_bet365",
+        "line_col": "ODDS_TOTAL_LINE_bet365",
         "data": DataConfig(csv_path="data/train_data/example.csv"),
     }
     kwargs.update(overrides)
@@ -44,7 +44,7 @@ def test_get_strategy_returns_total_points_strategy_with_configured_line_col():
     config = _total_points_config()
     strategy = get_strategy(config)
     assert isinstance(strategy, TotalPointsStrategy)
-    assert strategy.line_col == "TOTAL_LINE_bet365"
+    assert strategy.line_col == "ODDS_TOTAL_LINE_bet365"
 
 
 def test_get_strategy_returns_line_error_strategy_with_configured_sample_weight():
@@ -59,11 +59,11 @@ def _tiny_problem(n: int = 40):
     rng = np.random.default_rng(0)
     X = pd.DataFrame(
         {
-            "TOTAL_LINE_bet365": rng.uniform(200, 240, n),
+            "ODDS_TOTAL_LINE_bet365": rng.uniform(200, 240, n),
             "FEATURE_A": rng.normal(size=n),
         }
     )
-    y = pd.Series(X["TOTAL_LINE_bet365"].to_numpy() + rng.normal(0, 10, n))
+    y = pd.Series(X["ODDS_TOTAL_LINE_bet365"].to_numpy() + rng.normal(0, 10, n))
     splits = [(np.arange(0, 30), np.arange(30, n))]
     dates = pd.Series(pd.date_range("2026-01-01", periods=n, freq="D"))
     return X, y, splits, dates
@@ -101,7 +101,7 @@ def test_total_points_tuning_scores_folds_against_the_configured_line(monkeypatc
     config = _fast(_total_points_config)
     study = get_strategy(config).tune(X=X, y=y, splits=splits, config=config)
 
-    assert seen["line_col"] == "TOTAL_LINE_bet365"
+    assert seen["line_col"] == "ODDS_TOTAL_LINE_bet365"
     assert len(study.trials) == 1
 
 

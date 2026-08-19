@@ -20,7 +20,7 @@ def _make_run(tmp_path: Path, csv_path: str) -> Path:
         experiment_name="src",
         training_version="2.1",
         target_family=TargetFamily.TOTAL_POINTS,
-        line_col="TOTAL_LINE_bet365",
+        line_col="ODDS_TOTAL_LINE_bet365",
         data=DataConfig(csv_path=csv_path, expected_checksum="sha256:stale"),
         walk_forward=WalkForwardConfig(train_games=40),
         model_output_root=tmp_path / "models",
@@ -39,7 +39,12 @@ def _make_run(tmp_path: Path, csv_path: str) -> Path:
         )
     )
     (run_dir / "final_test_metrics.json").write_text(
-        json.dumps({"cv": {"mae": 13.4}, "holdout": {"mae": 13.2, "rmse": 17.0, "ou_acc": 0.55}})
+        json.dumps(
+            {
+                "cv": {"mae": 13.4},
+                "holdout": {"mae": 13.2, "rmse": 17.0, "ou_acc": 0.55},
+            }
+        )
     )
     return run_dir
 
@@ -58,7 +63,7 @@ def csv(tmp_path):
             "GAME_DATE": pd.date_range("2025-11-01", periods=n, freq="D"),
             "SEASON_YEAR": 2025,
             "TOTAL_POINTS": (line + rng.normal(0, 10, n)).round(1),
-            "TOTAL_LINE_bet365": line,
+            "ODDS_TOTAL_LINE_bet365": line,
             "FEATURE_A": rng.normal(size=n),
         }
     )

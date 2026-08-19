@@ -73,9 +73,9 @@ def _schedule(
     df = pd.DataFrame(rows)
     rng = np.random.default_rng(11)
     line = rng.uniform(205, 240, len(df)).round(1)
-    df["TOTAL_LINE_bet365"] = line
+    df["ODDS_TOTAL_LINE_bet365"] = line
     df["TOTAL_POINTS"] = (line + rng.normal(0, 12, len(df))).round(1)
-    df["LINE_ERROR"] = df["TOTAL_POINTS"] - df["TOTAL_LINE_bet365"]
+    df["LINE_ERROR"] = df["TOTAL_POINTS"] - df["ODDS_TOTAL_LINE_bet365"]
     df["FEATURE_A"] = rng.normal(size=len(df))
     df["FEATURE_B"] = rng.normal(size=len(df))
     return df
@@ -188,7 +188,7 @@ def test_calendar_days_without_games_are_skipped_not_counted(tmp_path):
     ]
     df = pd.DataFrame(rows)
     rng = np.random.default_rng(3)
-    df["TOTAL_LINE_bet365"] = 220.0
+    df["ODDS_TOTAL_LINE_bet365"] = 220.0
     df["TOTAL_POINTS"] = (220.0 + rng.normal(0, 10, len(df))).round(1)
     df["LINE_ERROR"] = df["TOTAL_POINTS"] - 220.0
 
@@ -356,7 +356,7 @@ def test_every_fold_trains_the_same_tuned_rounds_with_no_eval_set(
     ))
     df_dev, _ = pipeline_module.build_holdout_split(dev_frame, config)
     provider = build_split_provider(df_dev, config)
-    X = df_dev[["TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]]
+    X = df_dev[["ODDS_TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]]
     y = df_dev["LINE_ERROR"]
 
     study = tuning_module.get_strategy(config).tune(
@@ -397,7 +397,7 @@ def test_legacy_mode_still_early_stops_on_the_fold(dev_frame, tmp_path, monkeypa
     df_dev, _ = pipeline_module.build_holdout_split(dev_frame, config)
     provider = build_split_provider(df_dev, config)
     tuning_module.get_strategy(config).tune(
-        X=df_dev[["TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]],
+        X=df_dev[["ODDS_TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]],
         y=df_dev["LINE_ERROR"],
         config=config,
         split_provider=provider,
@@ -419,7 +419,7 @@ def test_pooled_mae_weights_games_not_folds(dev_frame, tmp_path):
     df_dev, _ = pipeline_module.build_holdout_split(dev_frame, config)
     provider = build_split_provider(df_dev, config)
     study = tuning_module.get_strategy(config).tune(
-        X=df_dev[["TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]],
+        X=df_dev[["ODDS_TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]],
         y=df_dev["LINE_ERROR"],
         config=config,
         split_provider=provider,
@@ -449,7 +449,7 @@ def test_mean_aggregation_still_returns_the_unweighted_fold_mean(dev_frame, tmp_
     df_dev, _ = pipeline_module.build_holdout_split(dev_frame, config)
     provider = build_split_provider(df_dev, config)
     study = tuning_module.get_strategy(config).tune(
-        X=df_dev[["TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]],
+        X=df_dev[["ODDS_TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]],
         y=df_dev["LINE_ERROR"],
         config=config,
         split_provider=provider,
@@ -503,7 +503,7 @@ def test_a_pruned_trial_records_how_much_it_had_actually_seen(dev_frame, tmp_pat
     ))
     df_dev, _ = pipeline_module.build_holdout_split(dev_frame, config)
     provider = build_split_provider(df_dev, config)
-    X = df_dev[["TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]]
+    X = df_dev[["ODDS_TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]]
 
     def objective(trial):
         # Force a prune on the second fold by reporting a rising metric.
@@ -569,7 +569,7 @@ def test_train_games_is_sampled_once_and_held_across_every_fold(
     df_dev, _ = pipeline_module.build_holdout_split(dev_frame, config)
     provider = build_split_provider(df_dev, config)
     study = tuning_module.get_strategy(config).tune(
-        X=df_dev[["TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]],
+        X=df_dev[["ODDS_TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]],
         y=df_dev["LINE_ERROR"],
         config=config,
         split_provider=provider,
@@ -645,13 +645,13 @@ def test_tuning_the_window_is_rejected_under_test_anchored_folds(tmp_path):
 
 
 def _prepared(df: pd.DataFrame) -> PreparedDataset:
-    features = ["TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]
+    features = ["ODDS_TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]
     return PreparedDataset(
         df_full=df,
         X=df[features],
         y=df["LINE_ERROR"],
-        baseline_line_col="TOTAL_LINE_bet365",
-        target_line_col="TOTAL_LINE_bet365",
+        baseline_line_col="ODDS_TOTAL_LINE_bet365",
+        target_line_col="ODDS_TOTAL_LINE_bet365",
         feature_names=features,
         dataset_checksum="sha256:test",
     )

@@ -54,7 +54,7 @@ def test_experiment_inherits_base_from_a_parent_directory(tmp_path):
         {
             "experiment_name": "e",
             "target_family": "total_points",
-            "line_col": "TOTAL_LINE_bet365",
+            "line_col": "ODDS_TOTAL_LINE_bet365",
             "optuna": {"n_trials": 3},
         },
     )
@@ -75,7 +75,7 @@ def test_use_base_false_loads_the_file_in_isolation(tmp_path):
         {
             "experiment_name": "e",
             "target_family": "total_points",
-            "line_col": "TOTAL_LINE_bet365",
+            "line_col": "ODDS_TOTAL_LINE_bet365",
             "data": {"csv_path": "x.csv"},
         },
     )
@@ -222,6 +222,9 @@ def test_campaign_line_col_matches_each_strategy():
     line); the other two must, and for the classifier it defines the label.
     """
     assert load_config(CAMPAIGN / "line_error_2500.yaml").line_col is None
+    # These read real archived campaign YAMLs (experiments/archived/), which
+    # are frozen historical records against a pre-ODDS_-prefix CSV and are
+    # deliberately not rewritten -- see docs/README_Training Data Processing.md.
     assert load_config(CAMPAIGN / "total_points_2500.yaml").line_col == "TOTAL_LINE_bet365"
     assert load_config(CAMPAIGN / "classifier_2500.yaml").line_col == "TOTAL_LINE_bet365"
 

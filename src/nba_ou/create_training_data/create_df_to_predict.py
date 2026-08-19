@@ -11,7 +11,11 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from nba_ou.config.odds_columns import get_main_book
+from nba_ou.config.odds_columns import (
+    apply_odds_prefix,
+    assert_odds_columns_prefixed,
+    get_main_book,
+)
 from nba_ou.create_training_data.predict_data_utils import (
     extract_home_away_pairs_from_scheduled_games,
     filter_by_seasons_with_extra_game_ids,
@@ -42,6 +46,10 @@ from nba_ou.data_processing.merged_home_away_data.select_train_columns import (
 from nba_ou.data_processing.merged_home_away_data.team_one_hot_features import (
     add_team_one_hot_features,
 )
+from nba_ou.data_processing.odds.book_combination import (
+    combine_caesars_and_fanatics,
+    resolve_combine_books,
+)
 from nba_ou.data_processing.odds.merge_scheduled_odds import (
     merge_and_validate_scheduled_odds,
 )
@@ -51,6 +59,7 @@ from nba_ou.data_processing.past_injuries.injury_effects import (
 from nba_ou.data_processing.players.attach_player_features import (
     add_player_history_features,
     clear_player_statistics,
+    drop_player_identifier_columns,
 )
 from nba_ou.data_processing.players.roster_continuity import (
     add_roster_continuity_feature,
@@ -62,10 +71,7 @@ from nba_ou.data_processing.scheduled_games.merge_scheduled_with_existing_data i
     standardize_and_merge_scheduled_games_to_players_data,
     standardize_and_merge_scheduled_games_to_team_data,
 )
-from nba_ou.data_processing.team.cleaning_teams import (
-    adjust_overtime,
-    clean_team_data,
-)
+from nba_ou.data_processing.team.cleaning_teams import adjust_overtime, clean_team_data
 from nba_ou.data_processing.team.filters import filter_valid_games
 from nba_ou.data_processing.team.merge_game_df_with_odds_by_game_id import (
     merge_odds_percentages_and_prices_by_game_id,
@@ -290,6 +296,8 @@ def create_df_to_predict(
     strict_mode: int = 2,
     categorical_team_encoding: bool = False,
     normalize_total_lines: bool = True,
+    exclude_caesars: bool = False,
+    combine_fanatics_and_caesars: bool | None = None,
 ) -> pd.DataFrame:
     """
     Create prediction dataset for NBA over/under prediction models.
@@ -315,6 +323,16 @@ def create_df_to_predict(
             If False (default), add 60 binary one-hot columns.
         normalize_total_lines (bool, optional): If True (default), convert
             asymmetrically priced bookmaker totals to estimated 50/50 lines.
+        exclude_caesars (bool, optional): If True, drop all Caesars-named odds
+            columns -- the current odds-fetching method no longer scrapes
+            Caesars. Default is False.
+        combine_fanatics_and_caesars (bool | None, optional): Coalesce
+            fanatics_sportsbook columns with Caesars (fanatics values kept
+            where present, Caesars fills NaNs) instead of leaving them as two
+            disjoint, season-correlated books. Defaults to None, meaning
+            "combine unless an exclusion was explicitly asked for" -- so the
+            merged book is what you get out of the box. See
+            nba_ou.data_processing.odds.book_combination.
 
     Returns:
         pd.DataFrame: Complete training dataset with all features
@@ -426,6 +444,8 @@ def create_df_to_predict(
         season_years=seasons,
         extra_game_ids=extra_game_ids,
         normalize_total_lines=normalize_total_lines,
+        exclude_caesars=exclude_caesars,
+        combine_fanatics_and_caesars=combine_fanatics_and_caesars,
     )
 
     if todays_prediction:
@@ -435,6 +455,17 @@ def create_df_to_predict(
             df_odds_sportsbook,
             strict_mode=strict_mode,
             normalize_total_lines=normalize_total_lines,
+        )
+        # Scheduled odds are re-merged fresh from today's live scrape, which may
+        # reintroduce a standalone Caesars column even though the historical
+        # side already had it excluded/merged -- reapply so both halves agree.
+        df_odds = combine_caesars_and_fanatics(
+            df_odds,
+            exclude_caesars=exclude_caesars,
+            combine_with_fanatics=resolve_combine_books(
+                combine=combine_fanatics_and_caesars,
+                exclude_caesars=exclude_caesars,
+            ),
         )
 
     original_columns = df.columns.tolist()
@@ -625,6 +656,20 @@ def create_df_to_predict(
                 f"Filtered out {filtered_count} game(s) with 'NOT YET SUBMITTED' injury status"
             )
             print(f"Game IDs filtered: {games_not_updated}")
+
+    # Both passes run last, and in this order for the same reason: earlier stages
+    # still need what they remove. add_top3_availability_effect_features_for_columns
+    # reads the TOP*_PLAYER_ID_* columns to locate each team's leading players, so
+    # the identifiers can only go once it has run.
+    df_training = drop_player_identifier_columns(df_training)
+
+    # Everything above still resolves market columns by their raw names
+    # (engineer_odds_features, the consensus-opener spread fallback in
+    # add_high_value_features_for_team_points), so the marker goes on only once
+    # nothing reads them unprefixed any more. The assert is what makes ODDS_ an
+    # invariant instead of a convention.
+    df_training = apply_odds_prefix(df_training)
+    assert_odds_columns_prefixed(df_training.columns, context="create_df_to_predict")
 
     print()
     print("--" * 20)

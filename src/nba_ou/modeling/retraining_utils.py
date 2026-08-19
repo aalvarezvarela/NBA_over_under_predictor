@@ -311,7 +311,7 @@ def _infer_required_line_col_from_feature_names(
     direct_total_line_features = [
         feature
         for feature in feature_names
-        if feature.startswith("TOTAL_LINE_")
+        if feature.startswith("ODDS_TOTAL_LINE_")
         and "_LAST_" not in feature
         and "_SEASON_" not in feature
         and "_WMA" not in feature

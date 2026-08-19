@@ -1,7 +1,63 @@
 import numpy as np
 import pandas as pd
 
+from nba_ou.config.constants import SEASON_TYPE_MAP
+
 EWMA_HALFLIFE_GAMES = 10
+
+#: Season types the previous-season player fallback is allowed to read.
+#: Regular season only, matching the team-level trend fallback in
+#: ``data_processing.team.rolling``: this model targets regular-season games, and
+#: only 16 teams play a postseason, so sourcing the carried-over average from
+#: whatever a player happened to play last would make it mean something different
+#: depending on how far their team went.
+PLAYER_FALLBACK_SEASON_TYPES: frozenset[str] = frozenset({"Regular Season"})
+
+
+def _is_fallback_season_type(game_id) -> bool:
+    """Season type from the game id, using the repository's canonical mapping."""
+    if pd.isna(game_id):
+        return False
+    return (
+        SEASON_TYPE_MAP.get(str(game_id).zfill(10)[:3], "Unknown")
+        in PLAYER_FALLBACK_SEASON_TYPES
+    )
+
+
+def _previous_regular_season_player_average(out, stat_col, valid_mask):
+    """Each player's average ``stat_col`` in their PREVIOUS regular season.
+
+    Mirrors the ``_SEASON_BEFORE_AVG`` fallback in
+    ``statistics.compute_rolling_stats`` and the trend-slope fallback in
+    ``team.rolling``: a player-season that has no history yet inherits what the
+    player actually did last year rather than starting from nothing.
+
+    Returns a Series aligned to ``out``'s row order (positional), so a duplicated
+    index cannot misalign the fill.
+    """
+    if "GAME_ID" not in out.columns:
+        # Nothing to derive the season type from; the caller falls through to the
+        # documented "no prior valid game" value instead of guessing.
+        return pd.Series(np.nan, index=out.index)
+
+    regular = valid_mask & out["GAME_ID"].map(_is_fallback_season_type)
+    season_means = (
+        out.loc[regular]
+        .assign(_stat=pd.to_numeric(out.loc[regular, stat_col], errors="coerce"))
+        .groupby(["PLAYER_ID", "SEASON_YEAR"], as_index=False)["_stat"]
+        .mean()
+    )
+    if season_means.empty:
+        return pd.Series(np.nan, index=out.index)
+
+    # Carry each season's average into the season that follows it.
+    season_means["SEASON_YEAR"] = season_means["SEASON_YEAR"] + 1
+    season_means = season_means.rename(columns={"_stat": "_previous_season_stat"})
+
+    merged = out[["PLAYER_ID", "SEASON_YEAR"]].merge(
+        season_means, on=["PLAYER_ID", "SEASON_YEAR"], how="left"
+    )
+    return pd.Series(merged["_previous_season_stat"].to_numpy(), index=out.index)
 
 
 def get_top_n_averages_with_names(
@@ -139,18 +195,26 @@ def precompute_cumulative_avg_stat(
     ).shift(1)
 
     # Recency-weighted estimate by player-season.
-    out[f"{stat_col}_CUM_AVG"] = (
-        shifted_valid_stat.groupby(
-            [out["SEASON_YEAR"], out["PLAYER_ID"]],
-            group_keys=False,
-        ).transform(
-            lambda s: s.ewm(
-                halflife=ewm_halflife_games,
-                adjust=False,
-                min_periods=1,
-                ignore_na=True,
-            ).mean()
-        )
-    ).fillna(0)
+    in_season = shifted_valid_stat.groupby(
+        [out["SEASON_YEAR"], out["PLAYER_ID"]],
+        group_keys=False,
+    ).transform(
+        lambda s: s.ewm(
+            halflife=ewm_halflife_games,
+            adjust=False,
+            min_periods=1,
+            ignore_na=True,
+        ).mean()
+    )
+
+    # Fill order, matching _SEASON_BEFORE_AVG in statistics.compute_rolling_stats:
+    #   1) this season to date (preferred)
+    #   2) the player's previous REGULAR season average
+    #   3) 0, for a player with no prior season at all
+    # Without step 2 the grouping by (SEASON_YEAR, PLAYER_ID) left every player at
+    # 0 for their season opener, which then propagated into every TOP-N player
+    # column as a missing value.
+    previous_season = _previous_regular_season_player_average(out, stat_col, valid_mask)
+    out[f"{stat_col}_CUM_AVG"] = in_season.fillna(previous_season).fillna(0)
 
     return out

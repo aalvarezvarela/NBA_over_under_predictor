@@ -20,7 +20,7 @@ from nba_ou.data_processing.missing_data.clean_df_for_training import (
 )
 
 # Reused, not duplicated: this is documented as the one canonical implementation
-# of LINE_ERROR = TOTAL_POINTS - TOTAL_LINE_<book> in the repo. The leading
+# of LINE_ERROR = TOTAL_POINTS - ODDS_TOTAL_LINE_<book> in the repo. The leading
 # underscore is a naming convention, not an enforced boundary; duplicating the
 # formula here would risk the two definitions drifting apart over time.
 from nba_ou.modeling.meta_learner_training_data import (
@@ -41,17 +41,17 @@ from training_pipeline.diagnostics import (
     measure_planted_signal,
 )
 
-# NOTE: "odds_total_line_books_median" (the engineered cross-book median total
+# NOTE: "ODDS_total_line_books_median" (the engineered cross-book median total
 # line, per src/nba_ou/data_processing/merged_home_away_data/odds_feature_engeneer.py)
 # was the original default candidate for the baseline line column. It is
 # deliberately NOT used as a silent default: verified empirically against a
 # real archived training CSV (data/train_data/all_odds_training_data_until_20260318.csv)
 # that this column's values (range roughly -0.5 to 17) do not correlate with
-# TOTAL_POINTS or TOTAL_LINE_bet365 (correlation ~0.02) for that snapshot --
+# TOTAL_POINTS or ODDS_TOTAL_LINE_bet365 (correlation ~0.02) for that snapshot --
 # whatever generated it did not produce a points-scale median. Since historical
 # CSV snapshots cannot be assumed trustworthy for this column, it is only used
 # as the baseline when a caller explicitly opts in via BaselineConfig.line_col.
-BOOKMAKER_MEDIAN_LINE_COL = "odds_total_line_books_median"
+BOOKMAKER_MEDIAN_LINE_COL = "ODDS_total_line_books_median"
 
 
 def compute_file_checksum(path: str | Path, *, chunk_size: int = 1 << 20) -> str:
@@ -167,7 +167,7 @@ def resolve_baseline_line_col(df: pd.DataFrame, baseline: BaselineConfig) -> str
     if resolved is None:
         raise KeyError(
             "Could not resolve a baseline line column: no "
-            f"'{BOOKMAKER_MEDIAN_LINE_COL}' column and no TOTAL_LINE_<book> "
+            f"'{BOOKMAKER_MEDIAN_LINE_COL}' column and no ODDS_TOTAL_LINE_<book> "
             "column found. Set baseline.line_col explicitly."
         )
     return resolved

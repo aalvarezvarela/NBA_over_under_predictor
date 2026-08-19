@@ -32,20 +32,20 @@ def add_betting_stats_differences(df: pd.DataFrame) -> pd.DataFrame:
         DataFrame with additional difference columns (suffix _DIFF_BEFORE)
 
     Example:
-        TOTAL_LINE_<book>_LAST_ALL_5_MATCHES_BEFORE_TEAM_HOME -
-        TOTAL_LINE_<book>_LAST_ALL_5_MATCHES_BEFORE_TEAM_AWAY =
-        TOTAL_LINE_<book>_LAST_ALL_5_MATCHES_DIFF_BEFORE
+        ODDS_TOTAL_LINE_<book>_LAST_ALL_5_MATCHES_BEFORE_TEAM_HOME -
+        ODDS_TOTAL_LINE_<book>_LAST_ALL_5_MATCHES_BEFORE_TEAM_AWAY =
+        ODDS_TOTAL_LINE_<book>_LAST_ALL_5_MATCHES_DIFF_BEFORE
     """
     # Patterns that identify betting-related stats
     betting_patterns = [
         MAIN_TOTAL_LINE_COL,
-        "TOTAL_LINE_",
+        "ODDS_TOTAL_LINE_",
         "DIFF_FROM_",
         "IS_OVER_",
         MAIN_MONEYLINE_COL,
         MAIN_SPREAD_COL,
-        "MONEYLINE_",
-        "SPREAD_",
+        "ODDS_MONEYLINE_",
+        "ODDS_SPREAD_",
         "_pct_bets_",
         "_pct_money_",
         "consensus_pct_",
@@ -334,7 +334,7 @@ def add_high_value_features_for_team_points(df: pd.DataFrame) -> pd.DataFrame:
     # ---------------------------------------------------------------------
     # 1) Market-derived: implied team totals (strong, non-leaky)
     # ---------------------------------------------------------------------
-    # Uses game-level main TOTAL_LINE_<book> and SPREAD (assumes spread is from
+    # Uses game-level main ODDS_TOTAL_LINE_<book> and SPREAD (assumes spread is from
     # HOME perspective: home - away). If your spread sign is opposite, flip it.
     # Prefer main close spread from the configured book; fallback to consensus opener.
     spread_col = None
@@ -354,7 +354,7 @@ def add_high_value_features_for_team_points(df: pd.DataFrame) -> pd.DataFrame:
             (out[MAIN_TOTAL_LINE_COL] / 2.0) + (spread_val / 2.0),
         )
         # NOTE: Do NOT add implied sum/diff checks: they are algebraic restatements of
-        # main TOTAL_LINE_<book> and spread, hence redundant.
+        # main ODDS_TOTAL_LINE_<book> and spread, hence redundant.
 
     # ---------------------------------------------------------------------
     # 2) Offense-vs-defense interaction (often better than raw ratings)

@@ -137,6 +137,27 @@ redundant 3 h/4 h pairing in favour of an 8 h point that is currently unsampled.
 
 At 6,128 games × 6 snapshots ≈ **36,800 rows** (≈22,000 for 2023+ alone).
 
+**Superseded — the shipped grid is denser:**
+
+```
+{0, 30m, 1h, 2h, 3h, 4h, 5h, 6h, 8h, 12h}      → 10 snapshots
+```
+
+The parsimony argument above is sound for a grid that must be chosen once, but
+it does not apply here: **snapshots are rows**. An unwanted horizon is removed
+by filtering `TIME_TO_MATCH_MIN`, at no cost and with no rebuild, while adding
+one back means regenerating the entire dataset. So the asymmetry favours
+over-sampling, and the 3 h/5 h points this section dropped are cheap to carry
+until measured importance says otherwise.
+
+`0` is new in kind rather than in density: it is the **closing snapshot**, the
+same bet the closing-line dataset makes. It is not literally tip-off —
+`fetch_pregame_ticks` refuses anything inside its five-minute safety margin — so
+it resolves to the last tick at least 5 minutes out. It is what makes the two
+datasets directly comparable at the same decision point. Note that
+closing-line value is ~0 by construction on those rows, so CLV measured over a
+pooled dataset is diluted by them; compute it per snapshot.
+
 A variant worth benchmarking later, but not for v1: sample at *actual tick times*
 rather than a fixed grid, with `time_to_match` as a continuous feature. More
 faithful, but it weights heavily-ticked games more and complicates production.

@@ -50,7 +50,7 @@ EWM_SPANS = [15, 30, 75]
 TAIL_THRESHOLDS = [10, 15, 20]
 
 # Opening-line column (consensus opener kept after merge)
-OPEN_LINE_COL = "TOTAL_LINE_consensus_opener"
+OPEN_LINE_COL = "ODDS_TOTAL_LINE_consensus_opener"
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +242,7 @@ def add_global_market_features(df: pd.DataFrame) -> pd.DataFrame:
     close_col = resolve_main_total_line_col(out)
     if close_col is None:
         raise ValueError(
-            "Cannot compute global market features: no TOTAL_LINE_* column found."
+            "Cannot compute global market features: no ODDS_TOTAL_LINE_* column found."
         )
 
     close_line = pd.to_numeric(out[close_col], errors="coerce").astype("float64")
@@ -298,9 +298,9 @@ def add_global_market_features(df: pd.DataFrame) -> pd.DataFrame:
     if len(total_line_books) > 1:
         book_lines = pd.DataFrame(
             {
-                b: pd.to_numeric(out[f"TOTAL_LINE_{b}"], errors="coerce")
+                b: pd.to_numeric(out[f"ODDS_TOTAL_LINE_{b}"], errors="coerce")
                 for b in total_line_books
-                if f"TOTAL_LINE_{b}" in out.columns
+                if f"ODDS_TOTAL_LINE_{b}" in out.columns
             }
         )
         crossbook_std = book_lines.std(axis=1, skipna=True, ddof=0)

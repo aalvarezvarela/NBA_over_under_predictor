@@ -16,7 +16,7 @@ def _config(**overrides) -> ExperimentConfig:
     kwargs = {
         "experiment_name": "naming_test",
         "target_family": TargetFamily.TOTAL_POINTS,
-        "line_col": "TOTAL_LINE_bet365",
+        "line_col": "ODDS_TOTAL_LINE_bet365",
         "data": DataConfig(csv_path="data/train_data/example.csv"),
         "window_name_label": "three_seasons",
         "window_dir_label": "3_seasons",

@@ -116,6 +116,12 @@ data:
 cleaning:
   nan_threshold: 50.0
   max_na_per_row: 80
+  # Needed for the CSV currently pinned below, built before fanatics_sportsbook
+  # got merged with Caesars (see create_df_to_predict's/create_intermediate_line_df's
+  # combine_fanatics_and_caesars): in that CSV the book is still 2025-only, so
+  # it's still a season indicator. Once the pinned CSV is regenerated with the
+  # merge on, fanatics_sportsbook is continuous and this exclusion should be
+  # dropped -- keeping it after that would just discard a now-safe book.
   exclude_cols_containing: ["fanatics_sportsbook"]
   verbose: 1
 
@@ -407,7 +413,7 @@ betting:
   # against the open. Beating the close = information; beating the open =
   # capturable information.
   # Columns missing from a CSV snapshot are skipped, never fatal.
-  comparison_line_cols: ["TOTAL_LINE_consensus_opener"]
+  comparison_line_cols: ["ODDS_TOTAL_LINE_consensus_opener"]
 
 # --- daily walk-forward backtest --------------------------------------------
 backtest:

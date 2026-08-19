@@ -367,8 +367,15 @@ def merge_total_spread_moneyline_by_game_id(
 
     elif total_lines_mode == "all":
         required_cols.append(total_selected_col)
+        # Only require sources actually present in df_odds -- a book can be
+        # legitimately absent (e.g. Caesars, once excluded/merged upstream via
+        # combine_caesars_and_fanatics) without that being an error.
         required_cols.extend(
-            [col for _, col in known_total_sources if col != total_selected_col]
+            [
+                col
+                for _, col in known_total_sources
+                if col != total_selected_col and col in df_odds.columns
+            ]
         )
 
     # Check required columns exist
@@ -551,7 +558,7 @@ def merge_remaining_odds_by_game_id(
         ]
         for book in known_total_sources:
             # Check if the uppercase version already exists in df_merged
-            uppercase_col = f"TOTAL_LINE_{book}"
+            uppercase_col = total_line_col(book)
             if uppercase_col in df_merged.columns:
                 # Only exclude if it was already merged
                 columns_to_exclude.update(

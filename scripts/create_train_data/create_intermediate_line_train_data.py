@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pandas as pd
 from nba_ou.create_training_data.create_intermediate_line_df import (
+    DEFAULT_BASE_LOOKBACK_SEASONS,
     create_intermediate_line_df,
 )
 from nba_ou.data_processing.line_history.movement_features import DEFAULT_WINDOWS
@@ -73,6 +74,19 @@ def main() -> None:
     )
     parser.add_argument("--recent-limit", type=str, default=None)
     parser.add_argument(
+        "--base-lookback-seasons",
+        type=int,
+        default=DEFAULT_BASE_LOOKBACK_SEASONS,
+        help=(
+            "Seasons of team history loaded BEFORE the first line-history "
+            "season, as rolling context only. They never become rows -- the "
+            "snapshot join drops every game with no ticks. Without this the "
+            "earliest season starts with every rolling window empty. Note that "
+            "adding older years to --seasons cannot do this: they are "
+            "intersected against the store and dropped."
+        ),
+    )
+    parser.add_argument(
         "--snapshot-grid",
         type=str,
         default=",".join(str(m) for m in DEFAULT_SNAPSHOT_GRID),
@@ -93,29 +107,40 @@ def main() -> None:
             "'consensus' uses the cross-book median (steadier, but not bettable)."
         ),
     )
+    # Default: Caesars is folded into fanatics_sportsbook. fanatics exists only
+    # from 2025 and Caesars is discontinued, so on their own each is a de facto
+    # season indicator; merged, they are one continuously-covered book. The
+    # exclusion flags below are the escape hatches, not the default -- excluding
+    # throws away a book's data to solve a problem the merge solves without.
     parser.add_argument(
-        "--include-fanatics",
+        "--exclude-fanatics",
         action="store_true",
         help=(
-            "Keep fanatics_sportsbook. Off by default: it exists only from 2025, "
-            "so its mere presence identifies the season."
+            "Drop fanatics_sportsbook instead of merging Caesars into it. "
+            "Disables the merge."
         ),
+    )
+    parser.add_argument(
+        "--exclude-caesars",
+        action="store_true",
+        help="Drop Caesars instead of merging it into fanatics_sportsbook. "
+        "Disables the merge.",
     )
     args = parser.parse_args()
 
     grid = _parse_int_tuple(args.snapshot_grid)
     windows = _parse_int_tuple(args.windows)
-    seasons = (
-        [int(s) for s in args.seasons.split(",")] if args.seasons else None
-    )
+    seasons = [int(s) for s in args.seasons.split(",")] if args.seasons else None
 
     df, scoring = create_intermediate_line_df(
         recent_limit_to_include=args.recent_limit,
         season_years=seasons,
         snapshot_grid=grid,
         windows=windows,
+        base_lookback_seasons=args.base_lookback_seasons,
         anchor_book=args.anchor_book,
-        exclude_fanatics=not args.include_fanatics,
+        exclude_fanatics=args.exclude_fanatics,
+        exclude_caesars=args.exclude_caesars,
         return_scoring=True,
     )
 
@@ -133,11 +158,13 @@ def main() -> None:
     # anything left in the training CSV becomes a feature.
     scoring_path = output_path.with_name(f"{output_path.stem}_scoring.csv")
     scoring.to_csv(scoring_path, index=False)
-    print(f"Saved scoring sidecar to {scoring_path} (join on GAME_ID + TIME_TO_MATCH_MIN)")
+    print(
+        f"Saved scoring sidecar to {scoring_path} (join on GAME_ID + TIME_TO_MATCH_MIN)"
+    )
 
     from training_pipeline.data import compute_file_checksum
 
-    print(f"expected_checksum: \"{compute_file_checksum(output_path)}\"")
+    print(f'expected_checksum: "{compute_file_checksum(output_path)}"')
 
     print_row_retention(df)
     print_config_guidance(df["TIME_TO_MATCH_MIN"].nunique())

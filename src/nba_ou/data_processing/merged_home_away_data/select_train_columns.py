@@ -1,4 +1,9 @@
-from nba_ou.config.odds_columns import moneyline_col, spread_col, total_line_col
+from nba_ou.config.odds_columns import (
+    is_odds_column,
+    moneyline_col,
+    spread_col,
+    total_line_col,
+)
 
 MAIN_TOTAL_LINE_COL = total_line_col()
 MAIN_SPREAD_COL = spread_col()
@@ -180,14 +185,14 @@ def select_training_columns(
     odds_cols_present = [col for col in ODDS_COLUMNS if col in df_merged.columns]
     columns_info_before.extend(odds_cols_present)
 
-    # Add any columns that start with "odds_" prefix
+    # Add any columns already carrying the unified odds-derived prefix
     columns_info_before.extend(
-        [col for col in df_merged.columns if col.startswith("odds_")]
+        [col for col in df_merged.columns if is_odds_column(col)]
     )
 
-    # Add any columns that start with "TOTAL_LINE_" prefix
+    # Add any columns that start with "ODDS_TOTAL_LINE_" prefix
     columns_info_before.extend(
-        [col for col in df_merged.columns if col.startswith("TOTAL_LINE_")]
+        [col for col in df_merged.columns if col.startswith("ODDS_TOTAL_LINE_")]
     )
 
     # Add GAME_TIME if requested (for prediction purposes)
@@ -246,10 +251,10 @@ def select_training_columns(
     for col in df_training.columns:
         # Check if this column is in original columns but not in allowed list
         # Skip columns with BEFORE (they are temporal features)
-        # Skip columns that start with "odds_" (they are odds features)
+        # Skip columns that carry the unified "ODDS_" prefix (odds features)
         if (
             "_BEFORE" not in col
-            and not col.startswith("odds_")
+            and not is_odds_column(col)
             and col not in allowed_columns
             and col in original_columns
         ):
@@ -261,4 +266,12 @@ def select_training_columns(
             "These columns should have '_BEFORE' suffix or be excluded."
         )
 
+    # NOTE: the ODDS_ unification rename deliberately does NOT happen here.
+    # Selection is not the last stage: engineer_odds_features() runs afterwards
+    # and resolves its inputs by their raw names (total_<book>_price_over,
+    # spread_consensus_opener_line_home, ...), so renaming at this point hides
+    # them and silently drops every vig / no-vig / price-dispersion feature.
+    # The unification is applied once at the end of each pipeline entry point
+    # via nba_ou.config.odds_columns.apply_odds_prefix, and enforced there by
+    # assert_odds_columns_prefixed.
     return df_training

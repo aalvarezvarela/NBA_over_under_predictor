@@ -73,7 +73,7 @@ def safe_mad(x: pd.DataFrame) -> pd.Series:
 
 def engineer_odds_features(
     df: pd.DataFrame,
-    prefix: str = "odds_",
+    prefix: str = "ODDS_",
     books: list[str] | None = None,
 ) -> pd.DataFrame:
     """
@@ -94,11 +94,11 @@ def engineer_odds_features(
 
     Expected (if available):
       - Total current lines per book (UPPERCASE, from merge_total_spread_moneyline):
-          TOTAL_LINE_{book}   (e.g., TOTAL_LINE_betmgm)
+          ODDS_TOTAL_LINE_{book}   (e.g., ODDS_TOTAL_LINE_betmgm)
       - Total current prices per book (lowercase, from merge_remaining):
           total_{book}_price_over, total_{book}_price_under   (DECIMAL)
       - Consensus total opener line (used as reference baseline):
-          TOTAL_LINE_consensus_opener
+          ODDS_TOTAL_LINE_consensus_opener
       - Consensus total opener prices (used as reference baseline):
           total_consensus_opener_price_over, total_consensus_opener_price_under   (DECIMAL)
       - Spread per book (from merge_remaining):
@@ -115,7 +115,7 @@ def engineer_odds_features(
         inferred_books = set()
 
         for col in out.columns:
-            m_total = re.match(r"^TOTAL_LINE_(.+)$", col)
+            m_total = re.match(r"^ODDS_TOTAL_LINE_(.+)$", col)
             if m_total:
                 inferred_books.add(m_total.group(1))
                 continue
@@ -146,7 +146,7 @@ def engineer_odds_features(
     # 0) Consensus total reference line/probability
     # -----------------------------
     # Source is still consensus opener data, but this script treats it as a reference baseline.
-    cons_ref_line_col = "TOTAL_LINE_consensus_opener"
+    cons_ref_line_col = "ODDS_TOTAL_LINE_consensus_opener"
     cons_ref_price_over = "total_consensus_opener_price_over"
     cons_ref_price_under = "total_consensus_opener_price_under"
 
@@ -183,7 +183,7 @@ def engineer_odds_features(
     total_price_presence_series = []
 
     for book in books:
-        total_line_col = f"TOTAL_LINE_{book}"
+        total_line_col = f"ODDS_TOTAL_LINE_{book}"
         price_over = f"total_{book}_price_over"
         price_under = f"total_{book}_price_under"
 
@@ -493,11 +493,11 @@ def engineer_odds_features(
     # -----------------------------
     # Prefer robust close-consensus proxy (median across books), fallback to mean.
     if f"{prefix}total_line_books_median" in new_cols:
-        new_cols["close_total_consensus"] = as_float(
+        new_cols[f"{prefix}close_total_consensus"] = as_float(
             new_cols[f"{prefix}total_line_books_median"]
         )
     elif f"{prefix}total_line_books_mean" in new_cols:
-        new_cols["close_total_consensus"] = as_float(
+        new_cols[f"{prefix}close_total_consensus"] = as_float(
             new_cols[f"{prefix}total_line_books_mean"]
         )
 

@@ -22,13 +22,26 @@ import pandas as pd
 CONSENSUS_KEYS = ["game_id", "market", "snapshot_minutes"]
 
 
-def steam_move_column(panel: pd.DataFrame) -> str:
-    """The shortest available ``move_last_<w>`` column.
+#: Window steam is measured over, when it is configured at all.
+#:
+#: Pinned rather than "the shortest available". Steam is *cross-book agreement*,
+#: which needs enough books to have moved for agreement to mean anything, and
+#: the short windows do not clear that bar: measured on the store a book moves
+#: in the trailing 60 minutes on 32% of (row, book) and 37% of rows have no book
+#: moving at all -- at 15 minutes steam would be a near-constant zero. Letting
+#: the shortest configured window define it meant that merely *adding* a shorter
+#: window to ``DEFAULT_WINDOWS`` silently redefined an existing feature family,
+#: which is exactly what happened when 15 and 30 were introduced.
+STEAM_WINDOW_MINUTES = 60
 
-    Derived rather than hardcoded to 60: a caller passing ``windows=(120, 360)``
-    used to raise a bare ``KeyError`` deep inside the aggregation, because steam
-    assumed a 60-minute window existed. Steam wants the shortest window on
-    offer, whatever the caller configured.
+
+def steam_move_column(panel: pd.DataFrame) -> str:
+    """The ``move_last_<w>`` column steam is measured over.
+
+    Prefers ``STEAM_WINDOW_MINUTES`` and falls back to the shortest window on
+    offer. The fallback is why this is derived at all rather than hardcoded: a
+    caller passing ``windows=(120, 360)`` used to raise a bare ``KeyError`` deep
+    inside the aggregation.
     """
     candidates = []
     for column in panel.columns:
@@ -41,6 +54,9 @@ def steam_move_column(panel: pd.DataFrame) -> str:
             "No move_last_<minutes> column found; run add_movement_features "
             "before aggregate_across_books."
         )
+    preferred = f"move_last_{STEAM_WINDOW_MINUTES}"
+    if any(column == preferred for _, column in candidates):
+        return preferred
     return min(candidates)[1]
 
 

@@ -956,7 +956,7 @@ def plot_line_comparison(runs: pd.DataFrame) -> pd.DataFrame | None:
         # since they are counterfactuals rather than results.
         bars = ax.bar(positions + shift, subset["roi"], width * 0.9, color=colours,
                       alpha=1.0 if offset == 0 else 0.45,
-                      label=line_name.replace("TOTAL_LINE_", ""))
+                      label=line_name.replace("ODDS_TOTAL_LINE_", ""))
         for bar, value in zip(bars, subset["roi"], strict=True):
             if pd.isna(value):
                 continue

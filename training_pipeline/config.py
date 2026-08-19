@@ -834,7 +834,7 @@ class BettingConfig(BaseModel):
     #: default 2.0-point bet trigger -- so an edge measured against the close can
     #: correspond to a materially different bet against the open.
     #:
-    #: "TOTAL_LINE_consensus_opener" is the natural counterpart. Columns absent
+    #: "ODDS_TOTAL_LINE_consensus_opener" is the natural counterpart. Columns absent
     #: from the data are skipped rather than raising, since line availability
     #: varies across CSV snapshots.
     comparison_line_cols: tuple[str, ...] = ()
@@ -931,7 +931,7 @@ class BaselineConfig(BaseModel):
 
     Resolution order (see training_pipeline.data.resolve_baseline_line_col):
     1. line_col, if set explicitly here -- e.g. set this to
-       "odds_total_line_books_median" to use the engineered cross-book
+       "ODDS_total_line_books_median" to use the engineered cross-book
        median instead of a single book's line, once you've verified that
        column is trustworthy in the specific CSV you're using (it was found
        empirically NOT to be points-scale in at least one archived CSV

@@ -118,7 +118,7 @@ def test_total_points_now_accepts_recency_weighting():
     config = ExperimentConfig(
         experiment_name="weighted_total_points",
         target_family=TargetFamily.TOTAL_POINTS,
-        line_col="TOTAL_LINE_bet365",
+        line_col="ODDS_TOTAL_LINE_bet365",
         data=DataConfig(csv_path="x.csv"),
         sample_weight=SampleWeightConfig(enabled=True, lambda_=0.005),
     )

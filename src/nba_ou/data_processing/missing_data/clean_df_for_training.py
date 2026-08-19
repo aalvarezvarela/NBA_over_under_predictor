@@ -45,7 +45,7 @@ def basic_cleaning(df: pd.DataFrame, verbose: int = 1) -> pd.DataFrame:
 
     This function:
     - Filters out games with unusually low total points (< 130)
-    - Removes rows with missing main total line (TOTAL_LINE_<main_book>)
+    - Removes rows with missing main total line (ODDS_TOTAL_LINE_<main_book>)
     - Filters out games with unrealistic betting lines (< 100)
 
     Args:
@@ -72,7 +72,7 @@ def basic_cleaning(df: pd.DataFrame, verbose: int = 1) -> pd.DataFrame:
 
     main_total_line = resolve_main_total_line_col(df)
     if main_total_line is None:
-        raise ValueError("No TOTAL_LINE_<book> column found for basic cleaning.")
+        raise ValueError("No ODDS_TOTAL_LINE_<book> column found for basic cleaning.")
 
     # Count and report NaNs in the configured main total line column
     nans = df[main_total_line].isna().sum()
@@ -544,7 +544,7 @@ def clean_dataframe_for_training(
                 )
                 if verbose >= 2:
                     # Show distribution of NaN counts per row
-                    print(f"   Distribution of NaN counts per row:")
+                    print("   Distribution of NaN counts per row:")
                     for nan_count in sorted(nan_counts_per_row.unique()):
                         if nan_count > strict_mode:
                             count = (nan_counts_per_row == nan_count).sum()

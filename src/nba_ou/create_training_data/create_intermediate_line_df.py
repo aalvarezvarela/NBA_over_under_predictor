@@ -12,13 +12,19 @@ Scope: **historical training data only.** Serving same-day predictions is
 deliberately not implemented here.
 
 One naming decision deserves stating plainly, because it will otherwise be
-misread. In this dataset ``TOTAL_LINE_<book>`` holds that book's line **as of
-the snapshot**, not at close. That is not a fudge: it is genuinely that book's
-line, quoted at the moment this model bets. It is done this way because the
-training pipeline derives ``line_error`` against the main book column and
+misread. In this dataset ``ODDS_TOTAL_LINE_<book>`` holds that book's line **as
+of the snapshot**, not at close. That is not a fudge: it is genuinely that
+book's line, quoted at the moment this model bets. It is done this way because
+the training pipeline derives ``line_error`` against the main book column and
 settles bets against the same one, so target and settlement must agree. The
-actual closing line is carried separately as ``CLOSING_TOTAL_LINE_<book>`` and
-is excluded from features -- it exists only to measure closing-line value.
+actual closing line is carried separately as ``ODDS_CLOSING_TOTAL_LINE_<book>``
+and is excluded from features -- it exists only to measure closing-line value.
+
+Every odds-derived column in this dataset -- snapshot (``ODDS_SNAP_*``),
+closing/opener (``ODDS_TOTAL_LINE_*`` / ``ODDS_CLOSING_*``), and history-dynamics
+(``ODDS_TOT_*`` / ``ODDS_SPR_*`` / ``ODDS_ML_*``) -- carries the same leading
+``ODDS_`` marker, so odds features can be selected as a group just as
+leakage-safe columns are selected via ``_BEFORE``.
 """
 
 from __future__ import annotations
@@ -33,6 +39,10 @@ from nba_ou.create_training_data.select_intermediate_columns import (
     assert_no_bare_closing_odds,
     audit_closing_line_reconstruction,
     select_intermediate_training_columns,
+)
+from nba_ou.data_processing.line_history.book_merge import (
+    CAESARS_BOOK,
+    merge_caesars_into_fanatics_ticks,
 )
 from nba_ou.data_processing.line_history.cross_book import (
     add_book_deviation,
@@ -49,6 +59,7 @@ from nba_ou.data_processing.line_history.snapshots import (
     DEFAULT_SNAPSHOT_GRID,
     build_snapshot_panel,
 )
+from nba_ou.data_processing.odds.book_combination import resolve_combine_books
 from nba_ou.postgre_db.line_history_aiven.fetch import (
     MARKET_MONEYLINE,
     MARKET_SPREAD,
@@ -61,11 +72,54 @@ from nba_ou.postgre_db.line_history_aiven.fetch import (
 
 MARKET_SHORT = {MARKET_TOTALS: "TOT", MARKET_SPREAD: "SPR", MARKET_MONEYLINE: "ML"}
 
+#: Seasons of team history loaded *before* the first line-history season, purely
+#: so the rolling features of that first season are not computed from nothing.
+#:
+#: The line-history store starts at 2021-22; the NBA database goes back further.
+#: Without this the two were pinned together -- ``season_start_date`` was derived
+#: from ``min(season_years)`` -- so the earliest line-history season began with
+#: every rolling window empty, every ``_SEASON_BEFORE_AVG`` unfilled and every
+#: trend slope on its no-history value. Passing older years in ``season_years``
+#: cannot fix that: they are intersected against the store and dropped.
+#:
+#: These seasons never become rows. The snapshot join is an inner merge on
+#: ``GAME_ID``, so a game with no ticks cannot survive it -- exactly the pattern
+#: ``create_base_game_features`` already uses for ``player_context_seasons``.
+#:
+#: Two rather than one: one satisfies the previous-season fallbacks
+#: (``_SEASON_BEFORE_AVG``, the trend-slope chain, roster continuity's window
+#: opening the preceding March), two leaves margin for the 20-game rollups to be
+#: warm rather than merely defined.
+#:
+#: Two is also the most that buys anything, which is a coincidence worth
+#: recording rather than rediscovering: the line-history store starts at 2021-22,
+#: and 2021 - 2 = 2019 is exactly ``FIRST_SEASON_WITH_CLOSING_ODDS``.
+DEFAULT_BASE_LOOKBACK_SEASONS = 2
+
+#: First season the closing-odds tables actually cover, measured rather than
+#: assumed.
+#:
+#: ``create_base_game_features`` defaults its floor to 2017-10-01, which the odds
+#: data does not honour. Measured on ``odds_sportsbook``: season 2018 holds 32
+#: rows, all dated 2019-05-03 to 2019-06-13 -- a fragment of one postseason, not
+#: a season -- and nothing exists before it. 2019-20 (1,137 games) and 2020-21
+#: (1,176) are complete despite the low counts; both were COVID-shortened.
+#: ``odds_yahoo`` starts a season later still, at 2020.
+#:
+#: This is the cliff behind the earlier finding that seasons 2017-2020 were
+#: discarded wholesale by ``cleaning.max_na_per_row``: those rows carry no odds
+#: columns at all, not merely cold rolling windows. Per-book coverage from 2019
+#: is uneven too -- betmgm is at 0% in 2020 and 37.5% in 2019 against ~100% from
+#: 2022 -- so a book's mere presence remains partly a season indicator this far
+#: back, which is what ``PARTIAL_COVERAGE_BOOKS`` and the Caesars/fanatics
+#: combination exist to handle for the recent end.
+FIRST_SEASON_WITH_CLOSING_ODDS = 2019
+
 #: The consensus OPENING line. Safe at every snapshot -- openers land a median
 #: ~25h before tip, well outside the 12h grid -- and it is the baseline
 #: ``betting.comparison_line_cols`` in experiments/_base.yaml is configured
 #: against, so it must survive under exactly this name.
-OPENER_LINE_COLUMN = "TOTAL_LINE_consensus_opener"
+OPENER_LINE_COLUMN = total_line_col("consensus_opener")
 
 #: Emitted for EVERY book, not just the anchor. The anchor is special only in
 #: that its line defines the target; there is no reason its odds should be the
@@ -169,7 +223,7 @@ def _pivot_book_features(
     ]
     wide = indexed.unstack(["market", "book"])
     wide.columns = [
-        f"SNAP_{MARKET_SHORT.get(market, market.upper())}_{book.upper()}_"
+        f"ODDS_SNAP_{MARKET_SHORT.get(market, market.upper())}_{book.upper()}_"
         f"{feature.upper()}"
         for feature, market, book in wide.columns
     ]
@@ -181,11 +235,46 @@ def _pivot_consensus(consensus: pd.DataFrame) -> pd.DataFrame:
     indexed = consensus.set_index(["game_id", "snapshot_minutes", "market"])[present]
     wide = indexed.unstack("market")
     wide.columns = [
-        f"SNAP_{MARKET_SHORT.get(market, market.upper())}_CONSENSUS_"
+        f"ODDS_SNAP_{MARKET_SHORT.get(market, market.upper())}_CONSENSUS_"
         f"{feature.upper().replace('CONSENSUS_', '')}"
         for feature, market in wide.columns
     ]
     return wide.reset_index()
+
+
+SNAPSHOT_WIDE_KEYS = ["game_id", "snapshot_minutes"]
+
+
+def _merge_wide_parts(parts: list[pd.DataFrame]) -> pd.DataFrame:
+    """Join the wide blocks on (game, snapshot), refusing to duplicate a column.
+
+    A plain chain of merges is silent about overlap: it renames the collision to
+    ``<name>_x`` / ``<name>_y`` and keeps both. That is exactly how the consensus
+    block came to be pivoted and merged twice, putting 63 pairs of bit-identical
+    columns into the dataset -- invisible in every column-name check, but they
+    inflate the feature count, split permutation importance between twins and
+    count double against ``cleaning.max_na_per_row``.
+
+    Overlap between these blocks is always a construction error (each block owns
+    a disjoint name space by design), so it raises rather than resolving.
+    """
+    populated = [part for part in parts if not part.empty]
+    if not populated:
+        return pd.DataFrame(columns=SNAPSHOT_WIDE_KEYS)
+
+    merged = populated[0]
+    for part in populated[1:]:
+        overlap = (set(merged.columns) & set(part.columns)) - set(SNAPSHOT_WIDE_KEYS)
+        if overlap:
+            shown = ", ".join(sorted(overlap)[:10])
+            more = f" (+{len(overlap) - 10} more)" if len(overlap) > 10 else ""
+            raise ValueError(
+                f"{len(overlap)} column(s) would be duplicated when joining the "
+                f"snapshot blocks: {shown}{more}. Each block must own a disjoint "
+                "set of column names; a repeated block is the usual cause."
+            )
+        merged = merged.merge(part, on=SNAPSHOT_WIDE_KEYS, how="outer")
+    return merged
 
 
 def _resolve_target_line(panel: pd.DataFrame, *, anchor: str) -> pd.DataFrame:
@@ -207,8 +296,7 @@ def _resolve_target_line(panel: pd.DataFrame, *, anchor: str) -> pd.DataFrame:
     rows = panel[panel["market"].eq(MARKET_TOTALS) & panel["book"].eq(anchor)]
     if rows.empty:
         raise ValueError(
-            f"Anchor book {anchor!r} has no totals quotes in the line-history "
-            "store."
+            f"Anchor book {anchor!r} has no totals quotes in the line-history " "store."
         )
     return rows[["game_id", "snapshot_minutes", "norm_line"]].rename(
         columns={"norm_line": "target_line"}
@@ -224,7 +312,7 @@ SCORING_KEYS = ["GAME_ID", "TIME_TO_MATCH_MIN"]
 def _build_scoring_frame(merged: pd.DataFrame, gated: pd.DataFrame) -> pd.DataFrame:
     """Closing lines, weights and timestamps -- everything X must never see.
 
-    These used to ride along in the training frame behind a ``CLOSING_`` prefix,
+    These used to ride along in the training frame behind a ``ODDS_CLOSING_`` prefix,
     on the assumption that ``feature_columns()`` would filter them. It does not:
     ``training_pipeline.data.build_feature_matrix`` drops only the *configured*
     exclusions, so every closing line would have entered X and contaminated the
@@ -237,14 +325,12 @@ def _build_scoring_frame(merged: pd.DataFrame, gated: pd.DataFrame) -> pd.DataFr
     unweighted overstates the evidence by up to the configured snapshot count.
     """
     keys = merged[SCORING_KEYS].copy()
-    closing_columns = [c for c in merged.columns if c.startswith("CLOSING_")]
+    closing_columns = [c for c in merged.columns if c.startswith("ODDS_CLOSING_")]
     timestamp_columns = [
         c for c in ["TIPOFF_UTC", "SNAPSHOT_TS_UTC"] if c in merged.columns
     ]
 
-    scoring = pd.concat(
-        [keys, merged[closing_columns + timestamp_columns]], axis=1
-    )
+    scoring = pd.concat([keys, merged[closing_columns + timestamp_columns]], axis=1)
     snapshots_per_game = scoring.groupby("GAME_ID")["TIME_TO_MATCH_MIN"].transform(
         "count"
     )
@@ -261,10 +347,13 @@ def create_intermediate_line_df(
     *,
     recent_limit_to_include: str | pd.Timestamp | None = None,
     season_years: list[int] | None = None,
+    base_lookback_seasons: int = DEFAULT_BASE_LOOKBACK_SEASONS,
     snapshot_grid: tuple[int, ...] = DEFAULT_SNAPSHOT_GRID,
     windows: tuple[int, ...] = DEFAULT_WINDOWS,
     anchor_book: str | None = None,
-    exclude_fanatics: bool = True,
+    exclude_fanatics: bool = False,
+    exclude_caesars: bool = False,
+    combine_fanatics_and_caesars: bool | None = None,
     categorical_team_encoding: bool = False,
     normalize_total_lines: bool = True,
     return_scoring: bool = False,
@@ -278,15 +367,56 @@ def create_intermediate_line_df(
     out of the feature matrix. The default is the safe one: closing lines are
     absent unless explicitly asked for.
 
-    ``exclude_fanatics`` defaults to True because ``fanatics_sportsbook`` only
-    exists from season 2025: a book present exactly when ``season_year == 2025``
-    lets a model recover the season from column availability alone. Excluding it
-    here rather than relying on the training config's
-    ``cleaning.exclude_cols_containing`` keeps those columns out of the CSV
-    entirely, so they also cannot inflate ``max_na_per_row`` for earlier rows.
+    ``base_lookback_seasons`` loads team history from before the first
+    line-history season so that season's rolling features are warm. Those extra
+    seasons are context only: the snapshot join is an inner merge, so a game the
+    store holds no ticks for cannot become a row. Adding older years to
+    ``season_years`` does **not** achieve this -- they are intersected against
+    the store's own seasons and dropped.
+
+    ``fanatics_sportsbook`` only exists from season 2025 and the odds-fetching
+    pipeline no longer scrapes the now-discontinued Caesars, so left alone
+    fanatics_sportsbook is a de facto season indicator: a book present exactly
+    when ``season_year == 2025`` lets a model recover the season from column
+    availability alone. Three mutually-aware options control this:
+
+    * ``combine_fanatics_and_caesars`` (the default) -- fold Caesars into
+      fanatics_sportsbook (fanatics values kept where present, Caesars fills
+      the gap) across both the tick-level snapshot pipeline and the closing/
+      opener wide pipeline, giving one continuously-covered book instead of
+      two disjoint, season-correlated ones. This is the recommended default:
+      it fixes the season-leak problem below without discarding either book's
+      data.
+    * ``exclude_fanatics`` -- drop fanatics_sportsbook outright instead.
+    * ``exclude_caesars`` -- drop Caesars outright instead.
+
+    Combining is tri-state so that "default on" cannot turn an explicit
+    exclusion into an error: left unset it yields to either ``exclude_*``, and
+    only an explicit ``combine_fanatics_and_caesars=True`` alongside an
+    exclusion raises. See ``resolve_combine_books``. Excluding here rather than
+    relying on the training config's ``cleaning.exclude_cols_containing`` keeps
+    unwanted columns out of the CSV entirely, so they also cannot inflate
+    ``max_na_per_row`` for earlier rows.
     """
+    # Argument validation before any I/O: a bad call should fail immediately,
+    # not after opening a database connection.
+    if base_lookback_seasons < 0:
+        raise ValueError(
+            "base_lookback_seasons must be >= 0; it only ever loads history "
+            "EARLIER than the first line-history season."
+        )
+    combine_books = resolve_combine_books(
+        combine=combine_fanatics_and_caesars,
+        exclude_caesars=exclude_caesars,
+        exclude_fanatics=exclude_fanatics,
+    )
+
     anchor = anchor_book or get_main_book()
-    excluded_books = PARTIAL_COVERAGE_BOOKS if exclude_fanatics else ()
+    excluded_books: tuple[str, ...] = ()
+    if exclude_fanatics:
+        excluded_books += PARTIAL_COVERAGE_BOOKS
+    if exclude_caesars:
+        excluded_books += (CAESARS_BOOK,)
 
     store_seasons = available_seasons()
     if season_years is None:
@@ -307,6 +437,8 @@ def create_intermediate_line_df(
     lh_games = fetch_games(season_years)
     if ticks.empty:
         raise ValueError("No pre-game ticks returned for the requested seasons.")
+    if combine_books:
+        ticks = merge_caesars_into_fanatics_ticks(ticks)
     if verbose:
         print(f"✓ {len(ticks):,} pre-game ticks over {ticks.game_id.nunique()} games")
 
@@ -328,14 +460,8 @@ def create_intermediate_line_df(
         _pivot_book_features(panel, book_features, [anchor]),
         _pivot_book_features(panel, book_features, other_books),
         _pivot_consensus(consensus),
-        _pivot_consensus(consensus),
     ]
-    snapshot_wide = wide_parts[0]
-    for part in wide_parts[1:]:
-        if not part.empty:
-            snapshot_wide = snapshot_wide.merge(
-                part, on=["game_id", "snapshot_minutes"], how="outer"
-            )
+    snapshot_wide = _merge_wide_parts(wide_parts)
 
     target_line = _resolve_target_line(panel, anchor=anchor)
     snapshot_wide = snapshot_wide.merge(
@@ -348,13 +474,11 @@ def create_intermediate_line_df(
     # two thirds of it away.
     history = lh_games[["game_id"]].copy()
     for market in (MARKET_TOTALS, MARKET_SPREAD, MARKET_MONEYLINE):
-        market_history = add_prior_game_line_dynamics(
-            lh_games, ticks, market=market
-        )
+        market_history = add_prior_game_line_dynamics(lh_games, ticks, market=market)
         suffix = MARKET_SHORT[market]
         market_history = market_history.rename(
             columns={
-                column: f"{suffix}_{column}"
+                column: f"ODDS_{suffix}_{column}"
                 for column in market_history.columns
                 if column != "game_id"
             }
@@ -362,11 +486,29 @@ def create_intermediate_line_df(
         history = history.merge(market_history, on="game_id", how="left")
 
     # ---- base per-game features ---------------------------------------
+    # Older seasons are context for the rolling features only; the inner join
+    # below drops every game the line-history store has no ticks for.
+    base_start_year = min(season_years) - base_lookback_seasons
+    if verbose and base_lookback_seasons:
+        print(
+            f"Base features from {base_start_year}-10-01 "
+            f"({base_lookback_seasons} season(s) before the first line-history "
+            "season, as rolling context only)"
+        )
+    if base_start_year < FIRST_SEASON_WITH_CLOSING_ODDS:
+        print(
+            f"WARNING: base features start at {base_start_year}, but the "
+            f"closing-odds tables begin at {FIRST_SEASON_WITH_CLOSING_ODDS}. "
+            "The extra season(s) carry team and player history but no odds, so "
+            "they lengthen the build without warming any odds rollup."
+        )
     base = create_base_game_features(
         recent_limit_to_include=recent_limit_to_include,
-        season_start_date=pd.Timestamp(year=min(season_years), month=10, day=1),
+        season_start_date=pd.Timestamp(year=base_start_year, month=10, day=1),
         categorical_team_encoding=categorical_team_encoding,
         normalize_total_lines=normalize_total_lines,
+        exclude_caesars=exclude_caesars,
+        combine_fanatics_and_caesars=combine_books,
         verbose=verbose,
     )
     base["GAME_ID"] = base["GAME_ID"].astype(str)
@@ -379,7 +521,7 @@ def create_intermediate_line_df(
     closing_source_columns = [
         column
         for column in base.columns
-        if column.startswith("TOTAL_LINE_")
+        if column.startswith("ODDS_TOTAL_LINE_")
         and "_BEFORE" not in column
         and column != OPENER_LINE_COLUMN
     ]
@@ -401,15 +543,25 @@ def create_intermediate_line_df(
             ],
             errors="ignore",
         )
+    # ODDS_ stays the leading marker even under CLOSING_: strip it off the
+    # source name before rebuilding as ODDS_CLOSING_<...> rather than
+    # prefixing twice.
     base = base.rename(
-        columns={column: f"CLOSING_{column}" for column in closing_source_columns}
+        columns={
+            column: f"ODDS_CLOSING_{column.removeprefix('ODDS_')}"
+            for column in closing_source_columns
+        }
     )
 
     # ---- join ----------------------------------------------------------
     merged = base.merge(
         snapshot_wide, left_on="GAME_ID", right_on="game_id", how="inner"
     ).merge(history, left_on="GAME_ID", right_on="game_id", how="left")
-    merged = merged.drop(columns=[c for c in ["game_id_x", "game_id_y", "game_id"] if c in merged.columns])
+    merged = merged.drop(
+        columns=[
+            c for c in ["game_id_x", "game_id_y", "game_id"] if c in merged.columns
+        ]
+    )
 
     merged = merged.rename(columns={"snapshot_minutes": "TIME_TO_MATCH_MIN"})
     merged = merged.merge(
@@ -444,7 +596,9 @@ def create_intermediate_line_df(
     gated = gated.assign(**{main_line_column: merged[main_line_column]})
     assert_no_bare_closing_odds(gated, allowed=(main_line_column,))
 
-    closing_reference = merged.get(f"CLOSING_{main_line_column}")
+    closing_reference = merged.get(
+        f"ODDS_CLOSING_{main_line_column.removeprefix('ODDS_')}"
+    )
     if closing_reference is not None:
         findings = audit_closing_line_reconstruction(gated, closing_reference)
         if not findings.empty:

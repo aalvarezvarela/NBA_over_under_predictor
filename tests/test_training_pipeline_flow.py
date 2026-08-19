@@ -40,19 +40,19 @@ def _prepared(n_games: int = 260, games_per_day: int = 4) -> PreparedDataset:
             "GAME_DATE": dates,
             "SEASON_YEAR": 2025,
             "TOTAL_POINTS": (line + rng.normal(0, 12, n_games)).round(1),
-            "TOTAL_LINE_bet365": line,
+            "ODDS_TOTAL_LINE_bet365": line,
             "FEATURE_A": rng.normal(size=n_games),
             "FEATURE_B": rng.normal(size=n_games),
         }
     )
-    df["LINE_ERROR"] = df["TOTAL_POINTS"] - df["TOTAL_LINE_bet365"]
-    features = ["TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]
+    df["LINE_ERROR"] = df["TOTAL_POINTS"] - df["ODDS_TOTAL_LINE_bet365"]
+    features = ["ODDS_TOTAL_LINE_bet365", "FEATURE_A", "FEATURE_B"]
     return PreparedDataset(
         df_full=df,
         X=df[features],
         y=df["TOTAL_POINTS"],
-        baseline_line_col="TOTAL_LINE_bet365",
-        target_line_col="TOTAL_LINE_bet365",
+        baseline_line_col="ODDS_TOTAL_LINE_bet365",
+        target_line_col="ODDS_TOTAL_LINE_bet365",
         feature_names=features,
         dataset_checksum="sha256:test",
     )
@@ -62,7 +62,7 @@ def _config(tmp_path, **overrides) -> ExperimentConfig:
     kwargs = {
         "experiment_name": "flow",
         "target_family": TargetFamily.TOTAL_POINTS,
-        "line_col": "TOTAL_LINE_bet365",
+        "line_col": "ODDS_TOTAL_LINE_bet365",
         "data": DataConfig(csv_path="x.csv"),
         "cleaning": CleaningConfig(verbose=0),
         "holdout": HoldoutConfig(test_size=None, test_games=20),

@@ -9,6 +9,10 @@ This module provides functions to:
 
 import numpy as np
 import pandas as pd
+from nba_ou.data_processing.odds.book_combination import (
+    combine_caesars_and_fanatics,
+    resolve_combine_books,
+)
 from nba_ou.data_processing.odds.normalize_total_lines import (
     normalize_total_lines_inplace,
 )
@@ -237,6 +241,8 @@ def load_and_merge_odds_yahoo_sportsbookreview(
     season_years: list[str] | None = None,
     extra_game_ids=None,
     normalize_total_lines: bool = True,
+    exclude_caesars: bool = False,
+    combine_fanatics_and_caesars: bool | None = None,
 ) -> pd.DataFrame:
     """
     Load odds data from Yahoo and Sportsbook databases, merge them, and merge with games.
@@ -252,6 +258,14 @@ def load_and_merge_odds_yahoo_sportsbookreview(
         season_years (list[str], optional): List of seasons to load (e.g., ["2023-24", "2024-25"])
         normalize_total_lines (bool): Whether to center asymmetrically priced
             total markets. Defaults to True.
+        exclude_caesars (bool): If True, drop all Caesars-named odds columns.
+            Default False.
+        combine_fanatics_and_caesars (bool | None): Coalesce fanatics_sportsbook
+            columns with Caesars (fanatics kept where present, Caesars fills
+            NaNs) and drop the standalone Caesars columns. Defaults to None,
+            which means "combine unless an exclusion was explicitly asked for"
+            -- see resolve_combine_books in
+            nba_ou.data_processing.odds.book_combination.
 
     Returns:
         pd.DataFrame: Complete merged odds dataframe with game_id, all odds columns
@@ -282,6 +296,14 @@ def load_and_merge_odds_yahoo_sportsbookreview(
         df_yahoo,
         df_sportsbook,
         normalize_total_lines=normalize_total_lines,
+    )
+
+    df_odds_merged = combine_caesars_and_fanatics(
+        df_odds_merged,
+        exclude_caesars=exclude_caesars,
+        combine_with_fanatics=resolve_combine_books(
+            combine=combine_fanatics_and_caesars, exclude_caesars=exclude_caesars
+        ),
     )
 
     print(f"Final merged odds: {len(df_odds_merged)} rows")

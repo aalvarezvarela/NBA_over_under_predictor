@@ -275,7 +275,7 @@ def source_frame(n_games=12, snapshots=SNAPSHOTS):
                     + pd.Timedelta(days=game // 4),
                     "TIME_TO_MATCH_MIN": snapshot,
                     "TOTAL_POINTS": 220.0 + game,
-                    "TOTAL_LINE_bet365": 218.0 + game,
+                    "ODDS_TOTAL_LINE_bet365": 218.0 + game,
                 }
             )
     return pd.DataFrame(rows)
@@ -288,7 +288,7 @@ def prediction_frame(source, positions, *, position_col, date_col):
             position_col: positions,
             date_col: picked["GAME_DATE"].to_numpy(),
             "TOTAL_POINTS": picked["TOTAL_POINTS"].to_numpy(),
-            "target_line": picked["TOTAL_LINE_bet365"].to_numpy(),
+            "target_line": picked["ODDS_TOTAL_LINE_bet365"].to_numpy(),
             "predicted_edge": np.full(len(positions), 3.0),
             "selection_score": np.full(len(positions), 3.0),
         }

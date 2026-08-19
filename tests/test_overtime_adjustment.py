@@ -28,7 +28,7 @@ def test_overtime_keeps_raw_points_and_actual_total():
             "TEAM_ID": ["home", "away"],
             "MIN": [265, 265],
             "PTS": [120, 110],
-            "TOTAL_LINE_bet365": [220.0, 220.0],
+            "ODDS_TOTAL_LINE_bet365": [220.0, 220.0],
         }
     )
 
@@ -38,7 +38,7 @@ def test_overtime_keeps_raw_points_and_actual_total():
     assert result.loc["home", PTS_PER_40_COLUMN] == 120
     assert result.loc["away", PTS_PER_40_COLUMN] == 110
     assert result["TOTAL_POINTS"].eq(230).all()
-    assert result["DIFF_FROM_LINE_bet365"].eq(10.0).all()
+    assert result["DIFF_FROM_ODDS_LINE_bet365"].eq(10.0).all()
 
 
 def test_overtime_normalizes_only_allowlisted_additive_statistics():
@@ -224,15 +224,15 @@ def test_overtime_history_is_prior_only_and_season_frequency_resets():
     assert result.loc["g2", OVERTIME_FREQUENCY_SEASON_YEAR_BEFORE] == 0
 
     assert result.loc["g3", IS_OVERTIME_LAST_GAME_BEFORE] == 1
-    assert result.loc[
-        "g3", OVERTIME_FREQUENCY_LAST_5_GAMES_BEFORE
-    ] == pytest.approx(0.5)
+    assert result.loc["g3", OVERTIME_FREQUENCY_LAST_5_GAMES_BEFORE] == pytest.approx(
+        0.5
+    )
     assert result.loc["g3", OVERTIME_FREQUENCY_SEASON_YEAR_BEFORE] == 0
 
     assert result.loc["g4", IS_OVERTIME_LAST_GAME_BEFORE] == 1
-    assert result.loc[
-        "g4", OVERTIME_FREQUENCY_LAST_5_GAMES_BEFORE
-    ] == pytest.approx(2 / 3)
+    assert result.loc["g4", OVERTIME_FREQUENCY_LAST_5_GAMES_BEFORE] == pytest.approx(
+        2 / 3
+    )
     assert result.loc["g4", OVERTIME_FREQUENCY_SEASON_YEAR_BEFORE] == 1
 
     for game_id in ("g5", "g6"):
@@ -258,9 +258,9 @@ def test_overtime_last_five_uses_only_five_completed_games():
 
     result = add_overtime_history_features(df).set_index("GAME_ID")
 
-    assert result.loc[
-        "g7", OVERTIME_FREQUENCY_LAST_5_GAMES_BEFORE
-    ] == pytest.approx(0.4)
+    assert result.loc["g7", OVERTIME_FREQUENCY_LAST_5_GAMES_BEFORE] == pytest.approx(
+        0.4
+    )
 
 
 def test_overtime_history_does_not_mix_teams():
