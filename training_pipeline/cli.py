@@ -70,9 +70,7 @@ def campaign_scoped_root(config_path: Path, root: Path) -> Path:
     return root / parent.name
 
 
-def load_config(
-    config_path: str | Path, *, use_base: bool = True
-) -> ExperimentConfig:
+def load_config(config_path: str | Path, *, use_base: bool = True) -> ExperimentConfig:
     """Load an experiment definition, layered on the shared defaults.
 
     The experiment file states only what it changes; everything else falls back

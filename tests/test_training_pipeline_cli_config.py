@@ -61,9 +61,9 @@ def test_experiment_inherits_base_from_a_parent_directory(tmp_path):
 
     config = load_config(experiment)
 
-    assert config.optuna.n_trials == 3                     # overridden
+    assert config.optuna.n_trials == 3  # overridden
     assert config.optuna.objective_name == "reg:squarederror"  # inherited
-    assert config.data.season_year_floor == 2021           # inherited
+    assert config.data.season_year_floor == 2021  # inherited
     assert config.experiment_name == "e"
 
 
@@ -101,7 +101,10 @@ def test_load_config_rejects_non_mapping_yaml(tmp_path):
 
 @pytest.mark.parametrize(
     "relative_path",
-    ["archived/total_points/3_seasons.yaml", "archived/line_error/3_seasons_weighted.yaml"],
+    [
+        "archived/total_points/3_seasons.yaml",
+        "archived/line_error/3_seasons_weighted.yaml",
+    ],
 )
 def test_repo_experiment_definitions_are_valid(relative_path):
     config = load_config(REPO_EXPERIMENTS / relative_path)
@@ -116,7 +119,9 @@ def test_repo_experiment_definitions_are_valid(relative_path):
 
 
 def test_repo_line_error_definition_enables_recency_weighting():
-    config = load_config(REPO_EXPERIMENTS / "archived/line_error/3_seasons_weighted.yaml")
+    config = load_config(
+        REPO_EXPERIMENTS / "archived/line_error/3_seasons_weighted.yaml"
+    )
     assert config.target_family == "line_error"
     assert config.line_col is None
     assert config.sample_weight.enabled is True
@@ -170,9 +175,12 @@ CAMPAIGN = REPO_EXPERIMENTS / "archived" / "strategy_window_2026_08"
 @pytest.mark.parametrize(
     "name",
     [
-        "total_points_2500", "total_points_3750",
-        "line_error_2500", "line_error_3750",
-        "classifier_2500", "classifier_3750",
+        "total_points_2500",
+        "total_points_3750",
+        "line_error_2500",
+        "line_error_3750",
+        "classifier_2500",
+        "classifier_3750",
     ],
 )
 def test_campaign_configs_are_valid_and_share_their_controls(name):
@@ -225,8 +233,12 @@ def test_campaign_line_col_matches_each_strategy():
     # These read real archived campaign YAMLs (experiments/archived/), which
     # are frozen historical records against a pre-ODDS_-prefix CSV and are
     # deliberately not rewritten -- see docs/README_Training Data Processing.md.
-    assert load_config(CAMPAIGN / "total_points_2500.yaml").line_col == "TOTAL_LINE_bet365"
-    assert load_config(CAMPAIGN / "classifier_2500.yaml").line_col == "TOTAL_LINE_bet365"
+    assert (
+        load_config(CAMPAIGN / "total_points_2500.yaml").line_col == "TOTAL_LINE_bet365"
+    )
+    assert (
+        load_config(CAMPAIGN / "classifier_2500.yaml").line_col == "TOTAL_LINE_bet365"
+    )
 
 
 def test_campaign_cells_are_pairwise_distinct_studies():
@@ -234,9 +246,12 @@ def test_campaign_cells_are_pairwise_distinct_studies():
     persistent Optuna study and silently pool incomparable trials.
     """
     names = [
-        "total_points_2500", "total_points_3750",
-        "line_error_2500", "line_error_3750",
-        "classifier_2500", "classifier_3750",
+        "total_points_2500",
+        "total_points_3750",
+        "line_error_2500",
+        "line_error_3750",
+        "classifier_2500",
+        "classifier_3750",
     ]
     fingerprints = {load_config(CAMPAIGN / f"{n}.yaml").fingerprint() for n in names}
     assert len(fingerprints) == len(names)
@@ -282,7 +297,9 @@ def test_intermediate_7snapshot_pooled_window_is_scaled_by_seven():
         INTERMEDIATE_CAMPAIGN / "pooled_7snapshot_line_error_no_time_decay.yaml"
     )
 
-    assert Path(config.data.csv_path).name == "intermediate_line_data_20260412_7snap.csv"
+    assert (
+        Path(config.data.csv_path).name == "intermediate_line_data_20260412_7snap.csv"
+    )
     assert config.walk_forward.train_games == 26_250
     assert config.walk_forward.min_train_games == 13_125
     assert config.walk_forward.test_games == 350
@@ -293,8 +310,7 @@ def test_intermediate_7snapshot_pooled_window_is_scaled_by_seven():
 @pytest.mark.parametrize("horizon", [360, 240])
 def test_intermediate_single_snapshot_controls_keep_unscaled_windows(horizon):
     config = load_config(
-        INTERMEDIATE_CAMPAIGN
-        / f"t{horizon}_control_line_error_no_time_decay.yaml"
+        INTERMEDIATE_CAMPAIGN / f"t{horizon}_control_line_error_no_time_decay.yaml"
     )
 
     assert Path(config.data.csv_path).name.endswith(f"_7snap_t{horizon}.csv")
@@ -331,7 +347,9 @@ def test_campaign_config_writes_under_a_folder_named_for_the_campaign(tmp_path):
     other campaign's by timestamp."""
     root = tmp_path / "experiments"
     _write_text(root / "_base.yaml", BASE)
-    cell = _write_text(root / "my_campaign" / "cell_a.yaml", "experiment_name: cell_a\n")
+    cell = _write_text(
+        root / "my_campaign" / "cell_a.yaml", "experiment_name: cell_a\n"
+    )
 
     config = load_config(cell)
 
@@ -365,7 +383,9 @@ def test_artifact_root_stays_out_of_the_fingerprint(tmp_path):
     """Where artifacts are written must not fork an Optuna study."""
     root = tmp_path / "experiments"
     _write_text(root / "_base.yaml", BASE)
-    cell = _write_text(root / "my_campaign" / "cell_a.yaml", "experiment_name: cell_a\n")
+    cell = _write_text(
+        root / "my_campaign" / "cell_a.yaml", "experiment_name: cell_a\n"
+    )
 
     config = load_config(cell)
     moved = config.model_copy(deep=True)
