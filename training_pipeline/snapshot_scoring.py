@@ -61,10 +61,14 @@ import pandas as pd
 
 from training_pipeline.betting import BettingMetrics, evaluate_betting
 from training_pipeline.config import ExperimentConfig
+from training_pipeline.data import SNAPSHOT_COLUMN as _SNAPSHOT_COLUMN
 from training_pipeline.decisions import collect_prices, primary_threshold
 
 #: Column carrying minutes-before-tip in the intermediate-line dataset.
-SNAPSHOT_COLUMN = "TIME_TO_MATCH_MIN"
+#: Re-exported from training_pipeline.data, which is also where cleaning reads
+#: it to report per-horizon row retention -- one spelling, so the scorer and the
+#: cleaner cannot end up grouping by different columns.
+SNAPSHOT_COLUMN = _SNAPSHOT_COLUMN
 
 #: Label for the pooled row. Kept for reference only: its ``n_bets`` counts one
 #: game once per snapshot, so its interval and significance verdict are
@@ -373,9 +377,7 @@ def holdout_snapshot_metrics(
     predictions = walk_forward.predictions
     positions = predictions["row_in_test_final"].to_numpy()
 
-    _verify_alignment(
-        predictions, df_test, positions, date_col=config.data.date_col
-    )
+    _verify_alignment(predictions, df_test, positions, date_col=config.data.date_col)
 
     over_prices, under_prices = collect_prices(df_test, config, positions=positions)
     return score_by_snapshot(
@@ -388,9 +390,11 @@ def holdout_snapshot_metrics(
         decimal_odds_under=under_prices,
         min_edge=primary_threshold(config),
         flat_decimal_odds=config.betting.flat_decimal_odds,
-        game_id=_lookup_by_position(df_test, positions, config.data.game_id_col)
-        if config.data.game_id_col in df_test.columns
-        else None,
+        game_id=(
+            _lookup_by_position(df_test, positions, config.data.game_id_col)
+            if config.data.game_id_col in df_test.columns
+            else None
+        ),
     )
 
 
@@ -427,9 +431,11 @@ def cv_snapshot_metrics(
         decimal_odds_under=under_prices,
         min_edge=primary_threshold(config),
         flat_decimal_odds=config.betting.flat_decimal_odds,
-        game_id=_lookup_by_position(df_dev, positions, config.data.game_id_col)
-        if config.data.game_id_col in df_dev.columns
-        else None,
+        game_id=(
+            _lookup_by_position(df_dev, positions, config.data.game_id_col)
+            if config.data.game_id_col in df_dev.columns
+            else None
+        ),
     )
 
 

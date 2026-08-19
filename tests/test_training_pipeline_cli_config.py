@@ -303,3 +303,72 @@ def test_intermediate_single_snapshot_controls_keep_unscaled_windows(horizon):
     assert config.walk_forward.test_games == 50
     assert config.walk_forward.step_games_between_tests == 60
     assert config.backtest.test_games == 300
+
+
+# ---------------------------------------------------------------------------
+# campaign-scoped artifact root
+# ---------------------------------------------------------------------------
+
+
+def _write_text(path, text):
+    """Distinct from the dict-based _write above; these cases need to control
+    the raw YAML, since whether a key is PRESENT is what is under test."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return path
+
+
+BASE = """
+experiment_root_dir: artifacts/experiments
+prediction_strategy: line_error_regressor
+data:
+  csv_path: data/train_data/x.csv
+"""
+
+
+def test_campaign_config_writes_under_a_folder_named_for_the_campaign(tmp_path):
+    """So one campaign's runs stay together instead of interleaving with every
+    other campaign's by timestamp."""
+    root = tmp_path / "experiments"
+    _write_text(root / "_base.yaml", BASE)
+    cell = _write_text(root / "my_campaign" / "cell_a.yaml", "experiment_name: cell_a\n")
+
+    config = load_config(cell)
+
+    assert config.experiment_root_dir == Path("artifacts/experiments/my_campaign")
+
+
+def test_config_beside_base_is_not_scoped(tmp_path):
+    """A config sitting next to _base.yaml is not part of a campaign."""
+    root = tmp_path / "experiments"
+    _write_text(root / "_base.yaml", BASE)
+    loose = _write_text(root / "loose.yaml", "experiment_name: loose\n")
+
+    assert load_config(loose).experiment_root_dir == Path("artifacts/experiments")
+
+
+def test_an_explicit_root_is_left_alone(tmp_path):
+    """The scoping must be decided from the file's OWN contents: _base.yaml
+    always supplies a value, so after merging, 'inherited the default' and
+    'asked for this path' are indistinguishable."""
+    root = tmp_path / "experiments"
+    _write_text(root / "_base.yaml", BASE)
+    cell = _write_text(
+        root / "my_campaign" / "cell_b.yaml",
+        "experiment_name: cell_b\nexperiment_root_dir: /somewhere/else\n",
+    )
+
+    assert load_config(cell).experiment_root_dir == Path("/somewhere/else")
+
+
+def test_artifact_root_stays_out_of_the_fingerprint(tmp_path):
+    """Where artifacts are written must not fork an Optuna study."""
+    root = tmp_path / "experiments"
+    _write_text(root / "_base.yaml", BASE)
+    cell = _write_text(root / "my_campaign" / "cell_a.yaml", "experiment_name: cell_a\n")
+
+    config = load_config(cell)
+    moved = config.model_copy(deep=True)
+    moved.experiment_root_dir = Path("somewhere/entirely/different")
+
+    assert config.fingerprint() == moved.fingerprint()

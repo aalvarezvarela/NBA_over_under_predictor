@@ -18,6 +18,9 @@ from nba_ou.data_processing.missing_data.clean_df_for_training import (
     clean_dataframe_for_training,
 )
 from nba_ou.data_processing.missing_data.cleaning_report import CleaningReport
+from nba_ou.data_processing.missing_data.column_redundancy import (
+    RepeatedMeasuresRedundancy,
+)
 
 
 @pytest.fixture
@@ -272,3 +275,397 @@ def test_report_serialises_to_json(frame, tmp_path):
     payload = json.loads(path.read_text())
     assert payload["columns_in"] == len(frame.columns)
     assert "column_drops" in payload and "columns_dropped_by_step" in payload
+
+
+# ---------------------------------------------------------------------------
+# per-group row retention
+#
+# Row cleaning is stated as one global threshold, but nothing makes it bite
+# evenly. On the intermediate-line dataset a group is one pre-game snapshot
+# horizon, and the long horizons carry more NaNs -- so the row filters
+# re-weight the snapshot mix, which is the one axis that dataset exists to
+# compare. These cover the record, not a policy: nothing here changes what is
+# dropped.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def grouped_frame(frame) -> pd.DataFrame:
+    """``frame`` given a snapshot grain, with the rows a filter will delete
+    concentrated in one group so retention has to come out uneven.
+
+    The unfit rows are made unfit via TOTAL_POINTS rather than by planting NaNs:
+    the missing-data policy runs before the row-NaN filter and fills these
+    columns, so a planted NaN never reaches it and every group retains 100%.
+    """
+    df = pd.concat([frame.assign(TIME_TO_MATCH_MIN=t) for t in (30, 720)])
+    df = df.reset_index(drop=True)
+    far = df["TIME_TO_MATCH_MIN"] == 720
+    df.loc[far & (df.index % 4 == 1), "TOTAL_POINTS"] = MIN_PLAUSIBLE_TOTAL_POINTS - 10
+    return df
+
+
+def test_group_survival_is_recorded_when_a_group_column_is_named(grouped_frame):
+    _, report = clean_dataframe_for_training(
+        grouped_frame,
+        max_na_per_row=0,
+        row_balance_group_col="TIME_TO_MATCH_MIN",
+        verbose=0,
+        return_report=True,
+    )
+
+    assert report.group_survival["group_col"] == "TIME_TO_MATCH_MIN"
+    retention = {
+        group["group"]: group["retention_pct"]
+        for group in report.group_survival["groups"]
+    }
+    assert retention[30] == 100.0
+    assert retention[720] < 100.0
+    assert report.group_survival["retention_spread_pp"] == pytest.approx(
+        retention[30] - retention[720]
+    )
+
+
+def test_group_survival_counts_reconcile_with_the_returned_frame(grouped_frame):
+    cleaned, report = clean_dataframe_for_training(
+        grouped_frame,
+        max_na_per_row=0,
+        row_balance_group_col="TIME_TO_MATCH_MIN",
+        verbose=0,
+        return_report=True,
+    )
+
+    for group in report.group_survival["groups"]:
+        actual = int((cleaned["TIME_TO_MATCH_MIN"] == group["group"]).sum())
+        assert group["rows_after"] == actual
+    assert sum(g["rows_after"] for g in report.group_survival["groups"]) == len(cleaned)
+
+
+def test_group_survival_is_absent_when_no_group_column_is_named(grouped_frame):
+    _, report = clean_dataframe_for_training(
+        grouped_frame, verbose=0, return_report=True
+    )
+    assert report.group_survival == {}
+
+
+def test_group_survival_is_absent_when_the_column_is_not_in_the_frame(frame):
+    """The closing-line dataset's ordinary case: one call site serves both
+    datasets, so a missing group column is not an error."""
+    _, report = clean_dataframe_for_training(
+        frame,
+        row_balance_group_col="TIME_TO_MATCH_MIN",
+        verbose=0,
+        return_report=True,
+    )
+    assert report.group_survival == {}
+
+
+def test_group_survival_survives_the_group_column_being_dropped(grouped_frame):
+    """The grouping column is an ordinary feature and can be pruned by column
+    cleaning. The record is taken by index for exactly that reason, so it must
+    still be produced -- a report that quietly stopped appearing whenever the
+    column was dropped would be worse than none."""
+    grouped_frame["TIME_TO_MATCH_MIN_COPY"] = grouped_frame["TIME_TO_MATCH_MIN"]
+
+    cleaned, report = clean_dataframe_for_training(
+        grouped_frame,
+        max_na_per_row=0,
+        keep_columns=["TIME_TO_MATCH_MIN_COPY"],
+        row_balance_group_col="TIME_TO_MATCH_MIN",
+        verbose=0,
+        return_report=True,
+    )
+
+    assert "TIME_TO_MATCH_MIN" not in cleaned.columns
+    assert report.why_dropped("TIME_TO_MATCH_MIN") is not None
+    assert {g["group"] for g in report.group_survival["groups"]} == {30, 720}
+
+
+def test_group_survival_is_serialised(grouped_frame, tmp_path):
+    _, report = clean_dataframe_for_training(
+        grouped_frame,
+        max_na_per_row=0,
+        row_balance_group_col="TIME_TO_MATCH_MIN",
+        verbose=0,
+        return_report=True,
+    )
+
+    import json
+
+    payload = json.loads(report.save(tmp_path / "cleaning_report.json").read_text())
+    assert payload["group_survival"]["group_col"] == "TIME_TO_MATCH_MIN"
+    assert len(payload["group_survival"]["groups"]) == 2
+
+
+def test_group_survival_orders_groups_naturally(grouped_frame):
+    """Snapshot horizons must read 30, 720 rather than sorted as text, where a
+    real grid comes out 0, 120, 180, 240, 30, 300 -- the table exists to be read
+    down the horizon axis."""
+    df = pd.concat(
+        [grouped_frame.assign(TIME_TO_MATCH_MIN=t) for t in (0, 30, 120, 720)]
+    ).reset_index(drop=True)
+
+    _, report = clean_dataframe_for_training(
+        df, row_balance_group_col="TIME_TO_MATCH_MIN", verbose=0, return_report=True
+    )
+
+    assert [g["group"] for g in report.group_survival["groups"]] == [0, 30, 120, 720]
+
+
+def test_group_survival_tolerates_unorderable_group_keys():
+    """A grouping column of mixed types must not crash the report; it is a
+    record, and losing the whole run to it would be absurd."""
+    report = CleaningReport()
+    report.record_group_survival(
+        group_col="MIXED", before_counts={1: 10, "a": 10}, after_counts={1: 5, "a": 10}
+    )
+    assert {g["group"] for g in report.group_survival["groups"]} == {1, "a"}
+
+
+# ---------------------------------------------------------------------------
+# repeated-measures redundancy
+#
+# Historical/base features are computed per GAME and copied onto every snapshot
+# of it, so correlating them over the full frame counts each game up to ten
+# times -- the same evidence repeated, not more of it. Snapshot/market columns
+# are the opposite case: they are what the extra rows are for, and are exempt
+# from correlation pruning altogether.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def snapshot_grain_frame() -> pd.DataFrame:
+    """Six games x three snapshots. Historical columns are copied across a
+    game's rows, exactly as the real builder copies them."""
+    rng = np.random.default_rng(11)
+    games = [f"002240000{i}" for i in range(40)]
+    rows = []
+    for game in games:
+        pace = rng.normal(100, 4)
+        level = rng.normal(224, 12)
+        for snapshot in (30, 60, 720):
+            rows.append(
+                {
+                    "GAME_ID": game,
+                    "TIME_TO_MATCH_MIN": snapshot,
+                    "TOTAL_POINTS": float(round(rng.normal(225, 20))),
+                    "ODDS_TOTAL_LINE_bet365": level,
+                    # historical, per game, copied across snapshots
+                    "PACE_BEFORE_TEAM_HOME": pace,
+                    "PACE_COPY_BEFORE_TEAM_HOME": pace,
+                    # snapshot/market: varies across a game's rows
+                    "ODDS_SNAP_TOT_BET365_NORM_LINE": level + rng.normal(0, 0.6),
+                    "ODDS_SNAP_TOT_FANDUEL_NORM_LINE": level + rng.normal(0, 0.6),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def _policy():
+    return RepeatedMeasuresRedundancy(
+        group_col="GAME_ID", snapshot_col="TIME_TO_MATCH_MIN"
+    )
+
+
+def test_snapshot_columns_are_never_correlation_pruned(snapshot_grain_frame):
+    """The two book lines correlate above 0.99 over any view -- they share a
+    level. They must both survive anyway."""
+    both = ["ODDS_SNAP_TOT_BET365_NORM_LINE", "ODDS_SNAP_TOT_FANDUEL_NORM_LINE"]
+    assert snapshot_grain_frame[both].corr().iloc[0, 1] > 0.99  # the trap
+
+    cleaned, report = clean_dataframe_for_training(
+        snapshot_grain_frame,
+        repeated_measures=_policy(),
+        verbose=0,
+        return_report=True,
+    )
+
+    for column in both:
+        assert column in cleaned.columns, report.why_dropped(column)
+
+
+def test_snapshot_columns_still_lose_exact_duplicates(snapshot_grain_frame):
+    """Exempt from correlation, not from duplicate detection."""
+    snapshot_grain_frame["ODDS_SNAP_TOT_COPY_NORM_LINE"] = snapshot_grain_frame[
+        "ODDS_SNAP_TOT_BET365_NORM_LINE"
+    ]
+
+    cleaned, report = clean_dataframe_for_training(
+        snapshot_grain_frame,
+        repeated_measures=_policy(),
+        verbose=0,
+        return_report=True,
+    )
+
+    survivors = [
+        c
+        for c in ("ODDS_SNAP_TOT_BET365_NORM_LINE", "ODDS_SNAP_TOT_COPY_NORM_LINE")
+        if c in cleaned.columns
+    ]
+    assert len(survivors) == 1
+    gone = report.why_dropped("ODDS_SNAP_TOT_COPY_NORM_LINE") or report.why_dropped(
+        "ODDS_SNAP_TOT_BET365_NORM_LINE"
+    )
+    assert gone["step"] == "duplicate_columns"
+
+
+def test_historical_columns_are_still_correlation_pruned(snapshot_grain_frame):
+    """The other half of the policy: a redundant historical feature must still
+    go, judged on the one-row-per-game view."""
+    cleaned, report = clean_dataframe_for_training(
+        snapshot_grain_frame,
+        repeated_measures=_policy(),
+        verbose=0,
+        return_report=True,
+    )
+
+    survivors = [
+        c
+        for c in ("PACE_BEFORE_TEAM_HOME", "PACE_COPY_BEFORE_TEAM_HOME")
+        if c in cleaned.columns
+    ]
+    assert len(survivors) == 1
+
+
+def test_correlation_drops_name_the_one_row_per_group_step(snapshot_grain_frame):
+    """The report must distinguish an exact duplicate from a correlation drop
+    taken on the one-row-per-game view."""
+    rng = np.random.default_rng(5)
+    base = snapshot_grain_frame["PACE_BEFORE_TEAM_HOME"]
+    snapshot_grain_frame["PACE_NEAR_BEFORE_TEAM_HOME"] = base + rng.normal(
+        0, 0.01, len(base)
+    )
+
+    _, report = clean_dataframe_for_training(
+        snapshot_grain_frame,
+        repeated_measures=_policy(),
+        verbose=0,
+        return_report=True,
+    )
+
+    steps = report.columns_by_step()
+    assert "correlated_columns_one_row_per_group" in steps
+    assert "correlated_columns" not in steps
+
+
+def test_repeated_rows_do_not_change_which_historical_columns_survive():
+    """THE point of the policy. The same games, judged once each, must give the
+    same verdict whether or not each game is repeated across snapshots."""
+    rng = np.random.default_rng(19)
+    n = 60
+    one_row_per_game = pd.DataFrame(
+        {
+            "GAME_ID": [f"002240000{i:02d}" for i in range(n)],
+            "TOTAL_POINTS": rng.normal(225, 20, n).round(),
+            "ODDS_TOTAL_LINE_bet365": rng.normal(224, 15, n).round(),
+            "PACE_BEFORE_TEAM_HOME": rng.normal(100, 4, n),
+            "OFF_RATING_BEFORE_TEAM_HOME": rng.normal(112, 5, n),
+            "DEF_RATING_BEFORE_TEAM_HOME": rng.normal(112, 5, n),
+        }
+    )
+    repeated = pd.concat(
+        [one_row_per_game.assign(TIME_TO_MATCH_MIN=t) for t in (30, 60, 720)]
+    ).reset_index(drop=True)
+
+    flat = clean_dataframe_for_training(one_row_per_game, verbose=0)
+    grained = clean_dataframe_for_training(
+        repeated, repeated_measures=_policy(), verbose=0
+    )
+
+    def historical(df):
+        return sorted(c for c in df.columns if c.endswith("_BEFORE_TEAM_HOME"))
+
+    assert historical(flat) == historical(grained)
+
+
+def test_redundancy_view_is_recorded_and_serialised(snapshot_grain_frame, tmp_path):
+    _, report = clean_dataframe_for_training(
+        snapshot_grain_frame,
+        repeated_measures=_policy(),
+        verbose=0,
+        return_report=True,
+    )
+
+    view = report.redundancy_view
+    assert view["group_col"] == "GAME_ID"
+    assert view["rows_in_view"] == snapshot_grain_frame["GAME_ID"].nunique()
+    assert view["rows_total"] == len(snapshot_grain_frame)
+    assert view["snapshots_used"] == {"60": snapshot_grain_frame["GAME_ID"].nunique()}
+    assert any(c.startswith("ODDS_SNAP_") for c in view["exempt_columns"])
+
+    import json
+
+    payload = json.loads(report.save(tmp_path / "r.json").read_text())
+    assert payload["redundancy_view"]["group_col"] == "GAME_ID"
+
+
+def test_policy_without_its_group_column_raises(frame):
+    """Silence here would mean quietly falling back to correlating over every
+    row -- the behaviour the policy exists to prevent."""
+    with pytest.raises(KeyError, match="MISSING_ID"):
+        clean_dataframe_for_training(
+            frame,
+            repeated_measures=RepeatedMeasuresRedundancy(group_col="MISSING_ID"),
+            verbose=0,
+        )
+
+
+def test_no_policy_leaves_cleaning_unchanged(snapshot_grain_frame):
+    """One row per game is the normal case and must be untouched by any of
+    this: without a policy, every row and every column is correlated as before."""
+    _, report = clean_dataframe_for_training(
+        snapshot_grain_frame, verbose=0, return_report=True
+    )
+    assert report.redundancy_view == {}
+    assert "correlated_columns_one_row_per_group" not in report.columns_by_step()
+
+
+def test_unequal_repetition_does_not_decide_a_historical_column(capsys):
+    """The test that pins the whole policy, and it needs UNEQUAL repetition.
+
+    Repeating every game the same number of times leaves a correlation
+    coefficient unchanged, so an equally-repeated fixture cannot tell the two
+    views apart -- an earlier version of these tests could not, and a mutant
+    that correlated over every row passed all of them. Real data is not equal:
+    measured on intermediate_line_data_10snap.csv, games carry between 6 and 10
+    rows, because a horizon exists only where a tick reaches it.
+
+    Here 16 games get 10 rows each and 44 get 2. Those 16 are games where the
+    two historical columns happen to agree closely. Judged once per game they
+    correlate 0.847 and both belong; judged over every row the over-represented
+    16 pull it to 0.962 and one is discarded -- on nothing but how many
+    snapshots those games happened to have.
+    """
+    rng = np.random.default_rng(191)
+    heavy, light = 16, 44
+    a_heavy = rng.normal(0, 4.0, heavy)
+    b_heavy = a_heavy + rng.normal(0, 0.05, heavy)
+    a_light = rng.normal(0, 1, light)
+    b_light = a_light + rng.normal(0, 1.6, light)
+    a = np.r_[a_heavy, a_light]
+    b = np.r_[b_heavy, b_light]
+    repeats = np.r_[np.full(heavy, 10), np.full(light, 2)]
+
+    per_game = pd.DataFrame(
+        {
+            "GAME_ID": [f"002240000{i:02d}" for i in range(heavy + light)],
+            "TOTAL_POINTS": rng.normal(225, 20, heavy + light).round(),
+            "ODDS_TOTAL_LINE_bet365": rng.normal(224, 15, heavy + light).round(),
+            "PACE_BEFORE_TEAM_HOME": a,
+            "OFF_RATING_BEFORE_TEAM_HOME": b,
+        }
+    )
+    rows = per_game.loc[per_game.index.repeat(repeats)].copy()
+    rows["TIME_TO_MATCH_MIN"] = np.concatenate(
+        [[30, 60, 120, 180, 240, 300, 360, 480, 720, 0][:r] for r in repeats]
+    )
+    rows = rows.reset_index(drop=True)
+
+    pair = ["PACE_BEFORE_TEAM_HOME", "OFF_RATING_BEFORE_TEAM_HOME"]
+    assert per_game[pair].corr().iloc[0, 1] < 0.95 < rows[pair].corr().iloc[0, 1]
+
+    cleaned = clean_dataframe_for_training(
+        rows, corr_threshold=0.95, repeated_measures=_policy(), verbose=0
+    )
+
+    assert all(column in cleaned.columns for column in pair)

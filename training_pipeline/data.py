@@ -19,6 +19,9 @@ from nba_ou.data_processing.missing_data.clean_df_for_training import (
     clean_dataframe_for_training,
 )
 from nba_ou.data_processing.missing_data.cleaning_report import CleaningReport
+from nba_ou.data_processing.missing_data.column_redundancy import (
+    RepeatedMeasuresRedundancy,
+)
 
 # Reused, not duplicated: this is documented as the one canonical implementation
 # of LINE_ERROR = TOTAL_POINTS - ODDS_TOTAL_LINE_<book> in the repo. The leading
@@ -33,6 +36,7 @@ from training_pipeline.config import (
     OVER_LABEL_COL,
     BaselineConfig,
     CleaningConfig,
+    DatasetType,
     ExperimentConfig,
     PredictionStrategy,
 )
@@ -53,6 +57,15 @@ from training_pipeline.diagnostics import (
 # CSV snapshots cannot be assumed trustworthy for this column, it is only used
 # as the baseline when a caller explicitly opts in via BaselineConfig.line_col.
 BOOKMAKER_MEDIAN_LINE_COL = "ODDS_total_line_books_median"
+
+#: Minutes before tip-off, present only on the intermediate-line dataset, where
+#: it makes the grain one row per (game, snapshot) rather than one per game.
+#:
+#: Defined here rather than in snapshot_scoring because cleaning needs it too
+#: and snapshot_scoring pulls in xgboost by way of decisions. Cleaning uses it
+#: only to report row retention per horizon; its absence is the ordinary case
+#: for the closing-line dataset and is not an error.
+SNAPSHOT_COLUMN = "TIME_TO_MATCH_MIN"
 
 
 def compute_file_checksum(path: str | Path, *, chunk_size: int = 1 << 20) -> str:
@@ -203,12 +216,73 @@ def _required_keep_columns(
     return sorted(keep)
 
 
+def redundancy_policy_for(
+    dataset_type: DatasetType,
+    *,
+    game_id_col: str = "GAME_ID",
+    snapshot_col: str = SNAPSHOT_COLUMN,
+) -> RepeatedMeasuresRedundancy | None:
+    """How cleaning should judge redundancy for this kind of dataset.
+
+    One branch per DatasetType, and the place a new type declares its grain.
+    None means "one row per unit of interest", which needs no correction: the
+    correlation over every row already IS the correlation over one row each.
+    """
+    if dataset_type is DatasetType.INTERMEDIATE_LINE:
+        return RepeatedMeasuresRedundancy(
+            group_col=game_id_col, snapshot_col=snapshot_col
+        )
+    return None
+
+
+def assert_dataset_type_matches_frame(
+    df: pd.DataFrame,
+    dataset_type: DatasetType,
+    *,
+    game_id_col: str = "GAME_ID",
+    snapshot_col: str = SNAPSHOT_COLUMN,
+) -> None:
+    """Raise when the declared type and the frame in hand contradict each other.
+
+    Only the dangerous direction is an error. Declaring CLOSING_LINE for a frame
+    that is plainly snapshot-grained means every historical feature is about to
+    be correlated over up to ten copies of each game -- the exact silent
+    mis-pruning the declaration exists to prevent, and nothing downstream would
+    notice.
+
+    The opposite direction is deliberately allowed: an INTERMEDIATE_LINE frame
+    holding one row per game is what a single-horizon slice
+    (scripts/create_train_data/slice_intermediate_snapshot.py) looks like, and
+    the policy handles it correctly -- one row per game is simply every row.
+    """
+    if dataset_type is not DatasetType.CLOSING_LINE:
+        return
+    if game_id_col not in df.columns or snapshot_col not in df.columns:
+        return
+    if not df[game_id_col].duplicated().any():
+        return
+    if df[snapshot_col].nunique(dropna=True) < 2:
+        return
+    raise ValueError(
+        f"data.dataset_type is {DatasetType.CLOSING_LINE.value!r}, but this "
+        f"frame holds several rows per {game_id_col} across "
+        f"{df[snapshot_col].nunique()} {snapshot_col} values -- it is the "
+        "intermediate-line shape. Cleaning it as closing-line would correlate "
+        "every historical feature over repeated copies of each game and prune "
+        f"on that. Set data.dataset_type to "
+        f"{DatasetType.INTERMEDIATE_LINE.value!r}."
+    )
+
+
 def clean_for_training(
     df: pd.DataFrame,
     cleaning: CleaningConfig,
     *,
     force_keep_columns: list[str],
+    dataset_type: DatasetType = DatasetType.CLOSING_LINE,
     cleaning_season_col: str = "SEASON_YEAR",
+    row_balance_group_col: str | None = SNAPSHOT_COLUMN,
+    game_id_col: str = "GAME_ID",
 ) -> tuple[pd.DataFrame, CleaningReport]:
     """Wrap clean_dataframe_for_training, guaranteeing force_keep_columns survive.
 
@@ -228,6 +302,26 @@ def clean_for_training(
     present_before = [c for c in force_keep_columns if c in df.columns]
     snapshot = df[present_before].copy()
 
+    # WHICH DATASET IS THIS? Declared by the caller (data.dataset_type), not
+    # guessed from the frame. The declaration decides how redundancy is judged;
+    # the assertion below only refuses the one combination that would silently
+    # prune against the wrong view.
+    #
+    # The other entry points into cleaning -- retraining, and the same-day
+    # prediction path -- call clean_dataframe_for_training directly and pass no
+    # policy at all, so they keep the closing-line behaviour by construction.
+    assert_dataset_type_matches_frame(
+        df,
+        dataset_type,
+        game_id_col=game_id_col,
+        snapshot_col=row_balance_group_col or SNAPSHOT_COLUMN,
+    )
+    repeated_measures = redundancy_policy_for(
+        dataset_type,
+        game_id_col=game_id_col,
+        snapshot_col=row_balance_group_col or SNAPSHOT_COLUMN,
+    )
+
     cleaned, report = clean_dataframe_for_training(
         df,
         return_report=True,
@@ -236,6 +330,8 @@ def clean_for_training(
         corr_threshold_overrides=cleaning.corr_threshold_overrides,
         max_seasonal_nan_spread=cleaning.max_seasonal_nan_spread,
         season_col=cleaning_season_col,
+        repeated_measures=repeated_measures,
+        row_balance_group_col=row_balance_group_col,
         max_na_per_row=cleaning.max_na_per_row,
         create_missing_flags=cleaning.create_missing_flags,
         keep_columns=keep_columns,
@@ -454,7 +550,9 @@ def prepare_dataset(config: ExperimentConfig) -> PreparedDataset:
         df,
         config.cleaning,
         force_keep_columns=force_keep,
+        dataset_type=config.data.dataset_type,
         cleaning_season_col=config.data.season_col,
+        game_id_col=config.data.game_id_col,
     )
 
     if planted.enabled and planted.column not in df.columns:

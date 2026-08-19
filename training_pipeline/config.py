@@ -121,6 +121,34 @@ class CVStrategy(StrEnum):
     ROLLING_ORIGIN = "rolling_origin"
 
 
+class DatasetType(StrEnum):
+    """What a training CSV *is*, which decides how cleaning treats it.
+
+    Declared rather than sniffed from the frame's shape. Shape detection worked
+    for the two datasets that exist today, but it answers "does this look
+    repeated?" when the question is "which dataset is this?" -- and the two come
+    apart at exactly the awkward moments: a closing-line CSV that picked up a
+    duplicated row, or a single-horizon slice of the intermediate one. A
+    declared type also gives a third dataset somewhere to attach itself.
+
+    ADDING A TYPE: add a member here, give it a branch in
+    ``training_pipeline.data.redundancy_policy_for``, and say in that branch
+    what its grain is. Everything else follows -- the config field, the YAML
+    key, the fingerprint and the validation are all driven off this enum.
+    """
+
+    #: One row per game: the closing-line dataset, and the shape every other
+    #: entry point into cleaning (retraining, same-day prediction) produces.
+    #: Correlation pruning runs over every row and every column.
+    CLOSING_LINE = "closing_line"
+
+    #: One row per (game, pre-game snapshot). Historical/base features are
+    #: computed per game and copied onto each snapshot, so they are judged on
+    #: one row per game; snapshot/market features are exempt from correlation
+    #: pruning entirely. See column_redundancy.RepeatedMeasuresRedundancy.
+    INTERMEDIATE_LINE = "intermediate_line"
+
+
 #: MedianPruner's warmup before this became fold-count aware. Kept as the floor
 #: so no configuration ever becomes *less* patient than the runs already in
 #: artifacts/experiments.
@@ -183,7 +211,7 @@ DEFAULT_ALLOWED_SEASON_TYPES: tuple[str, ...] = (
 #: The season floor every experiment uses unless it says otherwise. Not a round
 #: number picked for tidiness -- it is where the public-betting columns start
 #: being populated, and therefore where rows stop failing cleaning.max_na_per_row.
-#: See DataConfig.extend_history_without_public_betting.
+#: See DataConfig.extend_history_dropping_season_gated_columns.
 DEFAULT_SEASON_YEAR_FLOOR = 2021
 
 #: How far back the data reaches once the public-betting columns are gone.
@@ -244,6 +272,15 @@ EXTENDED_SEASON_NAN_SPREAD = 90.0
 
 class DataConfig(BaseModel):
     csv_path: Path
+
+    #: Which dataset this CSV is, and therefore how cleaning judges redundancy.
+    #: Defaults to the closing-line shape, which is what every dataset except
+    #: the intermediate-line one has. Set it to "intermediate_line" for a
+    #: (game, snapshot) CSV; cleaning raises if the declaration and the frame
+    #: contradict each other, so a forgotten setting fails loudly rather than
+    #: pruning against the wrong view. See DatasetType.
+    dataset_type: DatasetType = DatasetType.CLOSING_LINE
+
     date_col: str = "GAME_DATE"
     season_col: str = "SEASON_YEAR"
     #: Season type is resolved from this column's 3-character prefix rather
@@ -1215,7 +1252,7 @@ class ExperimentConfig(BaseModel):
 
     @model_validator(mode="after")
     def _resolve_extended_history(self) -> ExperimentConfig:
-        """Apply data.extend_history_without_public_betting to both halves.
+        """Apply data.extend_history_dropping_season_gated_columns to both halves.
 
         Resolved here rather than at read time in prepare_dataset, and resolved
         *into the config object*, so that the values which actually ran are what

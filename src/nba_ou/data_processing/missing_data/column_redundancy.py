@@ -46,6 +46,23 @@ from nba_ou.config.odds_columns import get_main_book, strip_odds_prefix
 #: row only when both are NaN there or both hold the same number.
 _NAN_SENTINEL = -9.876543210987654e17
 
+#: Column prefixes that are exempt from correlation pruning under a
+#: :class:`RepeatedMeasuresRedundancy` policy. These are the snapshot/market
+#: features: the whole reason the intermediate-line dataset exists is the small
+#: cross-book differences and line movements among them, and a correlation is
+#: the wrong instrument for deciding that any of them is surplus. Exact
+#: duplicates are still removed, by the hash steps, which do not consult a
+#: threshold.
+SNAPSHOT_FEATURE_PREFIXES: tuple[str, ...] = ("ODDS_SNAP_", "ODDS_LINE_HIST_")
+
+#: Minutes before tip of the snapshot preferred as a game's representative row.
+#: Measured on ``intermediate_line_data_10snap.csv``, t=60 is present for
+#: 6,585 of 6,585 games -- but it is NOT guaranteed: ``build_snapshot_panel``
+#: emits a horizon only where a tick exists at or before it, and t=720 already
+#: misses 149 games. Hence the nearest-horizon fallback in
+#: :func:`representative_row_index` rather than an assumption.
+REPRESENTATIVE_SNAPSHOT_MINUTES = 60.0
+
 #: Canonical post-merge market names, as built by ``total_line_col`` and friends.
 #: Their lowercase counterparts (``total_``, ``ml_``, ...) are the raw shapes the
 #: odds databases deliver, and the two coexist for the same quantity -- measured
@@ -158,14 +175,100 @@ class KeepPreference:
         )
 
     def mentions_main_book(self, column: str) -> bool:
+        """Whether ``column`` is about the book that defines and settles the bet.
+
+        Case-insensitive, and that is load-bearing rather than defensive.
+        ``get_main_book()`` returns ``bet365`` in lower case because that is how
+        the closing-line pipeline spells books, but the intermediate-line
+        dataset pivots them into the column name upper-cased
+        (``ODDS_SNAP_TOT_BET365_NORM_LINE``). Matched case-sensitively this
+        returned False for every snapshot column, so on that dataset the whole
+        tier silently did nothing and the winner of a cross-book tie fell
+        through to NaN count and then to alphabetical order -- which happened to
+        keep bet365, by luck of the spelling rather than by preference.
+        """
         if not self.main_book:
             return False
         return (
-            re.search(rf"(?:^|_){re.escape(self.main_book)}(?:_|$)", column) is not None
+            re.search(
+                rf"(?:^|_){re.escape(self.main_book)}(?:_|$)", column, re.IGNORECASE
+            )
+            is not None
         )
 
     def is_canonical_market_name(self, column: str) -> bool:
         return strip_odds_prefix(column).startswith(_CANONICAL_MARKET_PREFIXES)
+
+
+@dataclass(frozen=True)
+class RepeatedMeasuresRedundancy:
+    """How to judge redundancy when a frame holds several rows per unit.
+
+    The intermediate-line dataset is one row per (game, pre-game snapshot). Its
+    historical and base features are computed per GAME and then copied onto
+    every snapshot of that game, so a frame of 65,666 rows carries only 6,585
+    independent observations of them. Correlating them over the full frame
+    counts each game up to ten times, which is not a measurement of anything --
+    it is the same evidence repeated. This policy says: judge those columns on
+    one row per game, exactly as the closing-line dataset would.
+
+    ``exempt_prefixes`` names the columns this does NOT apply to, which is the
+    other half of the policy. Snapshot/market features genuinely vary across a
+    game's rows -- they are what the extra rows are FOR -- and they are exempt
+    from correlation pruning altogether rather than merely judged differently.
+    The small cross-book differences and line movements between them are the
+    signal this dataset was built to preserve, and a correlation coefficient
+    cannot tell those apart from redundancy: measured on this data, 99.06% of a
+    book's line variance is simply which game it is, so every pair of books
+    reads as near-identical (r 0.9986-0.9995) however differently they move.
+    Exact duplicates among them are still removed, by the hash steps.
+    """
+
+    group_col: str
+    snapshot_col: str | None = None
+    target_snapshot: float = REPRESENTATIVE_SNAPSHOT_MINUTES
+    exempt_prefixes: tuple[str, ...] = SNAPSHOT_FEATURE_PREFIXES
+
+    def is_exempt(self, column: str) -> bool:
+        return column.upper().startswith(
+            tuple(prefix.upper() for prefix in self.exempt_prefixes)
+        )
+
+
+def representative_row_index(
+    group: pd.Series, snapshot: pd.Series | None, *, target: float
+) -> pd.Index:
+    """One row label per group: the snapshot nearest ``target``, deterministically.
+
+    ``target`` is preferred rather than required. It is present for every game
+    on the current build, but the dataset builder does not guarantee it -- a
+    game whose ticks do not reach a horizon simply has no row there -- so a
+    missing t=60 must degrade to the nearest available horizon rather than drop
+    the game from the view. Dropping it would be the damaging failure: that
+    game's historical features would stop counting toward redundancy at all,
+    silently and without error.
+
+    Ties break toward the SMALLER horizon (t=30 over t=120 for a target of 60),
+    then toward the first row label, so the result never depends on row order.
+    Which snapshot is chosen barely matters for correctness -- the columns being
+    judged are constant within a game by construction -- but it must be the same
+    one on every run, or two runs of the same config could prune differently.
+    """
+    frame = pd.DataFrame({"group": group.to_numpy()}, index=group.index)
+    if snapshot is None:
+        frame["distance"] = 0.0
+        frame["horizon"] = 0.0
+    else:
+        horizon = pd.to_numeric(snapshot, errors="coerce")
+        frame["distance"] = (horizon - target).abs()
+        frame["horizon"] = horizon
+    # A NaN horizon must not win a group by sorting first.
+    frame["distance"] = frame["distance"].fillna(np.inf)
+    frame["order"] = np.arange(len(frame))
+    ordered = frame.sort_values(
+        ["group", "distance", "horizon", "order"], kind="stable"
+    )
+    return ordered.groupby("group", sort=False).head(1).index
 
 
 def rank_columns(

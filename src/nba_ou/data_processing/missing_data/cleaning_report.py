@@ -32,6 +32,12 @@ class CleaningReport:
     column_drops: list[dict[str, str]] = field(default_factory=list)
     #: (step, rows_before, rows_after, reason) for every row-removing step.
     row_drops: list[dict[str, Any]] = field(default_factory=list)
+    #: Per-group row retention, when the caller named a grouping column. See
+    #: ``record_group_survival``.
+    group_survival: dict[str, Any] = field(default_factory=dict)
+    #: Which rows and columns the correlation step actually judged, when a
+    #: repeated-measures policy was in force. See ``record_redundancy_view``.
+    redundancy_view: dict[str, Any] = field(default_factory=dict)
     columns_in: int = 0
     columns_out: int = 0
     rows_in: int = 0
@@ -73,6 +79,103 @@ class CleaningReport:
             }
         )
 
+    def record_group_survival(
+        self,
+        *,
+        group_col: str,
+        before_counts: dict[Any, int],
+        after_counts: dict[Any, int],
+    ) -> None:
+        """How evenly the row filters fell across the values of ``group_col``.
+
+        Row cleaning is stated as one global number -- ``max_na_per_row`` drops
+        rows over a NaN budget -- but nothing makes that budget bite evenly. On
+        the intermediate-line dataset, where a group is one pre-game snapshot
+        horizon, it does not: the long horizons carry more NaNs because their
+        look-back windows reach into less tick history, so a threshold set for
+        the dataset as a whole deletes 12.2% of the 12-hours-out rows against
+        8.6% of the 30-minutes-out ones. That silently re-weights the snapshot
+        mix, which is the single axis the dataset exists to compare.
+
+        Recorded rather than enforced. There is no correct retention spread to
+        assert -- some unevenness is inherent to the data -- and failing a build
+        over it would be worse than the imbalance. The point is that it stops
+        being invisible: it lands in ``cleaning_report.json`` on every run,
+        where a comparison across runs can read it.
+        """
+        # Natural order where the keys allow it, so snapshot horizons read
+        # 0, 30, 60, ... rather than the 0, 120, 180, 240, 30 that sorting them
+        # as text gives -- the whole point of the table is reading a trend down
+        # the horizon axis. Falls back to text for mixed or unorderable keys.
+        keys = list(set(before_counts) | set(after_counts))
+        try:
+            keys.sort()
+        except TypeError:
+            keys.sort(key=repr)
+        groups = []
+        for key in keys:
+            before = int(before_counts.get(key, 0))
+            after = int(after_counts.get(key, 0))
+            groups.append(
+                {
+                    "group": key,
+                    "rows_before": before,
+                    "rows_after": after,
+                    "retention_pct": (
+                        round(100.0 * after / before, 2) if before else None
+                    ),
+                }
+            )
+        retentions = [
+            g["retention_pct"] for g in groups if g["retention_pct"] is not None
+        ]
+        self.group_survival = {
+            "group_col": group_col,
+            "groups": groups,
+            "retention_spread_pp": (
+                round(max(retentions) - min(retentions), 2) if retentions else None
+            ),
+        }
+
+    def record_redundancy_view(
+        self,
+        *,
+        group_col: str,
+        snapshot_col: str | None,
+        target_snapshot: float,
+        rows_in_view: int,
+        rows_total: int,
+        exempt_columns: list[str],
+        snapshots_used: dict[Any, int] | None = None,
+    ) -> None:
+        """What the correlation step was actually shown.
+
+        Without this, two very different fates are indistinguishable in the
+        report. A snapshot/market column that survived was never a candidate --
+        it is exempt by policy. A historical column that survived was judged and
+        kept. Recording the view makes "was this column even eligible?"
+        answerable, and ``snapshots_used`` shows how often the preferred
+        horizon was actually available rather than assumed.
+
+        Drops themselves stay distinguishable by step name: exact duplicates
+        under ``duplicate_columns`` / ``absolute_value_match``, correlation
+        under ``correlated_columns_one_row_per_group``.
+        """
+        self.redundancy_view = {
+            "group_col": group_col,
+            "snapshot_col": snapshot_col,
+            "target_snapshot": target_snapshot,
+            "rows_in_view": int(rows_in_view),
+            "rows_total": int(rows_total),
+            "n_exempt_columns": len(exempt_columns),
+            "exempt_columns": sorted(exempt_columns),
+            "snapshots_used": (
+                None
+                if snapshots_used is None
+                else {str(k): int(v) for k, v in sorted(snapshots_used.items())}
+            ),
+        }
+
     def why_dropped(self, column: str) -> dict[str, str] | None:
         """The record for one column, or None if it survived."""
         for entry in self.column_drops:
@@ -96,6 +199,8 @@ class CleaningReport:
             "rows_out": self.rows_out,
             "rows_dropped": self.rows_in - self.rows_out,
             "row_drops": self.row_drops,
+            "group_survival": self.group_survival,
+            "redundancy_view": self.redundancy_view,
             "column_drops": self.column_drops,
         }
 
@@ -115,4 +220,22 @@ class CleaningReport:
         lines.append(f"rows {self.rows_in} -> {self.rows_out}")
         for entry in self.row_drops:
             lines.append(f"    {entry['rows_dropped']:>5} {entry['step']}")
+        if self.redundancy_view:
+            view = self.redundancy_view
+            lines.append(
+                f"correlation judged on one row per {view['group_col']}: "
+                f"{view['rows_in_view']:,} of {view['rows_total']:,} rows, "
+                f"{view['n_exempt_columns']} snapshot columns exempt"
+            )
+        if self.group_survival:
+            spread = self.group_survival.get("retention_spread_pp")
+            lines.append(
+                f"row retention by {self.group_survival['group_col']} "
+                f"(spread {spread}pp)"
+            )
+            for group in self.group_survival["groups"]:
+                lines.append(
+                    f"    {str(group['group']):>8}  {group['rows_before']:>6} -> "
+                    f"{group['rows_after']:>6}  {group['retention_pct']}%"
+                )
         return "\n".join(lines)

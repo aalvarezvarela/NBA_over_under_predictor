@@ -37,6 +37,21 @@ hypothesis: >
   volume gain.
 tags: [line_error, public_betting, drop_columns, extended_history]
 
+# Hardware, not part of the hypothesis -- device is excluded from fingerprint()
+# so it cannot fork an Optuna study. It must still be IDENTICAL on every cell of
+# this campaign: trial timing feeds the pruner, so a cell running on different
+# hardware is not comparable with one that is not.
+#
+# VERIFY CUDA IS REAL ON THE MACHINE YOU RUN THIS ON. XGBoost 2.1.4 does not
+# error when asked for a device it was not compiled for -- it warns
+# "XGBoost is not compiled with CUDA support" and silently runs on CPU, so a run
+# can look GPU-configured and take CPU time:
+#   poetry run python -c "import xgboost, numpy as np; \
+#     xgboost.train({'device':'cuda'}, xgboost.DMatrix(np.random.rand(50,3), \
+#     label=np.random.rand(50)), num_boost_round=2)"
+# Silence means real CUDA. The runner checks this before starting.
+device: cuda
+
 data:
   csv_path: data/train_data/training_data_2_0_20260819.csv
   data_version: "20260819-training-2.0"
@@ -56,7 +71,11 @@ data:
   extend_history_dropping_season_gated_columns: true
 
 walk_forward:
-  train_games_choices: [2500, 3000, 3500, 4000, 5000, 6000]
+  # 4500 added to match cells A and B on every window they can both reach,
+  # and 6500 at the top: measured ceiling here is 7008 games, so 6500 has
+  # margin and 7000 would sit 8 games under it -- too tight to survive a
+  # rebuild of the CSV.
+  train_games_choices: [2500, 3000, 3500, 4000, 4500, 5000, 6000, 6500]
 
 optuna:
   # Two more window choices than cells A and B, so the same per-window trial

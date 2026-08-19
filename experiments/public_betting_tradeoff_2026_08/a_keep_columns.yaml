@@ -90,12 +90,37 @@ hypothesis: >
   The reference both other cells are read against.
 tags: [line_error, public_betting, baseline, keep_columns]
 
+# Hardware, not part of the hypothesis -- device is excluded from fingerprint()
+# so it cannot fork an Optuna study. It must still be IDENTICAL on every cell of
+# this campaign: trial timing feeds the pruner, so a cell running on different
+# hardware is not comparable with one that is not.
+#
+# VERIFY CUDA IS REAL ON THE MACHINE YOU RUN THIS ON. XGBoost 2.1.4 does not
+# error when asked for a device it was not compiled for -- it warns
+# "XGBoost is not compiled with CUDA support" and silently runs on CPU, so a run
+# can look GPU-configured and take CPU time:
+#   poetry run python -c "import xgboost, numpy as np; \
+#     xgboost.train({'device':'cuda'}, xgboost.DMatrix(np.random.rand(50,3), \
+#     label=np.random.rand(50)), num_boost_round=2)"
+# Silence means real CUDA. The runner checks this before starting.
+device: cuda
+
 data:
   csv_path: data/train_data/training_data_2_0_20260819.csv
   data_version: "20260819-training-2.0"
   expected_checksum: "sha256:27a291de0ae78165"
   season_year_floor: 2021
-  extend_history_without_public_betting: false
+  extend_history_dropping_season_gated_columns: false
+
+walk_forward:
+  # Raised from the inherited [2500, 3000, 3500, 4000]. Measured ceiling on this
+  # cell is 4877 games (preflight), so 4500 fits with margin and 5000 would not:
+  # tail(n) reads as "take up to n", so a window past the earliest fold's history
+  # shrinks that fold for some trials and not others, and the window axis ends up
+  # measuring the shortfall. Cells A and B carry the SAME list so the
+  # public-betting contrast stays window-matched; cell C goes higher because
+  # reaching its extra history is the whole point of it.
+  train_games_choices: [2500, 3000, 3500, 4000, 4500]
 
 optuna:
   # Fixed, never a timeout: a timeout makes the trial count a function of the

@@ -11,9 +11,11 @@ from nba_ou.data_processing.missing_data.clean_df_for_training import (
 )
 from nba_ou.data_processing.missing_data.column_redundancy import (
     KeepPreference,
+    RepeatedMeasuresRedundancy,
     find_identical_groups,
     pairwise_complete_corr,
     rank_columns,
+    representative_row_index,
     resolve_column_thresholds,
     select_correlated_columns_to_drop,
 )
@@ -176,6 +178,53 @@ def test_main_book_match_respects_name_boundaries():
     assert preference.mentions_main_book("ODDS_TOTAL_LINE_bet365")
     assert not preference.mentions_main_book("ODDS_TOTAL_LINE_bet365x_TEAM_HOME")
     assert not preference.mentions_main_book("ODDS_TOTAL_LINE_betmgm_TEAM_HOME")
+
+
+def test_main_book_match_is_case_insensitive():
+    """get_main_book() spells books lower case, the intermediate-line dataset
+    pivots them into column names upper case. Matched case-sensitively this tier
+    returned False for every ODDS_SNAP_* column, so on that whole dataset the
+    preference silently did nothing."""
+    preference = KeepPreference.build(main_book="bet365")
+    assert preference.mentions_main_book("ODDS_SNAP_TOT_BET365_NORM_LINE")
+    assert preference.mentions_main_book("ODDS_SNAP_SPR_Bet365_RAW_LINE")
+    # Boundaries still hold under the looser matching -- BETMGM must not match
+    # merely because it starts with BET.
+    assert not preference.mentions_main_book("ODDS_SNAP_TOT_BETMGM_NORM_LINE")
+    assert not preference.mentions_main_book("ODDS_SNAP_TOT_BET365X_NORM_LINE")
+
+
+def test_main_book_beats_other_books_in_snapshot_spelling():
+    """Same regression as test_main_book_beats_other_books, in the spelling the
+    intermediate-line dataset actually uses. Measured there, the five books'
+    snapshot totals lines correlate 0.998-0.9995, so one of them is kept and the
+    rest go; it must be the book that settles the bet.
+
+    The main book here is fanduel, not the configured bet365, and that is what
+    makes the test bite. Every book in that dataset sorts after BET365
+    ('BET3...' < 'BETM...' < 'CONSENSUS' < ...), so with bet365 as the main book
+    the alphabetical fallback keeps it whether this tier fires or not -- a test
+    written that way passes with the tier disabled and proves nothing. Naming a
+    main book that would LOSE the alphabetical tiebreak isolates the tier.
+    """
+    bet365 = "ODDS_SNAP_TOT_BET365_NORM_LINE"
+    fanduel = "ODDS_SNAP_TOT_FANDUEL_NORM_LINE"
+    df = pd.DataFrame({bet365: [1.0, 2.0, 3.0], fanduel: [1.0, 2.0, 3.0]})
+
+    preference = KeepPreference.build(main_book="fanduel")
+    assert rank_columns(df, [bet365, fanduel], preference)[0] == fanduel
+
+
+def test_main_book_loses_to_a_better_populated_column():
+    """The tier order is unchanged: NaN count still outranks the book. Stated as
+    a test because making the match case-insensitive widened how often this tier
+    fires, and it must not have been promoted in the process."""
+    bet365 = "ODDS_SNAP_TOT_BET365_NORM_LINE"
+    fanduel = "ODDS_SNAP_TOT_FANDUEL_NORM_LINE"
+    df = pd.DataFrame({bet365: [1.0, np.nan, 3.0], fanduel: [1.0, 2.0, 3.0]})
+
+    preference = KeepPreference.build(main_book="bet365")
+    assert rank_columns(df, [bet365, fanduel], preference)[0] == fanduel
 
 
 def test_canonical_market_name_beats_raw_shape():
@@ -446,3 +495,88 @@ def test_default_overrides_are_applied_when_argument_omitted(rng):
     )
     assert len(without.columns) == 1
     assert DEFAULT_CORR_THRESHOLD_OVERRIDES == {"ODDS_": 0.99}
+
+
+# ---------------------------------------------------------------------------
+# representative_row_index
+# ---------------------------------------------------------------------------
+
+
+def _rep(group, snapshot, target=60.0):
+    return representative_row_index(
+        pd.Series(group),
+        None if snapshot is None else pd.Series(snapshot),
+        target=target,
+    )
+
+
+def test_representative_picks_the_target_snapshot():
+    index = _rep(["g1", "g1", "g1", "g2", "g2"], [30, 60, 720, 720, 60])
+    assert sorted(index) == [1, 4]
+
+
+def test_representative_returns_exactly_one_row_per_group():
+    group = ["g1"] * 10 + ["g2"] * 6 + ["g3"] * 1
+    snapshot = (
+        [0, 30, 60, 120, 180, 240, 300, 360, 480, 720]
+        + [0, 30, 120, 240, 480, 720]
+        + [720]
+    )
+    index = _rep(group, snapshot)
+    assert len(index) == 3
+
+
+def test_representative_falls_back_to_the_nearest_horizon():
+    """t=60 is present for every game on the current build but the builder does
+    not guarantee it -- build_snapshot_panel emits a horizon only where a tick
+    exists at or before it, and t=720 already misses 149 games. A game without
+    the target must degrade to its nearest horizon, not disappear from the
+    view: losing it would silently stop its historical features counting."""
+    index = _rep(["g1", "g1", "g2", "g2"], [0, 720, 30, 480])
+    assert sorted(index) == [0, 2]  # 0 is nearer 60 than 720; 30 nearer than 480
+
+
+def test_representative_breaks_ties_toward_the_smaller_horizon():
+    index = _rep(["g1", "g1"], [0, 120])  # both exactly 60 away
+    assert list(index) == [0]
+
+
+def test_representative_is_independent_of_row_order():
+    group = ["g1", "g2", "g1", "g2", "g1"]
+    snapshot = [720, 30, 60, 60, 30]
+    forward = set(_rep(group, snapshot))
+    order = [4, 2, 0, 3, 1]
+    backward = representative_row_index(
+        pd.Series([group[i] for i in order]),
+        pd.Series([snapshot[i] for i in order]),
+        target=60.0,
+    )
+    assert {group[i] for i in forward} == {"g1", "g2"}
+    assert len(backward) == 2
+
+    # the same (group, horizon) pairs are chosen either way
+    def chosen(idx, groups, snapshots):
+        return sorted((groups[i], snapshots[i]) for i in idx)
+
+    assert chosen(forward, group, snapshot) == chosen(
+        backward, [group[i] for i in order], [snapshot[i] for i in order]
+    )
+
+
+def test_representative_ignores_nan_horizons_when_a_real_one_exists():
+    index = _rep(["g1", "g1"], [np.nan, 720])
+    assert list(index) == [1]
+
+
+def test_representative_without_a_snapshot_column_still_gives_one_row_each():
+    index = _rep(["g1", "g1", "g2"], None)
+    assert len(index) == 2
+
+
+def test_exempt_prefixes_cover_the_snapshot_blocks():
+    policy = RepeatedMeasuresRedundancy(group_col="GAME_ID")
+    assert policy.is_exempt("ODDS_SNAP_TOT_BET365_NORM_LINE")
+    assert policy.is_exempt("ODDS_LINE_HIST_ANYTHING")
+    assert not policy.is_exempt("ODDS_TOTAL_LINE_bet365_SEASON_BEFORE_AVG_TEAM_HOME")
+    assert not policy.is_exempt("PACE_BEFORE_TEAM_HOME")
+    assert not policy.is_exempt("ODDS_TOT_PRIOR_GAME_MOVE")

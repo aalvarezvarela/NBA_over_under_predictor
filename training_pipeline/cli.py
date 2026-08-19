@@ -51,6 +51,25 @@ def find_base_config(config_path: Path) -> Path | None:
     return None
 
 
+def campaign_scoped_root(config_path: Path, root: Path) -> Path:
+    """Group a campaign's runs under a folder named after the campaign.
+
+    ``experiments/<campaign>/cell.yaml`` writes to
+    ``artifacts/experiments/<campaign>/<run>``, so the artifacts tree mirrors
+    the way the definitions are organised and one campaign's runs stay together
+    instead of interleaving with every other campaign's by timestamp.
+
+    A config sitting directly beside ``_base.yaml`` is not part of a campaign
+    and is left at the root. Nesting is safe for every reader: run discovery
+    finds runs by recursive search for the run marker and resolves them by
+    ``experiment_name``, never by depth (see reporting.discovery).
+    """
+    parent = config_path.resolve().parent
+    if (parent / BASE_CONFIG_FILENAME).exists():
+        return root
+    return root / parent.name
+
+
 def load_config(
     config_path: str | Path, *, use_base: bool = True
 ) -> ExperimentConfig:
@@ -59,17 +78,31 @@ def load_config(
     The experiment file states only what it changes; everything else falls back
     to ``_base.yaml``, and anything absent there falls back to the pydantic
     defaults. Pass ``use_base=False`` to load a file in isolation.
+
+    ``experiment_root_dir`` additionally gets scoped to the campaign folder,
+    unless this file sets it itself. That has to be decided from the file's OWN
+    contents rather than the merged result: _base.yaml always supplies a value,
+    so after merging, "inherited the default" and "asked for this path" look
+    identical.
     """
     config_path = Path(config_path)
     raw = yaml.safe_load(config_path.read_text()) or {}
     if not isinstance(raw, dict):
         raise TypeError(f"{config_path} must contain a YAML mapping.")
 
+    states_own_root = "experiment_root_dir" in raw
+
     if use_base and config_path.name != BASE_CONFIG_FILENAME:
         base_path = find_base_config(config_path)
         if base_path is not None:
             base_raw = yaml.safe_load(base_path.read_text()) or {}
             raw = deep_merge(base_raw, raw)
+
+        if not states_own_root:
+            inherited = raw.get("experiment_root_dir", "artifacts/experiments")
+            raw["experiment_root_dir"] = str(
+                campaign_scoped_root(config_path, Path(inherited))
+            )
 
     return ExperimentConfig.model_validate(raw)
 

@@ -81,6 +81,31 @@
 data:
   csv_path: data/train_data/all_odds_training_data_until_20260318.csv
   data_version: "20260318-all-odds"
+  # WHICH DATASET THIS IS. Decides how cleaning judges redundancy, so it is
+  # declared here rather than guessed from the frame.
+  #
+  #   closing_line        one row per game. Correlation pruning runs over every
+  #                       row and every column -- the behaviour that has always
+  #                       applied, and what retraining and same-day prediction
+  #                       produce too.
+  #   intermediate_line   one row per (game, pre-game snapshot). Historical and
+  #                       base features are computed per game and copied onto
+  #                       each snapshot, so they are judged on ONE ROW PER GAME
+  #                       (the t=60 snapshot where present, else that game's
+  #                       nearest horizon); snapshot/market columns
+  #                       (ODDS_SNAP_*, ODDS_LINE_HIST_*) are exempt from
+  #                       correlation pruning entirely, because small cross-book
+  #                       differences and line movements are what that dataset
+  #                       exists to preserve. Exact duplicates still go, via the
+  #                       byte-hash steps.
+  #
+  # Declaring closing_line for a frame that is plainly snapshot-grained RAISES,
+  # so forgetting to set it fails loudly instead of correlating every historical
+  # feature over ten copies of each game. The reverse is allowed: a
+  # single-horizon slice is one row per game either way.
+  #
+  # This is part of fingerprint(), since it changes the cleaned dataset.
+  dataset_type: closing_line
   # Pin the dataset's sha256 to be told loudly if the CSV is regenerated in
   # place. Get it with:
   #   python -c "from training_pipeline.data import compute_file_checksum as c; \
@@ -102,7 +127,7 @@ data:
   #
   # By 2020 everything is healthy EXCEPT public betting % -- one family, 272
   # columns, single-handedly costing two seasons. To trade it away for those
-  # seasons, set data.extend_history_without_public_betting (below); do not
+  # seasons, set data.extend_history_dropping_season_gated_columns (below); do not
   # just raise max_na_per_row, which admits the rows while leaving the
   # missingness pattern as a season indicator.
   #
@@ -164,7 +189,7 @@ cleaning:
   nan_threshold: 50.0
   max_na_per_row: 80
   # Two thresholds, because the redundancy is not evenly spread. Odds features
-  # are what this problem is about and are held to 0.995; everything else is
+  # are what this problem is about and are held to 0.99; everything else is
   # pruned at 0.95. A pair spanning both is judged at the more tolerant one,
   # which decides almost nothing: on training_data_2_0_20260819.csv only 6 of
   # the 915 pairs above 0.95 are odds/non-odds, the two groups forming
@@ -197,13 +222,64 @@ cleaning:
   corr_threshold: 0.95
   corr_threshold_overrides:
     ODDS_: 0.99
-  # Needed for the CSV currently pinned below, built before fanatics_sportsbook
-  # got merged with Caesars (see create_df_to_predict's/create_intermediate_line_df's
-  # combine_fanatics_and_caesars): in that CSV the book is still 2025-only, so
-  # it's still a season indicator. Once the pinned CSV is regenerated with the
-  # merge on, fanatics_sportsbook is continuous and this exclusion should be
-  # dropped -- keeping it after that would just discard a now-safe book.
-  exclude_cols_containing: ["fanatics_sportsbook"]
+  #
+  # These thresholds mean ONE OBSERVATION PER GAME, and that is arranged for
+  # rather than assumed. The intermediate-line dataset holds one row per (game,
+  # snapshot), so its historical and base features -- computed per game, then
+  # copied onto every snapshot of it -- would otherwise be correlated over ten
+  # copies of the same evidence.
+  #
+  # Cleaning handles that itself, with no setting here, because it is not a
+  # preference: a repeated row is an artefact of the grain, never evidence.
+  # When it sees several rows sharing a GAME_ID it
+  #
+  #   * judges historical/base columns on ONE ROW PER GAME -- the t=60 snapshot
+  #     where present (6,585 of 6,585 games on the current build, though the
+  #     builder does not guarantee it), else that game's nearest horizon;
+  #   * EXEMPTS snapshot/market columns (ODDS_SNAP_*, ODDS_LINE_HIST_*) from
+  #     correlation pruning entirely. Small cross-book differences and line
+  #     movements are what that dataset exists to preserve, and a correlation
+  #     cannot distinguish them from redundancy -- 99.06% of a book's line
+  #     variance is merely which game it is, so every pair of books reads at
+  #     r 0.9986-0.9995 however differently they actually move. Exact duplicates
+  #     among them are still removed, by the byte-hash steps, which consult no
+  #     threshold.
+  #
+  # So the numbers above are the closing-line dataset's numbers, and they keep
+  # meaning the same thing on both. cleaning_report.json records which rows and
+  # columns the correlation step was shown, and separates a drop by exact
+  # duplicate (duplicate_columns / absolute_value_match) from a drop by
+  # correlation (correlated_columns_one_row_per_group).
+  #
+  # No default exclusions.
+  #
+  # This used to carry ["fanatics_sportsbook"], because the book existed only
+  # from 2025 and was therefore a de facto season indicator: a column populated
+  # exactly when SEASON_YEAR == 2025 lets a model recover the season from
+  # availability alone. That is fixed at the source now -- both builders fold
+  # the discontinued Caesars into fanatics_sportsbook by default
+  # (combine_fanatics_and_caesars), giving one continuously-covered book -- so
+  # the exclusion had become a way of discarding a book for a reason that no
+  # longer applied. Measured per-season NaN spread on the CSVs pinned by the
+  # current campaigns, over the seasons a floor actually admits:
+  #
+  #     dataset                    floor   columns   worst spread   median
+  #     training_data_2_0            2021      124          3.4pp     0.0pp
+  #     training_data_2_0            2019      124         32.0pp    22.0pp
+  #
+  # Both are far under the 90pp EXTENDED_SEASON_NAN_SPREAD detector, i.e. the
+  # computed rule agrees the book is continuous. (Spreads do reach 100pp if
+  # seasons 2017-2018 are included, but no configured floor reaches them.)
+  #
+  # Watch the blast radius before adding anything here: matching is SUBSTRING
+  # and CASE-INSENSITIVE, so a pattern written for one dataset hits others. This
+  # one matched 124 columns on the closing-line CSV and 291 -- 11.3% of the
+  # frame, including the whole ODDS_SNAP_TOT_FANATICS_SPORTSBOOK_* block -- on
+  # the intermediate-line one, which inherits this file.
+  #
+  # Campaign cells that genuinely want a book or a feature family gone should
+  # name it in their own config, and repeat anything inherited: a deep merge
+  # REPLACES lists rather than extending them.
   verbose: 1
 
 # --- evaluation split -------------------------------------------------------

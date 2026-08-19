@@ -15,8 +15,10 @@ from nba_ou.config.odds_columns import resolve_main_total_line_col
 from nba_ou.data_processing.missing_data.cleaning_report import CleaningReport
 from nba_ou.data_processing.missing_data.column_redundancy import (
     KeepPreference,
+    RepeatedMeasuresRedundancy,
     find_identical_groups,
     rank_columns,
+    representative_row_index,
     select_correlated_columns_to_drop,
 )
 from nba_ou.data_processing.missing_data.handle_missing_data import (
@@ -271,6 +273,8 @@ def advanced_column_cleaning(
     corr_threshold_overrides: dict[str, float] | None = None,
     max_seasonal_nan_spread: float | None = None,
     season_col: str = "SEASON_YEAR",
+    repeated_measures: RepeatedMeasuresRedundancy | None = None,
+    representative_index: pd.Index | None = None,
     verbose: int = 1,
     report: CleaningReport | None = None,
 ) -> pd.DataFrame:
@@ -313,6 +317,16 @@ def advanced_column_cleaning(
             rate varies by more than this many percentage points -- their
             availability identifies the season. None disables the step. See
             find_season_gated_columns.
+        repeated_measures (RepeatedMeasuresRedundancy | None): Policy for a frame
+            holding several rows per game. Exempts snapshot/market columns from
+            correlation pruning entirely and judges the rest on one row per
+            game. None (the default) leaves correlation pruning to run over
+            every row and every column, which is right for one row per game.
+        representative_index (pd.Index | None): The one-row-per-group labels the
+            policy is applied over. Passed in rather than derived here because
+            the columns identifying a group -- GAME_ID above all -- are dropped
+            by step 2 of this very function, long before the correlation step
+            needs them.
         season_col (str): Column holding the season, for the check above.
         verbose (int): Verbosity level (0=silent, 1=basic, 2=detailed). Default: 1
 
@@ -575,6 +589,29 @@ def advanced_column_cleaning(
             print("   Skipping highly correlated column removal (keep_all_cols=True)")
     else:
         numeric = df.select_dtypes(include=[np.number])
+        step_name = "correlated_columns"
+        view_note = ""
+
+        if repeated_measures is not None:
+            # Snapshot/market columns are exempt outright -- see
+            # RepeatedMeasuresRedundancy. Everything else is judged on one row
+            # per game, so a feature copied onto ten snapshots weighs the same
+            # as it would on the closing-line dataset, which holds one row per
+            # game and is what these thresholds were calibrated against.
+            exempt = [c for c in numeric.columns if repeated_measures.is_exempt(c)]
+            candidates = [c for c in numeric.columns if c not in set(exempt)]
+            numeric = numeric[candidates]
+            if representative_index is not None:
+                numeric = numeric.loc[representative_index]
+            step_name = "correlated_columns_one_row_per_group"
+            view_note = (
+                f" [one row per {repeated_measures.group_col}: "
+                f"{len(numeric)} of {len(df)} rows; "
+                f"{len(exempt)} snapshot columns exempt]"
+            )
+            if verbose >= 2:
+                print(f"  {view_note.strip()}")
+
         if numeric.shape[1] > 1:
             cols_to_remove, decisions = select_correlated_columns_to_drop(
                 numeric,
@@ -605,10 +642,12 @@ def advanced_column_cleaning(
                 if report is not None:
                     report.drop_columns_with_reasons(
                         {
-                            dropped_col: f"|r|={r:.4f} with kept column {kept_col}"
+                            dropped_col: (
+                                f"|r|={r:.4f} with kept column {kept_col}{view_note}"
+                            )
                             for dropped_col, kept_col, r in decisions
                         },
-                        step="correlated_columns",
+                        step=step_name,
                     )
             elif verbose >= 2:
                 print("   No highly correlated columns found")
@@ -668,6 +707,8 @@ def clean_dataframe_for_training(
     corr_threshold_overrides: dict[str, float] | None = None,
     max_seasonal_nan_spread: float | None = None,
     season_col: str = "SEASON_YEAR",
+    repeated_measures: RepeatedMeasuresRedundancy | None = None,
+    row_balance_group_col: str | None = None,
     verbose: int = 1,
     strict_mode: int = -1,
     strict_mode_exclude_cols: list[str] | None = None,
@@ -707,6 +748,20 @@ def clean_dataframe_for_training(
             Use 0 for no NaN columns allowed, -1 or any negative value to disable the check. Default: -1
         strict_mode_exclude_cols (list[str] | None): Columns to exclude from strict mode check.
             Defaults to ['MATCHUP_TEAM_HOME', 'TOTAL_POINTS'] if None.
+        repeated_measures (RepeatedMeasuresRedundancy | None): Policy for a frame
+            holding several rows per game -- currently the intermediate-line
+            dataset, one row per (game, snapshot). Snapshot/market columns are
+            exempt from correlation pruning altogether; every other column is
+            judged on ONE ROW PER GAME, so a historical feature copied onto ten
+            snapshots carries the weight of one observation rather than ten, and
+            is judged exactly as the closing-line dataset would judge it. Exact
+            duplicate and absolute-value-match detection stay global. None (the
+            default) is correct for one row per game. Default: None
+        row_balance_group_col (str | None): Column whose values the row filters
+            should be reported against, e.g. ``TIME_TO_MATCH_MIN`` on the
+            intermediate-line dataset. Purely a record -- see
+            ``CleaningReport.record_group_survival``. Ignored when the column is
+            absent, so one call site serves both datasets. Default: None
         return_report (bool): If True, return ``(df, CleaningReport)`` instead of
             just the frame. The report records which step dropped each column and
             why, so "where did this feature go?" is answerable without re-running.
@@ -720,6 +775,34 @@ def clean_dataframe_for_training(
         print("=" * 80)
 
     report = CleaningReport(columns_in=len(df.columns), rows_in=len(df))
+
+    # Taken by INDEX, not by re-reading the column at the end: the grouping
+    # column is an ordinary feature and can itself be dropped by column
+    # cleaning, and a report that quietly stopped being produced whenever that
+    # happened would be worse than no report.
+    group_before: pd.Series | None = None
+    if row_balance_group_col and row_balance_group_col in df.columns:
+        group_before = df[row_balance_group_col]
+
+    # Same reason, and more pressing: GAME_ID is dropped by the _ID step, which
+    # runs well before the correlation step that needs it. Captured here while
+    # it still exists, and resolved to row labels once basic_cleaning has
+    # finished removing rows.
+    redundancy_group: pd.Series | None = None
+    redundancy_snapshot: pd.Series | None = None
+    if repeated_measures is not None:
+        if repeated_measures.group_col not in df.columns:
+            raise KeyError(
+                f"repeated_measures.group_col {repeated_measures.group_col!r} is "
+                "not in the frame; redundancy cannot be judged one row per "
+                "group without it."
+            )
+        redundancy_group = df[repeated_measures.group_col]
+        if (
+            repeated_measures.snapshot_col
+            and repeated_measures.snapshot_col in df.columns
+        ):
+            redundancy_snapshot = df[repeated_measures.snapshot_col]
 
     # The exclude patterns used to be applied here AND again inside
     # advanced_column_cleaning. Doing it once here and passing None onward keeps
@@ -747,6 +830,45 @@ def clean_dataframe_for_training(
     # Basic cleaning (copies internally, so `df` is never mutated)
     df_cleaned = basic_cleaning(df_cleaned, verbose=verbose, report=report)
 
+    # Resolved after basic_cleaning, so a game whose only representative row was
+    # just deleted falls back to another of its rows rather than vanishing from
+    # the view.
+    representative_index: pd.Index | None = None
+    if repeated_measures is not None and redundancy_group is not None:
+        surviving = df_cleaned.index
+        representative_index = representative_row_index(
+            redundancy_group.loc[surviving],
+            (
+                None
+                if redundancy_snapshot is None
+                else redundancy_snapshot.loc[surviving]
+            ),
+            target=repeated_measures.target_snapshot,
+        )
+        if report is not None:
+            report.record_redundancy_view(
+                group_col=repeated_measures.group_col,
+                snapshot_col=repeated_measures.snapshot_col,
+                target_snapshot=repeated_measures.target_snapshot,
+                rows_in_view=len(representative_index),
+                rows_total=len(df_cleaned),
+                exempt_columns=[
+                    c for c in df_cleaned.columns if repeated_measures.is_exempt(c)
+                ],
+                snapshots_used=(
+                    None
+                    if redundancy_snapshot is None
+                    else redundancy_snapshot.loc[representative_index]
+                    .value_counts()
+                    .to_dict()
+                ),
+            )
+        if verbose >= 1:
+            print(
+                f"\nRedundancy judged on one row per {repeated_measures.group_col}: "
+                f"{len(representative_index):,} of {len(df_cleaned):,} rows"
+            )
+
     # Advanced column cleaning
     df_cleaned = advanced_column_cleaning(
         df_cleaned,
@@ -758,6 +880,8 @@ def clean_dataframe_for_training(
         corr_threshold_overrides=corr_threshold_overrides,
         max_seasonal_nan_spread=max_seasonal_nan_spread,
         season_col=season_col,
+        repeated_measures=repeated_measures,
+        representative_index=representative_index,
         verbose=verbose,
         report=report,
     )
@@ -889,6 +1013,26 @@ def clean_dataframe_for_training(
 
     report.columns_out = len(df_cleaned.columns)
     report.rows_out = len(df_cleaned)
+
+    if group_before is not None:
+        assert row_balance_group_col is not None
+        report.record_group_survival(
+            group_col=row_balance_group_col,
+            before_counts=group_before.value_counts().to_dict(),
+            after_counts=group_before.loc[df_cleaned.index].value_counts().to_dict(),
+        )
+        if verbose >= 1:
+            spread = report.group_survival.get("retention_spread_pp")
+            print(
+                f"\nRow retention across {row_balance_group_col}: "
+                f"{spread}pp between the best- and worst-retained group"
+            )
+            if verbose >= 2:
+                for group in report.group_survival["groups"]:
+                    print(
+                        f"   {group['group']!s:>8}  {group['rows_before']:>6} -> "
+                        f"{group['rows_after']:>6}  ({group['retention_pct']}%)"
+                    )
 
     if verbose >= 1:
         print("=" * 80)
