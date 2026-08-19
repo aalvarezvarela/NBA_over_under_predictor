@@ -12,9 +12,53 @@ This module provides functions to:
 import numpy as np
 import pandas as pd
 from nba_ou.config.odds_columns import resolve_main_total_line_col
+from nba_ou.data_processing.missing_data.cleaning_report import CleaningReport
+from nba_ou.data_processing.missing_data.column_redundancy import (
+    KeepPreference,
+    find_identical_groups,
+    rank_columns,
+    select_correlated_columns_to_drop,
+)
+from nba_ou.data_processing.missing_data.handle_missing_data import (
+    TARGET_COL as TARGET_COLUMN,
+)
 from nba_ou.data_processing.missing_data.handle_missing_data import (
     apply_missing_policy,
 )
+
+#: Correlation thresholds applied to columns whose name CONTAINS the key,
+#: overriding ``corr_threshold`` for those columns only.
+#:
+#: Odds features are the ones this problem is actually about, so near-duplicate
+#: odds columns are worth keeping where near-duplicate everything-else is not.
+#: The old single 0.995 threshold had exactly the opposite effect: of the 104
+#: columns it dropped on ``training_data_2_0_20260819.csv``, 83 were odds-derived
+#: and only 21 were not, because odds features are the most internally redundant
+#: block in the frame (the same line quoted by seven books).
+#:
+#: Matching is by substring, not by prefix, and that is load-bearing here: the
+#: 192 ``DIFF_FROM_ODDS_LINE_*`` columns contain ``ODDS_`` without starting with
+#: it, so they take the tolerant threshold too. That is intended -- they are
+#: rolling averages of total-minus-line, market features by any reading (see the
+#: note on ``DIFF_FROM_`` in nba_ou.config.odds_columns) -- but it is worth
+#: stating, since it is where the odds tolerance actually bites: 50 of the 212
+#: columns dropped at the current settings are DIFF_FROM_ODDS_. To prune them at
+#: the general threshold instead, anchor the pattern list yourself rather than
+#: relying on this default.
+#:
+#: Measured column survival on that dataset, from 1,578 numeric columns:
+#:
+#:     thresholds                 dropped   ODDS_   DIFF_FROM_   other   survive
+#:     0.995 everywhere (old)         104      77            6      21     1,474
+#:     0.95 everywhere                425     209          146      70     1,153
+#:     odds 0.995 / other 0.95        153      77            6      70     1,425
+#:     odds 0.99  / other 0.95        212      92           50      70     1,366  <-
+#:
+#: 0.99 rather than 0.995 for odds: at r in [0.99, 0.995] two columns share
+#: 98-99% of their variance, which is not a distinction worth 59 columns. Note
+#: what moving this number does and does not do -- the "other" count is 70 in
+#: both rows, because only odds-derived columns take this threshold.
+DEFAULT_CORR_THRESHOLD_OVERRIDES: dict[str, float] = {"ODDS_": 0.99}
 
 
 def _get_cols_matching_patterns(
@@ -39,22 +83,109 @@ def _get_cols_matching_patterns(
     }
 
 
-def basic_cleaning(df: pd.DataFrame, verbose: int = 1) -> pd.DataFrame:
+def find_season_gated_columns(
+    df: pd.DataFrame, *, season_col: str, max_spread: float
+) -> dict[str, str]:
+    """Columns whose AVAILABILITY identifies the season.
+
+    Returns ``{column: reason}`` for every column whose per-season NaN rate
+    varies by more than ``max_spread`` percentage points between its best and
+    worst season.
+
+    This is the rule that actually captures "drop the columns that block the
+    old seasons", and it is not the same thing as a NaN threshold. A plain
+    threshold is computed over the whole window, so a column that is 100% NaN
+    for two seasons and 0.8% for five averages to ~19% -- under any threshold
+    worth setting, while still being the thing that gates those two seasons.
+    Measured on training_data_2_0_20260819.csv at a 2019 floor, no value of
+    ``nan_threshold`` separates the two groups: 50 and 40 drop nothing at all,
+    and 15 catches only 200 of 272 offenders while taking 14 innocent columns
+    with it.
+
+    Spread catches it because the shape is a step, not a rate. It is also what
+    the leakage concern actually is: a column present for one season and absent
+    for another lets a model recover the season from availability alone, which
+    is why dropping such columns from the OLD seasons only would be useless --
+    the recent games have to lose them too.
+
+    Measured, same dataset, floor 2019, ``max_spread=90``: 213 columns, being
+    200 public-betting and 13 betmgm price columns (100% absent in 2020, ~0%
+    from 2021). The betmgm ones are invisible to a hand-written list of
+    public-betting substrings, which is the case for computing this rather than
+    naming names.
+    """
+    if season_col not in df.columns:
+        raise KeyError(
+            f"Cannot find season-gated columns: {season_col!r} is not in the "
+            "frame. Set cleaning.max_seasonal_nan_spread to None to skip this "
+            "step, or point cleaning.season_col at the right column."
+        )
+    seasons = df[season_col]
+    if seasons.nunique(dropna=True) < 2:
+        # One season cannot gate anything, and this is the normal case on the
+        # same-day prediction path.
+        return {}
+
+    per_season_nan = df.groupby(season_col).apply(
+        lambda group: group.isna().mean() * 100, include_groups=False
+    )
+    spread = per_season_nan.max() - per_season_nan.min()
+
+    gated = {}
+    for column, value in spread.items():
+        if pd.notna(value) and value > max_spread:
+            worst = per_season_nan[column].idxmax()
+            best = per_season_nan[column].idxmin()
+            gated[str(column)] = (
+                f"availability varies {value:.1f}pp across seasons "
+                f"({per_season_nan.loc[worst, column]:.1f}% NaN in {worst}, "
+                f"{per_season_nan.loc[best, column]:.1f}% in {best})"
+            )
+    return gated
+
+
+#: Total below which a final score is not a basketball game but a broken box
+#: score. The lowest total in the 2.0 build is 152 and the lowest ever recorded
+#: in a modern NBA game is comfortably above this, so anything at or under it is
+#: a data fault rather than a low-scoring night.
+MIN_PLAUSIBLE_TOTAL_POINTS = 130
+
+#: Likewise for the posted line. A book does not hang a total this low.
+MIN_PLAUSIBLE_TOTAL_LINE = 100
+
+
+def basic_cleaning(
+    df: pd.DataFrame,
+    verbose: int = 1,
+    report: CleaningReport | None = None,
+) -> pd.DataFrame:
     """
     Perform basic cleaning and filtering on the training dataframe.
 
     This function:
-    - Filters out games with unusually low total points (< 130)
+    - Filters out games with an implausibly low final total (<= 130)
     - Removes rows with missing main total line (ODDS_TOTAL_LINE_<main_book>)
-    - Filters out games with unrealistic betting lines (< 100)
+    - Filters out games with unrealistic betting lines (<= 100)
+
+    The totals filter is NaN-safe, and that is not incidental: this function is
+    also what nba_ou.prediction.prediction cleans same-day games with, and those
+    have no final score yet. A plain ``df[df[TARGET] > 130]`` would compare
+    against NaN, evaluate False for every scheduled game, and silently return an
+    empty frame -- deleting the daily prediction run rather than failing it.
 
     Args:
         df (pd.DataFrame): Training dataframe to clean
         verbose (int): Verbosity level (0=silent, 1=basic, 2=detailed). Default: 1
+        report (CleaningReport | None): Collects what was removed and why.
 
     Returns:
         pd.DataFrame: Cleaned dataframe
     """
+    # Copy before the dtype casts below: without this they land on the CALLER's
+    # frame, so cleaning the same dataframe twice does not do the same thing
+    # twice.
+    df = df.copy()
+
     for holiday_col in ("IS_US_HOLIDAY_BEFORE", "IS_US_HOLIDAY"):
         if holiday_col in df.columns:
             df[holiday_col] = (
@@ -67,8 +198,24 @@ def basic_cleaning(df: pd.DataFrame, verbose: int = 1) -> pd.DataFrame:
     if verbose >= 1:
         print(f"Starting basic cleaning with {initial_rows} rows")
 
-    if verbose >= 2:
-        print(f"Removed {initial_rows - len(df)} rows with TOTAL_POINTS <= 130")
+    if TARGET_COLUMN in df.columns:
+        rows_before = len(df)
+        totals = pd.to_numeric(df[TARGET_COLUMN], errors="coerce")
+        # Keep unknown totals: a scheduled game has no score yet, and "unknown"
+        # is not "implausible".
+        df = df[~(totals.notna() & (totals <= MIN_PLAUSIBLE_TOTAL_POINTS))]
+        if report is not None:
+            report.record_rows(
+                step="basic_cleaning.implausible_total",
+                before=rows_before,
+                after=len(df),
+                reason=f"{TARGET_COLUMN} <= {MIN_PLAUSIBLE_TOTAL_POINTS}",
+            )
+        if verbose >= 2:
+            print(
+                f"Removed {rows_before - len(df)} rows with "
+                f"{TARGET_COLUMN} <= {MIN_PLAUSIBLE_TOTAL_POINTS}"
+            )
 
     main_total_line = resolve_main_total_line_col(df)
     if main_total_line is None:
@@ -80,15 +227,33 @@ def basic_cleaning(df: pd.DataFrame, verbose: int = 1) -> pd.DataFrame:
         print(f"Number of NaNs in {main_total_line}: {nans}")
 
     # Drop rows with missing odds data
+    rows_before = len(df)
     df = df.dropna(subset=[main_total_line])
+    if report is not None:
+        report.record_rows(
+            step="basic_cleaning.missing_total_line",
+            before=rows_before,
+            after=len(df),
+            reason=f"{main_total_line} is NaN",
+        )
     if verbose >= 2:
         print(f"Removed {nans} rows with NaN in {main_total_line}")
 
     # Filter out unrealistic betting lines
     rows_before = len(df)
-    df = df[df[main_total_line] > 100].copy()
+    df = df[df[main_total_line] > MIN_PLAUSIBLE_TOTAL_LINE].copy()
+    if report is not None:
+        report.record_rows(
+            step="basic_cleaning.implausible_total_line",
+            before=rows_before,
+            after=len(df),
+            reason=f"{main_total_line} <= {MIN_PLAUSIBLE_TOTAL_LINE}",
+        )
     if verbose >= 2:
-        print(f"Removed {rows_before - len(df)} rows with {main_total_line} <= 100")
+        print(
+            f"Removed {rows_before - len(df)} rows with "
+            f"{main_total_line} <= {MIN_PLAUSIBLE_TOTAL_LINE}"
+        )
 
     if verbose >= 1:
         print(f"Basic cleaning complete: {len(df)} rows remaining\n")
@@ -103,7 +268,11 @@ def advanced_column_cleaning(
     keep_columns: list[str] | None = None,
     exclude_cols_containing: list[str] | None = None,
     keep_all_cols: bool = False,
+    corr_threshold_overrides: dict[str, float] | None = None,
+    max_seasonal_nan_spread: float | None = None,
+    season_col: str = "SEASON_YEAR",
     verbose: int = 1,
+    report: CleaningReport | None = None,
 ) -> pd.DataFrame:
     """
     Perform advanced column cleaning on the training dataframe.
@@ -112,10 +281,17 @@ def advanced_column_cleaning(
     - Removes columns containing strings in every value
     - Removes columns with 'ID' in the name
     - Removes columns with high NaN percentage (configurable)
-    - Removes duplicate columns
-    - Removes columns with 99% similarity to another column (unless keep_all_cols=True)
-    - Removes columns that are absolute value matches of another column
+    - Removes duplicate columns and absolute-value matches
+    - Removes columns highly correlated with another column (unless keep_all_cols=True)
     - Removes columns with constant values (unless keep_all_cols=True)
+
+    The last three all resolve *which* member of a redundant set survives via
+    nba_ou.data_processing.missing_data.column_redundancy, by explicit
+    preference (protected > fewer NaNs > main book > canonical name) rather than
+    by column order. ``keep_columns`` is honoured by every step, including these
+    -- it previously protected columns only from the string/ID/NAME/high-NaN/
+    constant steps, so a protected column could still be lost to correlation
+    pruning.
 
     Args:
         df (pd.DataFrame): Training dataframe to clean
@@ -129,11 +305,22 @@ def advanced_column_cleaning(
             the rest of the cleaning logic runs. Matching is case-insensitive. Default: None
         keep_all_cols (bool): If True, only drops ID, NAME, and string columns; keeps all others
             (high-NaN, constant, duplicate, correlated, absolute matches). Default: False
+        corr_threshold_overrides (dict[str, float] | None): Per-substring correlation
+            thresholds overriding ``corr_threshold`` for matching columns; a pair is
+            judged against the more tolerant of its two columns. Pass ``{}`` for a
+            single threshold everywhere. Default: DEFAULT_CORR_THRESHOLD_OVERRIDES
+        max_seasonal_nan_spread (float | None): Drop columns whose per-season NaN
+            rate varies by more than this many percentage points -- their
+            availability identifies the season. None disables the step. See
+            find_season_gated_columns.
+        season_col (str): Column holding the season, for the check above.
         verbose (int): Verbosity level (0=silent, 1=basic, 2=detailed). Default: 1
 
     Returns:
         pd.DataFrame: Dataframe with cleaned columns
     """
+    if corr_threshold_overrides is None:
+        corr_threshold_overrides = DEFAULT_CORR_THRESHOLD_OVERRIDES
     initial_cols = len(df.columns)
     if verbose >= 1:
         print(f"Starting advanced column cleaning with {initial_cols} columns")
@@ -150,6 +337,12 @@ def advanced_column_cleaning(
         if verbose >= 2:
             print(f"\nDropping columns matching exclude patterns: {cols_to_exclude}")
         df = df.drop(columns=cols_to_exclude)
+        if report is not None:
+            report.drop_columns(
+                cols_to_exclude,
+                step="exclude_patterns",
+                reason=f"name matches exclude_cols_containing={exclude_cols_containing}",
+            )
     elif cols_matching_patterns and verbose >= 2:
         print(
             "\nColumns matching exclude patterns were preserved because they are protected: "
@@ -188,6 +381,10 @@ def advanced_column_cleaning(
             for c in string_cols:
                 print(f"      - {c}")
         columns_to_drop.update(string_cols)
+        if report is not None:
+            report.drop_columns(
+                string_cols, step="string_columns", reason="all non-null values are str"
+            )
     elif verbose >= 2:
         print("   No pure string columns to remove")
 
@@ -203,6 +400,10 @@ def advanced_column_cleaning(
         if verbose >= 2:
             print(f"   Removing {len(id_cols)} _ID columns: {id_cols}")
         columns_to_drop.update(id_cols)
+        if report is not None:
+            report.drop_columns(
+                id_cols, step="id_columns", reason="name contains '_ID'"
+            )
     elif verbose >= 2:
         print("   No ID columns to remove")
 
@@ -218,6 +419,10 @@ def advanced_column_cleaning(
         if verbose >= 2:
             print(f"   Removing {len(name_cols)} _NAME columns: {name_cols}")
         columns_to_drop.update(name_cols)
+        if report is not None:
+            report.drop_columns(
+                name_cols, step="name_columns", reason="name contains '_NAME'"
+            )
     elif verbose >= 2:
         print("   No _NAME columns to remove")
 
@@ -225,12 +430,17 @@ def advanced_column_cleaning(
     if verbose >= 2:
         print(f"\n4. Checking for high-NaN columns (>{nan_threshold}%)...")
     high_nan_cols = []
-    for col in df.columns:
-        if col in columns_to_drop or col in keep_columns_set:
-            continue
-        nan_pct = df[col].isna().sum() / len(df) * 100
-        if nan_pct > nan_threshold:
-            high_nan_cols.append((col, nan_pct))
+    # An empty frame has no NaN *proportion* -- 0/0 is not 100%. Guarding here
+    # rather than dividing keeps the step from emitting a RuntimeWarning and
+    # then quietly dropping nothing because every comparison against NaN is
+    # False.
+    if len(df):
+        for col in df.columns:
+            if col in columns_to_drop or col in keep_columns_set:
+                continue
+            nan_pct = df[col].isna().sum() / len(df) * 100
+            if nan_pct > nan_threshold:
+                high_nan_cols.append((col, nan_pct))
 
     if high_nan_cols and not keep_all_cols:
         if verbose >= 2:
@@ -239,13 +449,48 @@ def advanced_column_cleaning(
             )
             for col, pct in high_nan_cols:
                 print(f"      - {col}: {pct:.2f}% NaN")
-        for col, pct in high_nan_cols:
-            columns_to_drop.add(col)
+        columns_to_drop.update(col for col, _ in high_nan_cols)
+        if report is not None:
+            report.drop_columns_with_reasons(
+                {
+                    col: f"{pct:.2f}% NaN, above nan_threshold={nan_threshold}"
+                    for col, pct in high_nan_cols
+                },
+                step="high_nan_columns",
+            )
     elif verbose >= 2:
         if keep_all_cols:
             print("   Skipping high-NaN column removal (keep_all_cols=True)")
         else:
             print("   No high-NaN columns to remove")
+
+    # 4b. Remove columns whose availability identifies the season
+    if max_seasonal_nan_spread is not None and not keep_all_cols:
+        if verbose >= 2:
+            print(
+                f"\n4b. Checking for season-gated columns "
+                f"(NaN rate varying >{max_seasonal_nan_spread}pp across seasons)..."
+            )
+        gated = find_season_gated_columns(
+            df.drop(columns=list(columns_to_drop), errors="ignore"),
+            season_col=season_col,
+            max_spread=max_seasonal_nan_spread,
+        )
+        gated = {
+            col: why
+            for col, why in gated.items()
+            if col not in keep_columns_set and col != season_col
+        }
+        if gated:
+            if verbose >= 2:
+                print(f"   Removing {len(gated)} season-gated columns:")
+                for col, why in list(gated.items())[:20]:
+                    print(f"      - {col}: {why}")
+            columns_to_drop.update(gated)
+            if report is not None:
+                report.drop_columns_with_reasons(gated, step="season_gated_columns")
+        elif verbose >= 2:
+            print("   No season-gated columns to remove")
 
     # 5. Remove columns with constant values (same value in every row)
     if verbose >= 2:
@@ -268,121 +513,107 @@ def advanced_column_cleaning(
                     f"   Removing {len(constant_cols)} constant columns: {constant_cols}"
                 )
             columns_to_drop.update(constant_cols)
+            if report is not None:
+                report.drop_columns(
+                    constant_cols,
+                    step="constant_columns",
+                    reason="single distinct value (NaN counted as a value)",
+                )
         elif verbose >= 2:
             print("   No constant columns to remove")
 
     # Drop the columns identified so far before checking for duplicates
     df = df.drop(columns=list(columns_to_drop))
 
-    # 6. Check for duplicate columns (exact matches)
+    # Steps 6-7 both answer "several columns carry the same information, which
+    # one survives?" and both answer it the same way: rank by preference, keep
+    # the best. See column_redundancy.rank_columns.
+    preference = KeepPreference.build(protected=sorted(keep_columns_set))
+
+    # 6. Exact duplicates and absolute-value matches
     if verbose >= 2:
-        print("\n6. Checking for duplicate columns...")
+        print("\n6. Checking for duplicate and absolute-value-match columns...")
 
     if keep_all_cols:
         if verbose >= 2:
             print("   Skipping duplicate column removal (keep_all_cols=True)")
     else:
-        numeric_cols = [
-            col for col in df.select_dtypes(include=[np.number]).columns.tolist()
-        ]
-        duplicate_pairs = []
-
-        for i, col1 in enumerate(numeric_cols):
-            for col2 in numeric_cols[i + 1 :]:
-                if df[col1].equals(df[col2]):
-                    duplicate_pairs.append((col1, col2))
-
-        if duplicate_pairs:
-            if verbose >= 2:
-                print(f"   Found {len(duplicate_pairs)} duplicate column pairs:")
-            cols_to_remove = set()
-            for col1, col2 in duplicate_pairs:
+        for label, absolute in (("duplicate", False), ("absolute value match", True)):
+            numeric = df.select_dtypes(include=[np.number])
+            groups = find_identical_groups(numeric, absolute=absolute)
+            cols_to_remove = []
+            reasons: dict[str, str] = {}
+            for group in groups:
+                ranked = rank_columns(numeric, group, preference)
+                keeper, losers = ranked[0], ranked[1:]
+                cols_to_remove.extend(losers)
+                marker = "abs" if absolute else ""
+                for loser in losers:
+                    reasons[loser] = f"{marker}({loser}) == {marker}({keeper})"
+                    if verbose >= 2:
+                        print(f"      - {reasons[loser]}")
+            if cols_to_remove:
                 if verbose >= 2:
-                    print(f"      - {col1} == {col2}")
-                # Keep the first one, remove the second
-                cols_to_remove.add(col2)
-            if verbose >= 2:
-                print(f"   Removing {len(cols_to_remove)} duplicate columns")
-            df = df.drop(columns=list(cols_to_remove))
-        elif verbose >= 2:
-            print("   No duplicate columns found")
+                    print(f"   Removing {len(cols_to_remove)} {label} columns")
+                df = df.drop(columns=cols_to_remove)
+                if report is not None:
+                    report.drop_columns_with_reasons(
+                        reasons,
+                        step=(
+                            "absolute_value_match" if absolute else "duplicate_columns"
+                        ),
+                    )
+            elif verbose >= 2:
+                print(f"   No {label} columns found")
 
-    # 7. Check for highly similar columns (99% correlation)
+    # 7. Highly correlated columns
     if verbose >= 2:
-        print("\n7. Checking for highly similar columns (99.5% correlation)...")
+        print("\n7. Checking for highly correlated columns...")
 
     if keep_all_cols:
         if verbose >= 2:
             print("   Skipping highly correlated column removal (keep_all_cols=True)")
     else:
-        numeric_cols = [
-            col for col in df.select_dtypes(include=[np.number]).columns.tolist()
-        ]
-        if len(numeric_cols) > 1:
-            corr_matrix = df[numeric_cols].corr().abs()
-
-            # Get upper triangle of correlation matrix
-            upper = corr_matrix.where(
-                np.triu(np.ones(corr_matrix.shape, dtype=bool), k=1)
+        numeric = df.select_dtypes(include=[np.number])
+        if numeric.shape[1] > 1:
+            cols_to_remove, decisions = select_correlated_columns_to_drop(
+                numeric,
+                default_threshold=corr_threshold,
+                overrides=corr_threshold_overrides,
+                preference=preference,
             )
-            high_corr_mask = upper.gt(corr_threshold)
-
-            # Preserve current behavior: remove earlier columns correlated with later ones.
-            cols_to_remove = upper.index[high_corr_mask.any(axis=1)].tolist()
-
             if cols_to_remove:
                 if verbose >= 2:
-                    high_corr_locs = np.where(high_corr_mask.values)
-                    print(
-                        f"   Found {len(high_corr_locs[0])} highly similar column pairs:"
-                    )
-                    for i, j in zip(*high_corr_locs):
-                        print(
-                            f"      - {upper.columns[j]} ~ {upper.index[i]} "
-                            f"(correlation: {upper.iat[i, j]:.4f})"
+                    thresholds_note = (
+                        f" (default {corr_threshold}"
+                        + (
+                            f", overrides {corr_threshold_overrides}"
+                            if corr_threshold_overrides
+                            else ""
                         )
-                    print(f"   Removing {len(cols_to_remove)} similar columns")
+                        + ")"
+                    )
+                    print(
+                        f"   Found {len(decisions)} redundant columns{thresholds_note}:"
+                    )
+                    for dropped_col, kept_col, r in decisions:
+                        print(
+                            f"      - {dropped_col} ~ {kept_col} (correlation: {r:.4f})"
+                        )
+                    print(f"   Removing {len(cols_to_remove)} correlated columns")
                 df = df.drop(columns=cols_to_remove)
+                if report is not None:
+                    report.drop_columns_with_reasons(
+                        {
+                            dropped_col: f"|r|={r:.4f} with kept column {kept_col}"
+                            for dropped_col, kept_col, r in decisions
+                        },
+                        step="correlated_columns",
+                    )
             elif verbose >= 2:
-                print("   No highly similar columns found")
+                print("   No highly correlated columns found")
         elif verbose >= 2:
-            print("   No highly similar columns found")
-
-    # 8. Check for columns that are absolute value matches
-    if verbose >= 2:
-        print("\n8. Checking for absolute value matches...")
-
-    if keep_all_cols:
-        if verbose >= 2:
-            print("   Skipping absolute value match removal (keep_all_cols=True)")
-    else:
-        numeric_cols = [
-            col for col in df.select_dtypes(include=[np.number]).columns.tolist()
-        ]
-        abs_match_pairs = []
-
-        for i, col1 in enumerate(numeric_cols):
-            for col2 in numeric_cols[i + 1 :]:
-                # Check if one is the absolute value of the other
-                if df[col1].abs().equals(df[col2].abs()):
-                    # Check if they're not already exact duplicates
-                    if not df[col1].equals(df[col2]):
-                        abs_match_pairs.append((col1, col2))
-
-        if abs_match_pairs:
-            if verbose >= 2:
-                print(f"   Found {len(abs_match_pairs)} absolute value match pairs:")
-            cols_to_remove = set()
-            for col1, col2 in abs_match_pairs:
-                if verbose >= 2:
-                    print(f"      - abs({col1}) == abs({col2})")
-                # Keep the first one, remove the second
-                cols_to_remove.add(col2)
-            if verbose >= 2:
-                print(f"   Removing {len(cols_to_remove)} absolute match columns")
-            df = df.drop(columns=list(cols_to_remove))
-        elif verbose >= 2:
-            print("   No absolute value matches found")
+            print("   No highly correlated columns found")
 
     final_cols = len(df.columns)
     if verbose >= 1:
@@ -394,6 +625,37 @@ def advanced_column_cleaning(
     return df
 
 
+def _normalize_nullable_dtypes(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert pandas nullable columns to numpy-backed float, pd.NA to np.nan.
+
+    This replaces a loop that intended to do the same thing by calling
+    ``fillna(np.nan)`` on every numeric column. That was a verified no-op --
+    float64 NaN is already NaN and int64 cannot hold one -- and it could not
+    have worked anyway, because ``select_dtypes(include=[np.number])`` does not
+    match the nullable ``boolean`` dtype, which is the only nullable dtype the
+    pipeline actually creates: ``basic_cleaning`` casts IS_US_HOLIDAY* to it.
+
+    That combination is a live trap rather than a tidiness issue. A nullable
+    boolean holding pd.NA converts via ``to_numpy()`` to dtype ``object``, which
+    XGBoost rejects outright. It has not fired only because the holiday flag
+    currently has no missing values; the first season it does, training breaks
+    at fit time with an error pointing nowhere near here.
+
+    pandas Categorical is deliberately left alone -- XGBoost consumes it
+    natively under ``enable_categorical``, which is what
+    ``categorical_team_encoding`` relies on.
+    """
+    nullable = [
+        column
+        for column in df.columns
+        if isinstance(df[column].dtype, pd.api.extensions.ExtensionDtype)
+        and getattr(df[column].dtype, "kind", "O") in "biufc"
+    ]
+    if not nullable:
+        return df
+    return df.assign(**{column: df[column].astype("float64") for column in nullable})
+
+
 def clean_dataframe_for_training(
     df: pd.DataFrame,
     nan_threshold: float = 5.0,
@@ -403,10 +665,14 @@ def clean_dataframe_for_training(
     keep_columns: list[str] | None = None,
     exclude_cols_containing: list[str] | None = None,
     keep_all_cols: bool = False,
+    corr_threshold_overrides: dict[str, float] | None = None,
+    max_seasonal_nan_spread: float | None = None,
+    season_col: str = "SEASON_YEAR",
     verbose: int = 1,
     strict_mode: int = -1,
     strict_mode_exclude_cols: list[str] | None = None,
-) -> tuple[pd.DataFrame, dict] | pd.DataFrame:
+    return_report: bool = False,
+) -> tuple[pd.DataFrame, CleaningReport] | pd.DataFrame:
     """
     Complete cleaning pipeline for training dataframe.
 
@@ -415,6 +681,12 @@ def clean_dataframe_for_training(
     2. Advanced column cleaning
     3. Missing data policy (drop critical rows, zero-fill, infer, fallback to medians)
     4. Optional row filtering based on remaining NaN counts
+
+    Note on the two row-NaN mechanisms, which overlap and are easy to confuse:
+    ``max_na_per_row`` counts NaNs across ALL columns and is the one in normal
+    use; ``strict_mode`` counts them across all columns except
+    ``strict_mode_exclude_cols`` and is off by default. Setting both applies
+    both, in that order.
 
     Args:
         df (pd.DataFrame): Raw training dataframe
@@ -426,20 +698,33 @@ def clean_dataframe_for_training(
             the rest of the cleaning pipeline runs. Matching is case-insensitive. Default: None
         keep_all_cols (bool): If True, only drops ID, NAME, and string columns; keeps all others.
             Default: False
+        corr_threshold_overrides (dict[str, float] | None): Per-substring correlation
+            thresholds overriding ``corr_threshold`` for matching columns. Defaults to
+            DEFAULT_CORR_THRESHOLD_OVERRIDES, which holds odds features to a more
+            tolerant threshold than everything else. Pass ``{}`` to disable.
         verbose (int): Verbosity level (0=silent, 1=basic, 2=detailed). Default: 1
         strict_mode (int): Maximum number of columns allowed to have NaN values (excluding strict_mode_exclude_cols).
             Use 0 for no NaN columns allowed, -1 or any negative value to disable the check. Default: -1
         strict_mode_exclude_cols (list[str] | None): Columns to exclude from strict mode check.
             Defaults to ['MATCHUP_TEAM_HOME', 'TOTAL_POINTS'] if None.
+        return_report (bool): If True, return ``(df, CleaningReport)`` instead of
+            just the frame. The report records which step dropped each column and
+            why, so "where did this feature go?" is answerable without re-running.
 
     Returns:
-        pd.DataFrame: Cleaned dataframe
+        pd.DataFrame, or (pd.DataFrame, CleaningReport) when return_report=True
     """
     if verbose >= 1:
         print("=" * 80)
         print("STARTING DATAFRAME CLEANING PIPELINE")
         print("=" * 80)
 
+    report = CleaningReport(columns_in=len(df.columns), rows_in=len(df))
+
+    # The exclude patterns used to be applied here AND again inside
+    # advanced_column_cleaning. Doing it once here and passing None onward keeps
+    # a single record of the drop in the report, and saves a second scan of
+    # every column name for a step that could no longer match anything.
     cols_matching_patterns = _get_cols_matching_patterns(df, exclude_cols_containing)
     cols_to_exclude = sorted(
         cols_matching_patterns - (set(keep_columns) if keep_columns else set())
@@ -449,10 +734,18 @@ def clean_dataframe_for_training(
             "Dropping columns matching exclude patterns before cleaning: "
             f"{cols_to_exclude}"
         )
-    df_cleaned = df.drop(columns=cols_to_exclude) if cols_to_exclude else df
+    if cols_to_exclude:
+        df_cleaned = df.drop(columns=cols_to_exclude)
+        report.drop_columns(
+            cols_to_exclude,
+            step="exclude_patterns",
+            reason=f"name matches exclude_cols_containing={exclude_cols_containing}",
+        )
+    else:
+        df_cleaned = df
 
-    # Basic cleaning
-    df_cleaned = basic_cleaning(df_cleaned, verbose=verbose)
+    # Basic cleaning (copies internally, so `df` is never mutated)
+    df_cleaned = basic_cleaning(df_cleaned, verbose=verbose, report=report)
 
     # Advanced column cleaning
     df_cleaned = advanced_column_cleaning(
@@ -460,9 +753,13 @@ def clean_dataframe_for_training(
         nan_threshold=nan_threshold,
         corr_threshold=corr_threshold,
         keep_columns=keep_columns,
-        exclude_cols_containing=exclude_cols_containing,
+        exclude_cols_containing=None,  # already applied above
         keep_all_cols=keep_all_cols,
+        corr_threshold_overrides=corr_threshold_overrides,
+        max_seasonal_nan_spread=max_seasonal_nan_spread,
+        season_col=season_col,
         verbose=verbose,
+        report=report,
     )
 
     # Apply missing data policy
@@ -471,11 +768,18 @@ def clean_dataframe_for_training(
 
     main_total_line = resolve_main_total_line_col(df_cleaned)
 
+    rows_before_policy = len(df_cleaned)
     df_cleaned = apply_missing_policy(
         df_cleaned,
         current_total_line_col=main_total_line,
         create_missing_flags=create_missing_flags,
         keep_all_cols=keep_all_cols,
+    )
+    report.record_rows(
+        step="missing_policy.required_columns",
+        before=rows_before_policy,
+        after=len(df_cleaned),
+        reason="NaN in a column the missing-data policy requires",
     )
     if max_na_per_row >= 0:
         if verbose >= 1:
@@ -489,6 +793,12 @@ def clean_dataframe_for_training(
         na_per_row = df_cleaned.isna().sum(axis=1)
         # Keep rows with NaN count <= threshold
         df_cleaned = df_cleaned[na_per_row <= max_na_per_row]
+        report.record_rows(
+            step="max_na_per_row",
+            before=initial_rows,
+            after=len(df_cleaned),
+            reason=f"more than {max_na_per_row} NaN values in the row",
+        )
 
         if verbose >= 1:
             print(
@@ -555,6 +865,12 @@ def clean_dataframe_for_training(
 
             df_cleaned = df_cleaned[~rows_exceeding_threshold]
             rows_dropped = initial_rows - len(df_cleaned)
+            report.record_rows(
+                step="strict_mode",
+                before=initial_rows,
+                after=len(df_cleaned),
+                reason=f"NaN in more than {strict_mode} columns",
+            )
 
             if verbose >= 1:
                 print(f"Dropped {rows_dropped} rows to meet strict mode requirements")
@@ -569,16 +885,17 @@ def clean_dataframe_for_training(
                     f"\nStrict mode check passed: All rows have ≤{strict_mode} NaN columns{excluded_info}"
                 )
 
+    df_cleaned = _normalize_nullable_dtypes(df_cleaned)
+
+    report.columns_out = len(df_cleaned.columns)
+    report.rows_out = len(df_cleaned)
+
     if verbose >= 1:
         print("=" * 80)
         print("CLEANING COMPLETE")
         print(f"Final shape: {df_cleaned.shape}")
         print("=" * 80)
 
-    # Convert all pd.NA to np.nan for compatibility with models and numeric operations
-    # This ensures consistent NA representation across all data types
-    numeric_cols = df_cleaned.select_dtypes(include=[np.number]).columns
-    for col in numeric_cols:
-        df_cleaned[col] = df_cleaned[col].fillna(np.nan)
-
+    if return_report:
+        return df_cleaned, report
     return df_cleaned

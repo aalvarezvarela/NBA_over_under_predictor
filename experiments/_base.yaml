@@ -86,14 +86,61 @@ data:
   #   python -c "from training_pipeline.data import compute_file_checksum as c; \
   #              print(c('data/train_data/all_odds_training_data_until_20260318.csv'))"
   expected_checksum: "sha256:78404a0cfab28b7b"
+  # 2021 is not a round number picked for tidiness -- it is where the public
+  # betting percentage columns start being populated. Measured on
+  # training_data_2_0_20260819.csv, this floor is currently REDUNDANT: with no
+  # floor at all, cleaning.max_na_per_row=80 already deletes 100% of the rows
+  # from 2017-2020. Setting it explicitly just makes that visible and saves
+  # reading 4,600 doomed rows.
+  #
+  # Per-season mean NaN% by feature family shows why:
+  #
+  #                      2017  2018  2019  2020  2021  2022  2024
+  #   per-book odds      87.0  87.0   9.7   2.9   0.2   0.0   0.0
+  #   consensus opener   84.3  84.3   1.2   0.0   0.0   0.0   0.0
+  #   public betting %   73.5  73.5  73.5  44.9   0.8   0.2   0.0
+  #
+  # By 2020 everything is healthy EXCEPT public betting % -- one family, 272
+  # columns, single-handedly costing two seasons. To trade it away for those
+  # seasons, set data.extend_history_without_public_betting (below); do not
+  # just raise max_na_per_row, which admits the rows while leaving the
+  # missingness pattern as a season indicator.
+  #
+  # 2017-2018 are unreachable either way: they carry almost no odds data and
+  # are dropped by the missing-data policy's required-column rule.
   season_year_floor: 2021
+
+  # THE choice between the two shapes this dataset can take. One switch because
+  # it is one decision: admitting 2019-2020 without dropping the columns that
+  # are absent in them leaves the NaN pattern as a season indicator, and
+  # dropping them without admitting the seasons discards features for nothing.
+  #
+  #   false -> 6,148 rows, 1,362 features   seasons 2021+, every column
+  #   true  -> 8,279 rows, ~1,231 features  seasons 2019+, minus 213
+  #
+  # NOTE this is NOT nan_threshold, and nan_threshold cannot express it. That
+  # one is computed over the whole window, so a column absent for two seasons
+  # and present for five averages to ~19% NaN -- below any useful threshold,
+  # while still being exactly what gates those seasons. Measured at a 2019
+  # floor, nan_threshold 50 and 40 drop nothing at all, and 15 catches only 200
+  # of 272 offenders while taking 14 innocent columns with it. The rule that
+  # works is seasonal SPREAD (below), because the shape is a step, not a rate.
+  #
+  # Off here; the A/B that tests it is in
+  # experiments/public_betting_tradeoff_2026_08/.
+  extend_history_dropping_season_gated_columns: false
+
+  # Season type is NOT set here: regular season + play-in is already the default
+  # (config.DEFAULT_ALLOWED_SEASON_TYPES, data.exclude_playoffs=True), and
+  # restating a default in the file every experiment inherits means changing it
+  # once no longer changes it anywhere. Override per experiment to study
+  # playoffs.
+  #
   # Playoff basketball is a different distribution: in this dataset playoff
-  # games average ~11.6 fewer total points than regular-season games.
-  # Play-in games ARE kept (they are regular-season-like), which is why season
-  # type is resolved from the GAME_ID prefix -- the SEASON_TYPE text column
-  # mislabels play-in games as "Playoffs".
-  exclude_playoffs: true
-  allowed_season_types: ["Regular Season", "Play-In Tournament"]
+  # games average ~11.6 fewer total points than regular-season games. Play-in
+  # games ARE kept (they are regular-season-like), which is why season type is
+  # resolved from the GAME_ID prefix -- the SEASON_TYPE text column mislabels
+  # play-in games as "Playoffs".
 
   # Drop overtime games from the TRAINING rows only. CV validation folds, the
   # holdout and the walk-forward's prediction days always keep them.
@@ -116,6 +163,40 @@ data:
 cleaning:
   nan_threshold: 50.0
   max_na_per_row: 80
+  # Two thresholds, because the redundancy is not evenly spread. Odds features
+  # are what this problem is about and are held to 0.995; everything else is
+  # pruned at 0.95. A pair spanning both is judged at the more tolerant one,
+  # which decides almost nothing: on training_data_2_0_20260819.csv only 6 of
+  # the 915 pairs above 0.95 are odds/non-odds, the two groups forming
+  # near-disjoint correlation clusters.
+  #
+  # Matching is by SUBSTRING, so the 192 DIFF_FROM_ODDS_LINE_* columns take the
+  # tolerant threshold too -- they contain "ODDS_" without starting with it.
+  # Intended (they are rolling averages of total-minus-line, market features by
+  # any reading) but worth knowing: 50 of the 212 columns dropped below are
+  # DIFF_FROM_ODDS_, so this is where the odds threshold actually bites.
+  #
+  # Measured survival on that dataset, from 1,578 numeric columns:
+  #
+  #     thresholds                dropped   ODDS_   DIFF_FROM_   other   survive
+  #     0.995 everywhere (old)        104      77            6      21     1,474
+  #     0.95 everywhere               425     209          146      70     1,153
+  #     odds 0.995 / other 0.95       153      77            6      70     1,425
+  #     odds 0.99  / other 0.95       212      92           50      70     1,366  <-
+  #
+  # Note what the single 0.995 threshold was doing: 83 of its 104 drops were
+  # odds-derived, because the same line quoted by seven books is the most
+  # internally redundant block in the frame. It was pruning hardest exactly
+  # where you least want it to.
+  #
+  # And note which knob does what. The two thresholds partition the columns, so
+  # lowering the odds one changes only odds-derived drops (77 -> 142 across the
+  # last two rows) and leaves "other" at 70 either way. If the goal is to prune
+  # non-odds features harder, corr_threshold is the number to move: 0.90 there
+  # takes "other" from 70 to 142.
+  corr_threshold: 0.95
+  corr_threshold_overrides:
+    ODDS_: 0.99
   # Needed for the CSV currently pinned below, built before fanatics_sportsbook
   # got merged with Caesars (see create_df_to_predict's/create_intermediate_line_df's
   # combine_fanatics_and_caesars): in that CSV the book is still 2025-only, so

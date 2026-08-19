@@ -1,0 +1,58 @@
+# CELL B -- drop the public betting columns, keep the 2021 floor.
+#
+# The single-factor contrast against cell A: identical rows, 195 fewer features.
+# This is the cell that answers "do public betting percentages earn their place?"
+# on its own, with no history change to confound it.
+#
+# Written out longhand rather than via data.extend_history_without_public_betting,
+# because that flag deliberately does BOTH halves -- it is the production switch,
+# and this cell is the half of it that isolates the columns. The flag is excluded
+# from fingerprint() precisely so that a hand-written config and the flag share
+# an Optuna study when they resolve to the same thing; here they do not, since
+# the floor differs.
+#
+# Note the row count is 6,163 rather than cell A's 6,148: dropping the columns
+# also frees 15 rows in seasons 2021 and 2023 that were failing max_na_per_row on
+# public-betting NaNs alone. A 0.2% difference, not a cohort change -- the
+# holdout window is the same 60 days either way. See the campaign header in
+# a_keep_columns.yaml.
+
+experiment_name: pubbet_b_drop_columns
+prediction_strategy: line_error_regressor
+training_version: "2.1-public-betting-tradeoff"
+comparison_group: public_betting_tradeoff_2026_08
+hypothesis: >
+  Dropping the 272 public betting percentage columns, at an unchanged 2021 season
+  floor, does not measurably reduce betting performance -- the market signal they
+  carry is public sentiment rather than a sharp price, and the pipeline already
+  declines to impute them.
+tags: [line_error, public_betting, drop_columns]
+
+data:
+  csv_path: data/train_data/training_data_2_0_20260819.csv
+  data_version: "20260819-training-2.0"
+  expected_checksum: "sha256:27a291de0ae78165"
+  season_year_floor: 2021
+  extend_history_without_public_betting: false
+
+cleaning:
+  # fanatics_sportsbook is repeated from _base.yaml and MUST be. The deep merge
+  # replaces a list rather than appending to it, so naming only the three new
+  # substrings here would silently un-exclude that book and make this cell differ
+  # from cell A in two ways instead of one -- and fanatics_sportsbook is itself a
+  # season indicator (the book only exists from 2025), so the contrast would be
+  # measuring that as much as the public betting columns.
+  #
+  # The last three are what config.PUBLIC_BETTING_SUBSTRINGS holds. Note what is
+  # NOT among them: "consensus" alone would also match
+  # ODDS_TOTAL_LINE_consensus_opener, which is the betting.comparison_line_cols
+  # baseline, and removing it would silently kill the closing-vs-opening
+  # comparison rather than erroring.
+  exclude_cols_containing:
+    ["fanatics_sportsbook", "pct_bets", "pct_money", "consensus_pct"]
+
+optuna:
+  n_trials: 120
+  timeout: null
+
+evaluation_seeds: [101, 202]

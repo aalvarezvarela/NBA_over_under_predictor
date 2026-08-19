@@ -659,6 +659,8 @@ def run_experiment(
         )
         tracking.save_config_snapshot(run_dir, config)
         tracking.save_feature_schema(run_dir, prepared.feature_names)
+        if prepared.cleaning_report is not None:
+            tracking.save_cleaning_report(run_dir, prepared.cleaning_report)
         if study is not None:
             tracking.save_optuna_artifacts(
                 run_dir=run_dir,

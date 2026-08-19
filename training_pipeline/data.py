@@ -18,6 +18,7 @@ from nba_ou.config.odds_columns import resolve_main_total_line_col, total_line_c
 from nba_ou.data_processing.missing_data.clean_df_for_training import (
     clean_dataframe_for_training,
 )
+from nba_ou.data_processing.missing_data.cleaning_report import CleaningReport
 
 # Reused, not duplicated: this is documented as the one canonical implementation
 # of LINE_ERROR = TOTAL_POINTS - ODDS_TOTAL_LINE_<book> in the repo. The leading
@@ -69,9 +70,7 @@ def compute_file_checksum(path: str | Path, *, chunk_size: int = 1 << 20) -> str
     return f"sha256:{digest.hexdigest()[:16]}"
 
 
-def verify_dataset_checksum(
-    path: str | Path, *, expected_checksum: str | None
-) -> str:
+def verify_dataset_checksum(path: str | Path, *, expected_checksum: str | None) -> str:
     """Compute the dataset checksum, asserting it matches when one is pinned."""
     actual = compute_file_checksum(path)
     if expected_checksum and actual != expected_checksum:
@@ -83,7 +82,9 @@ def verify_dataset_checksum(
     return actual
 
 
-def load_raw_training_csv(csv_path: str | Path, *, date_col: str = "GAME_DATE") -> pd.DataFrame:
+def load_raw_training_csv(
+    csv_path: str | Path, *, date_col: str = "GAME_DATE"
+) -> pd.DataFrame:
     """Load a training CSV the same way the example notebooks do: ID-like columns
     forced to str (avoids mixed-type surprises from pandas' dtype inference on
     large sparse columns), GAME_DATE parsed to a plain date string then back to
@@ -207,28 +208,34 @@ def clean_for_training(
     cleaning: CleaningConfig,
     *,
     force_keep_columns: list[str],
-) -> pd.DataFrame:
+    cleaning_season_col: str = "SEASON_YEAR",
+) -> tuple[pd.DataFrame, CleaningReport]:
     """Wrap clean_dataframe_for_training, guaranteeing force_keep_columns survive.
 
-    clean_dataframe_for_training's keep_columns argument only protects columns
-    from the string/ID/NAME/high-NaN/constant-column removal steps -- it does
-    NOT protect against the duplicate-column, correlation-pruning, or
-    absolute-value-match steps (verified by reading
-    nba_ou/data_processing/missing_data/clean_df_for_training.py directly:
-    those steps never check keep_columns_set). Without this safeguard, the
-    baseline line column could be silently dropped for being highly
-    correlated with a per-book line column, breaking baseline comparability
-    without any error. So: snapshot required columns before cleaning, and
-    reattach any that didn't survive, aligned to the cleaned frame's index.
+    keep_columns now ranks first in the redundancy preference order, so a
+    protected column wins its correlation pairs outright rather than being
+    dropped for looking like a per-book line column (see
+    nba_ou.data_processing.missing_data.column_redundancy.rank_columns). That
+    was not always true: the duplicate, correlation and absolute-value-match
+    steps used to ignore keep_columns entirely, which could silently drop the
+    baseline line column and break baseline comparability with no error.
+
+    The snapshot-and-reattach below is kept as a safety net regardless. It costs
+    one column copy, and the failure it guards against is invisible -- a run
+    that completes and reports a baseline computed against the wrong column.
     """
     keep_columns = sorted(set(cleaning.keep_columns or []) | set(force_keep_columns))
     present_before = [c for c in force_keep_columns if c in df.columns]
     snapshot = df[present_before].copy()
 
-    cleaned = clean_dataframe_for_training(
+    cleaned, report = clean_dataframe_for_training(
         df,
+        return_report=True,
         nan_threshold=cleaning.nan_threshold,
         corr_threshold=cleaning.corr_threshold,
+        corr_threshold_overrides=cleaning.corr_threshold_overrides,
+        max_seasonal_nan_spread=cleaning.max_seasonal_nan_spread,
+        season_col=cleaning_season_col,
         max_na_per_row=cleaning.max_na_per_row,
         create_missing_flags=cleaning.create_missing_flags,
         keep_columns=keep_columns,
@@ -243,13 +250,19 @@ def clean_for_training(
     if missing_after:
         reattach = snapshot.loc[cleaned.index, missing_after]
         cleaned = pd.concat([cleaned, reattach], axis=1)
+        # The report is a record of what the frame looks like, so a column put
+        # back has to stop reading as dropped.
+        report.column_drops = [
+            entry
+            for entry in report.column_drops
+            if entry["column"] not in set(missing_after)
+        ]
+        report.columns_out = len(cleaned.columns)
 
-    return cleaned
+    return cleaned, report
 
 
-def training_eligible_mask(
-    df: pd.DataFrame, config: ExperimentConfig
-) -> np.ndarray:
+def training_eligible_mask(df: pd.DataFrame, config: ExperimentConfig) -> np.ndarray:
     """Boolean per row: may this game be used to FIT a model?
 
     Evaluation ignores this entirely. Validation folds, the holdout and the
@@ -329,14 +342,15 @@ def add_over_under_label(
 
     labelled = df.loc[~is_push].copy()
     labelled[OVER_LABEL_COL] = (
-        (pd.to_numeric(labelled["TOTAL_POINTS"], errors="coerce")
-         - pd.to_numeric(labelled[line_col], errors="coerce")) > 0
+        (
+            pd.to_numeric(labelled["TOTAL_POINTS"], errors="coerce")
+            - pd.to_numeric(labelled[line_col], errors="coerce")
+        )
+        > 0
     ).astype(int)
 
     if labelled.empty:
-        raise ValueError(
-            f"No rows left after dropping pushes against {line_col!r}."
-        )
+        raise ValueError(f"No rows left after dropping pushes against {line_col!r}.")
     return labelled, n_pushes
 
 
@@ -372,6 +386,10 @@ class PreparedDataset:
     #: every normal run -- its presence is the marker that this dataset is
     #: deliberately corrupted and cannot be read as evidence about the market.
     planted_signal: PlantedSignalResult | None = None
+    #: Which cleaning step removed each dropped column and row, saved into the
+    #: run directory as cleaning_report.json. Answers "where did this feature
+    #: go?" without re-running the pipeline at verbose=2.
+    cleaning_report: CleaningReport | None = None
 
 
 def prepare_dataset(config: ExperimentConfig) -> PreparedDataset:
@@ -432,7 +450,12 @@ def prepare_dataset(config: ExperimentConfig) -> PreparedDataset:
         df[planted.column] = build_planted_signal(df[target_col], config=planted)
 
     force_keep = _required_keep_columns(config, baseline_line_col, target_line_col)
-    df = clean_for_training(df, config.cleaning, force_keep_columns=force_keep)
+    df, cleaning_report = clean_for_training(
+        df,
+        config.cleaning,
+        force_keep_columns=force_keep,
+        cleaning_season_col=config.data.season_col,
+    )
 
     if planted.enabled and planted.column not in df.columns:
         raise ValueError(
@@ -452,9 +475,7 @@ def prepare_dataset(config: ExperimentConfig) -> PreparedDataset:
     # is required to exist by the dropna below.
     n_pushes_excluded = 0
     if config.strategy == PredictionStrategy.OVER_UNDER_CLASSIFIER:
-        df, n_pushes_excluded = add_over_under_label(
-            df, line_col=target_line_col
-        )
+        df, n_pushes_excluded = add_over_under_label(df, line_col=target_line_col)
 
     dropna_subset = sorted({target_col, target_line_col, baseline_line_col})
     df = df.dropna(subset=dropna_subset).copy()
@@ -462,7 +483,9 @@ def prepare_dataset(config: ExperimentConfig) -> PreparedDataset:
     df[config.data.date_col] = pd.to_datetime(df[config.data.date_col])
     df = df.sort_values(config.data.date_col).reset_index(drop=True)
 
-    X, y = build_feature_matrix(df, target_col=target_col, exclude_cols=config.exclude_cols)
+    X, y = build_feature_matrix(
+        df, target_col=target_col, exclude_cols=config.exclude_cols
+    )
     assert_no_leaking_features(X)
 
     planted_result = None
@@ -490,4 +513,5 @@ def prepare_dataset(config: ExperimentConfig) -> PreparedDataset:
         dataset_checksum=dataset_checksum,
         n_pushes_excluded=n_pushes_excluded,
         planted_signal=planted_result,
+        cleaning_report=cleaning_report,
     )

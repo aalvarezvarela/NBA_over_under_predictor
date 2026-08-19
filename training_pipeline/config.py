@@ -180,6 +180,67 @@ DEFAULT_ALLOWED_SEASON_TYPES: tuple[str, ...] = (
     "Play-In Tournament",
 )
 
+#: The season floor every experiment uses unless it says otherwise. Not a round
+#: number picked for tidiness -- it is where the public-betting columns start
+#: being populated, and therefore where rows stop failing cleaning.max_na_per_row.
+#: See DataConfig.extend_history_without_public_betting.
+DEFAULT_SEASON_YEAR_FLOOR = 2021
+
+#: How far back the data reaches once the public-betting columns are gone.
+#: Measured on training_data_2_0_20260819.csv with max_na_per_row=80: seasons
+#: 2019 and 2020 go from 0 surviving rows to 1,012 and 1,086.
+#:
+#: Not lower, because 2017-2018 are unreachable by any of this -- they carry
+#: almost no odds data at all (per-book odds ~87% NaN, consensus opener ~84%)
+#: and are dropped earlier, by the missing-data policy's required-column rule,
+#: which no row budget can override.
+EXTENDED_SEASON_YEAR_FLOOR = 2019
+
+#: The public betting percentage family: what share of tickets and money is on
+#: each side. Substrings, matched case-insensitively against column names.
+#:
+#: This family is most of why the season floor sits at 2021. It is ~45% NaN in
+#: season 2020 and ~0.8% from 2021, and there are 272 such columns -- enough
+#: missing cells per row on its own to blow past cleaning.max_na_per_row and
+#: delete two entire seasons.
+#:
+#: Kept as a named list because "do public betting percentages earn their place?"
+#: is a question worth asking on its own, at an unchanged season floor. It is NOT
+#: how extend_history_dropping_season_gated_columns works -- that computes the
+#: offenders rather than naming them, and measurably does better (see
+#: EXTENDED_SEASON_NAN_SPREAD).
+#:
+#: "consensus_pct" and not "consensus": ODDS_TOTAL_LINE_consensus_opener is the
+#: opening line, a different thing entirely, and it is the configured
+#: betting.comparison_line_cols baseline. Dropping it would silently remove the
+#: closing-vs-opening comparison.
+PUBLIC_BETTING_SUBSTRINGS: tuple[str, ...] = (
+    "pct_bets",
+    "pct_money",
+    "consensus_pct",
+)
+
+#: Seasonal availability spread, in percentage points, above which a column is
+#: treated as a season indicator and dropped -- from every season, not just the
+#: old ones. Used when extend_history_dropping_season_gated_columns is on.
+#:
+#: 90 means "essentially absent in at least one season and present in another",
+#: which is unambiguous. Measured on training_data_2_0_20260819.csv at a 2019
+#: floor it selects exactly 213 columns -- 200 public-betting and 13 betmgm
+#: price columns -- with no false positives, and beats naming the public-betting
+#: family on BOTH axes:
+#:
+#:     approach                        rows    columns
+#:     named public-betting family    8,262      1,171
+#:     seasonal spread > 90pp         8,279      1,231
+#:     seasonal spread > 50pp         8,283      1,214
+#:
+#: It keeps the 72 public-betting columns whose availability does NOT vary by
+#: season, and catches betmgm price columns (100% absent in 2020, ~0% from 2021)
+#: that a public-betting substring list cannot see. Lower it to ~50 to also
+#: remove partially-gated columns, at a cost of ~17 columns for ~4 rows.
+EXTENDED_SEASON_NAN_SPREAD = 90.0
+
 
 class DataConfig(BaseModel):
     csv_path: Path
@@ -208,6 +269,41 @@ class DataConfig(BaseModel):
     exclude_overtime_from_training: bool = False
     overtime_col: str = "IS_OVERTIME"
     season_year_floor: int | None = None
+    #: Trade season-gated columns for two extra seasons of games.
+    #:
+    #: THE choice between the two shapes this dataset can take:
+    #:
+    #:     False -> 6,148 rows, 1,362 features   seasons 2021+, every column
+    #:     True  -> 8,279 rows, ~1,231 features  seasons 2019+, minus 213
+    #:
+    #: These two effects are one decision, so they are one switch. Admitting
+    #: seasons 2019-2020 *without* dropping the columns would be the worst of
+    #: both: those columns are absent for whole seasons, and with
+    #: cleaning.create_missing_flags off that NaN pattern IS a season indicator
+    #: the model can split on directly. Dropping them without admitting the
+    #: seasons discards features for nothing.
+    #:
+    #: When True:
+    #:   - cleaning.max_seasonal_nan_spread is set to EXTENDED_SEASON_NAN_SPREAD,
+    #:     so any column whose availability identifies the season is dropped from
+    #:     EVERY season -- the recent games lose it too, or the column set itself
+    #:     would say which season a row came from.
+    #:   - season_year_floor drops to EXTENDED_SEASON_YEAR_FLOOR. A floor already
+    #:     set below the standard DEFAULT_SEASON_YEAR_FLOOR is left alone, so
+    #:     `floor: 2020` + this flag gives the COVID season without the bubble.
+    #:
+    #: Note what this is NOT: cleaning.nan_threshold cannot express it. That
+    #: threshold is computed over the whole window, so a column absent for two
+    #: seasons and present for five averages to ~19% NaN -- below any useful
+    #: threshold, while still being exactly the thing that gates those seasons.
+    #: Measured at a 2019 floor, nan_threshold 50 and 40 drop nothing at all. See
+    #: nba_ou...clean_df_for_training.find_season_gated_columns.
+    #:
+    #: Which arm is better is an open question, not a settled one: the two extra
+    #: seasons are the 2019-20 bubble and the 72-game 2020-21, so this trades
+    #: columns for 2,131 games of different-distribution history. Run it as an
+    #: A/B rather than assuming.
+    extend_history_dropping_season_gated_columns: bool = False
     #: Drop games whose season type is not in ``allowed_season_types``.
     #: Defaults to True: regular season + play-in only.
     exclude_playoffs: bool = True
@@ -241,7 +337,30 @@ class CleaningConfig(BaseModel):
     """Mirrors nba_ou.data_processing.missing_data.clean_df_for_training.clean_dataframe_for_training."""
 
     nan_threshold: float = 5.0
-    corr_threshold: float = 0.995
+    #: The general correlation threshold, applied to every column not matched by
+    #: ``corr_threshold_overrides``.
+    corr_threshold: float = 0.95
+    #: Per-substring thresholds overriding ``corr_threshold``. A pair is judged
+    #: against the more tolerant of its two columns, which decides very little in
+    #: practice: on training_data_2_0_20260819.csv only 6 of the 915 pairs above
+    #: 0.95 are odds/non-odds, because the two groups form near-disjoint
+    #: correlation clusters.
+    #:
+    #: None means "use DEFAULT_CORR_THRESHOLD_OVERRIDES" -- odds features held to
+    #: 0.99 while everything else is pruned at 0.95, taking that dataset from
+    #: 1,474 surviving numeric columns to 1,366. ``{}`` means "no overrides", one
+    #: threshold everywhere. The two are different, deliberately.
+    #:
+    #: The previous single 0.995 threshold was biased the wrong way: 83 of the
+    #: 104 columns it dropped were odds-derived, since the same line quoted by
+    #: seven books is the most internally redundant block in the frame.
+    corr_threshold_overrides: dict[str, float] | None = None
+    #: Drop columns whose per-season NaN rate varies by more than this many
+    #: percentage points -- their availability identifies the season, which a
+    #: model can split on directly. None disables the step; it is also a no-op
+    #: on a single-season frame, which is the same-day prediction case.
+    #: data.extend_history_dropping_season_gated_columns sets it.
+    max_seasonal_nan_spread: float | None = None
     max_na_per_row: int = -1
     create_missing_flags: bool = False
     keep_columns: list[str] | None = None
@@ -443,7 +562,9 @@ class SampleWeightConfig(BaseModel):
                 "weighting off instead of trying to sample zero."
             )
         if low >= high:
-            raise ValueError("sample_weight.lambda_bounds must be (low, high) with low < high.")
+            raise ValueError(
+                "sample_weight.lambda_bounds must be (low, high) with low < high."
+            )
         if self.lambda_ is not None and self.lambda_ < 0:
             raise ValueError("sample_weight.lambda_ must be >= 0.")
         return self
@@ -998,9 +1119,7 @@ class DiagnosticsConfig(BaseModel):
     invalid as evidence about live performance.
     """
 
-    planted_signal: PlantedSignalConfig = Field(
-        default_factory=PlantedSignalConfig
-    )
+    planted_signal: PlantedSignalConfig = Field(default_factory=PlantedSignalConfig)
 
     @property
     def any_enabled(self) -> bool:
@@ -1093,6 +1212,35 @@ class ExperimentConfig(BaseModel):
     evaluation_seeds: tuple[int, ...] = ()
 
     model_config = ConfigDict(populate_by_name=True)
+
+    @model_validator(mode="after")
+    def _resolve_extended_history(self) -> ExperimentConfig:
+        """Apply data.extend_history_without_public_betting to both halves.
+
+        Resolved here rather than at read time in prepare_dataset, and resolved
+        *into the config object*, so that the values which actually ran are what
+        --dry-run prints, what config.json records, and what fingerprint()
+        hashes. A flag interpreted later would leave the run record saying
+        `season_year_floor: 2021` for a run that trained on 2019 onward.
+
+        It also means two configs that reach the same place by different routes
+        -- the flag, or spelling out the floor and the exclusions -- share an
+        Optuna study, which is correct: they describe the same trials.
+        """
+        if not self.data.extend_history_dropping_season_gated_columns:
+            return self
+
+        floor = self.data.season_year_floor
+        # A floor already below the standard one is a deliberate narrowing
+        # (e.g. 2020 to take the COVID season without the bubble); leave it.
+        if floor is None or floor >= DEFAULT_SEASON_YEAR_FLOOR:
+            self.data.season_year_floor = EXTENDED_SEASON_YEAR_FLOOR
+
+        # An explicit spread wins: a caller who set one has already answered
+        # this question more precisely than the flag can.
+        if self.cleaning.max_seasonal_nan_spread is None:
+            self.cleaning.max_seasonal_nan_spread = EXTENDED_SEASON_NAN_SPREAD
+        return self
 
     @model_validator(mode="after")
     def _normalize_evaluation_seeds(self) -> ExperimentConfig:
@@ -1461,7 +1609,17 @@ class ExperimentConfig(BaseModel):
                 "tags": True,
                 # data_version is a label; expected_checksum IS included via
                 # DataConfig, since different bytes mean incomparable trials.
-                "data": {"data_version"},
+                #
+                # extend_history_dropping_season_gated_columns is excluded
+                # because it is pure shorthand: _resolve_extended_history has
+                # already written its entire effect into season_year_floor and
+                # cleaning.max_seasonal_nan_spread, both of which ARE hashed.
+                # Including it too would fork the study between the flag and a
+                # hand-written config that produces identical data.
+                "data": {
+                    "data_version",
+                    "extend_history_dropping_season_gated_columns",
+                },
                 "window_dir_label": True,
                 "window_name_label": True,
                 "save_experiment_artifacts": True,
