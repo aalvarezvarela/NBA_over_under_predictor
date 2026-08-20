@@ -319,10 +319,14 @@ def _build_scoring_frame(merged: pd.DataFrame, gated: pd.DataFrame) -> pd.DataFr
     result. Physical separation is the only version of this that cannot be
     forgotten at the call site.
 
-    ``SNAPSHOT_WEIGHT`` is ``1 / snapshots for that game``. Multiple snapshots
-    are not independent observations -- measured on this data, adjacent 30m/60m
-    rows resolve to the identical tick 65.7% of the time -- so pooling them
-    unweighted overstates the evidence by up to the configured snapshot count.
+    Deliberately no per-row weight column. Pooling several snapshots of one game
+    does overstate the evidence -- adjacent 30m/60m rows resolve to the
+    identical tick 65.7% of the time -- but a weight nothing reads is worse than
+    no weight at all, and that is what ``SNAPSHOT_WEIGHT`` was: emitted here,
+    consumed nowhere. The correction now lives where it can actually be seen, in
+    ``training_pipeline.snapshot_scoring``, which reports one row per horizon so
+    each group really is one row per game, and blanks the pooled row's
+    confidence interval rather than printing an inflated one.
     """
     keys = merged[SCORING_KEYS].copy()
     closing_columns = [c for c in merged.columns if c.startswith("ODDS_CLOSING_")]
@@ -331,10 +335,6 @@ def _build_scoring_frame(merged: pd.DataFrame, gated: pd.DataFrame) -> pd.DataFr
     ]
 
     scoring = pd.concat([keys, merged[closing_columns + timestamp_columns]], axis=1)
-    snapshots_per_game = scoring.groupby("GAME_ID")["TIME_TO_MATCH_MIN"].transform(
-        "count"
-    )
-    scoring["SNAPSHOT_WEIGHT"] = 1.0 / snapshots_per_game
 
     # Restrict to rows that actually survived into the training frame, so the
     # two files line up row for row.

@@ -33,6 +33,60 @@ TRAIN_GAMES_PARAM = "train_games"
 Split = tuple[np.ndarray, np.ndarray]
 
 
+def resolve_game_codes(df: pd.DataFrame, *, game_id_col: str) -> np.ndarray | None:
+    """Integer code per row saying which GAME it belongs to, or None.
+
+    None means "every row is its own game", which is true of every
+    one-row-per-game dataset and is exactly the arithmetic this module did
+    before game-awareness existed. Returning None rather than ``arange`` is
+    deliberate: it lets the fast path stay literally the old code, so the
+    closing-line behaviour is unchanged by construction rather than by
+    numerical coincidence.
+
+    On a pooled intermediate-line frame one game owns up to ten rows, and
+    without this every ``*_games`` knob silently means rows -- a
+    ``train_games`` of 3500 becoming 350 games, a ``min_validation_games`` of
+    25 becoming 2.5. That was previously corrected by hand-multiplying the
+    numbers in a YAML comment, which is a correction that cannot be verified
+    and stops being right the moment the snapshot grid changes.
+    """
+    if game_id_col not in df.columns:
+        return None
+    codes = pd.factorize(df[game_id_col].astype(str))[0]
+    if len(np.unique(codes)) == len(df):
+        # One row per game: identical to no key at all, and worth detecting so
+        # the closing-line path never pays for the general case.
+        return None
+    return np.asarray(codes)
+
+
+def _distinct(codes: np.ndarray | None, idx: np.ndarray) -> int:
+    """Games covered by ``idx``. Row count when there is no game key."""
+    if codes is None:
+        return int(len(idx))
+    return int(len(np.unique(codes[idx])))
+
+
+def _tail_games(
+    codes: np.ndarray | None, idx: np.ndarray, train_games: int
+) -> np.ndarray:
+    """The rows of the last ``train_games`` distinct games in ``idx``.
+
+    ``idx`` is chronological, so "last" is by first appearance in it. Every row
+    of a selected game is kept, including snapshots that appear out of order --
+    a window that held six of a game's ten snapshots would be neither a row
+    window nor a game window.
+    """
+    if codes is None:
+        return idx[-int(train_games) :]
+    fold_codes = codes[idx]
+    _, first_position = np.unique(fold_codes, return_index=True)
+    ordered = fold_codes[np.sort(first_position)]
+    if int(train_games) >= len(ordered):
+        return idx
+    return idx[np.isin(fold_codes, ordered[-int(train_games) :])]
+
+
 def split_latest_days_holdout(
     df: pd.DataFrame, *, date_col: str, test_days: int
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -111,11 +165,22 @@ class RollingOriginFold:
     valid_idx: np.ndarray
     history_idx: np.ndarray
     season: object = None
+    #: Game code per row of the WHOLE dev frame, or None when every row is its
+    #: own game. Shared by reference across folds; see resolve_game_codes.
+    game_codes: np.ndarray | None = None
 
     def train_idx(self, train_games: int | None) -> np.ndarray:
         if train_games is None:
             return self.history_idx
-        return self.history_idx[-int(train_games) :]
+        return _tail_games(self.game_codes, self.history_idx, train_games)
+
+    @property
+    def n_history_games(self) -> int:
+        return _distinct(self.game_codes, self.history_idx)
+
+    @property
+    def n_valid_games(self) -> int:
+        return _distinct(self.game_codes, self.valid_idx)
 
 
 @dataclass
@@ -129,6 +194,11 @@ class RollingOriginPlan:
     #: and whole game-days are indivisible, so the two rarely match exactly.
     n_validation_games: int
     n_validation_days: int
+    #: Validation ROWS. Equal to n_validation_games except on a pooled
+    #: intermediate-line frame, where one game contributes several rows and the
+    #: objective is therefore averaged over this many predictions, not that
+    #: many independent games.
+    n_validation_rows: int = 0
     #: Set when max_folds trimmed the layout, so callers can say so out loud.
     n_folds_before_max: int = 0
     #: The configured floor, carried so readers of a saved plan can tell a fold
@@ -142,6 +212,11 @@ class RollingOriginPlan:
 
     @property
     def fold_game_counts(self) -> list[int]:
+        return [fold.n_valid_games for fold in self.folds]
+
+    @property
+    def fold_row_counts(self) -> list[int]:
+        """Rows per fold. Differs from fold_game_counts only when pooled."""
         return [int(len(fold.valid_idx)) for fold in self.folds]
 
     @property
@@ -165,7 +240,7 @@ class RollingOriginPlan:
         folds quietly train on less than requested, which is the silent shrink
         that has corrupted a window comparison before.
         """
-        return min(int(len(fold.history_idx)) for fold in self.folds)
+        return min(fold.n_history_games for fold in self.folds)
 
     def splits(self, train_games: int | None) -> list[Split]:
         return [(fold.train_idx(train_games), fold.valid_idx) for fold in self.folds]
@@ -176,7 +251,7 @@ class RollingOriginPlan:
         available = self.min_history_games
         if int(train_games) > available:
             raise ValueError(
-                f"train_games={train_games} exceeds the {available} games the "
+                f"train_games={train_games} exceeds the {available} GAMES the "
                 "earliest rolling-origin fold has available, so that fold would "
                 "silently train on fewer games than every other fold and the "
                 "comparison would no longer be the one you designed. Lower "
@@ -226,6 +301,9 @@ def build_rolling_origin_plan(
 
     eligible = training_eligible_mask(df_dev, config)
     positions = np.arange(len(df_dev))
+    # None on every one-row-per-game dataset, which keeps the whole of what
+    # follows on the pre-existing row arithmetic.
+    game_codes = resolve_game_codes(df_dev, game_id_col=config.data.game_id_col)
 
     # Position lists per game-day, chronological. Sorting explicitly rather than
     # trusting the frame's order: a subtly unsorted dev frame would otherwise
@@ -243,8 +321,11 @@ def build_rolling_origin_plan(
         day: df_dev[season_col].to_numpy()[members[0]] if season_col in df_dev else None
         for day, members in zip(unique_dates, day_positions, strict=True)
     }
+    # GAMES per day, not rows. On a pooled frame a ten-snapshot day of three
+    # games is 30 rows and 3 games; eval_span_games and min_validation_games
+    # are both written in games, so this is the number they must consume.
     games_on_day = {
-        day: len(members)
+        day: _distinct(game_codes, members)
         for day, members in zip(unique_dates, day_positions, strict=True)
     }
     idx_on_day = dict(zip(unique_dates, day_positions, strict=True))
@@ -314,7 +395,7 @@ def build_rolling_origin_plan(
         # Chronological, because the window is taken as a tail.
         history_idx = history_idx[np.argsort(dates.to_numpy()[history_idx], kind="stable")]
 
-        if len(history_idx) < wf.min_train_games:
+        if _distinct(game_codes, history_idx) < wf.min_train_games:
             # Not enough history yet. Step ONE day, not past the whole window:
             # otherwise where the accepted region starts depends on how wide
             # the window happens to be, and two cells differing only in
@@ -336,6 +417,7 @@ def build_rolling_origin_plan(
                 valid_idx=np.sort(valid_idx),
                 history_idx=history_idx,
                 season=season,
+                game_codes=game_codes,
             )
         )
         cursor = next_cursor
@@ -364,7 +446,7 @@ def build_rolling_origin_plan(
             previous = merged[-1] if merged else None
             if (
                 previous is not None
-                and len(fold.valid_idx) < wf.min_validation_games
+                and fold.n_valid_games < wf.min_validation_games
                 and not (
                     wf.require_same_season_test and fold.season != previous.season
                 )
@@ -380,6 +462,7 @@ def build_rolling_origin_plan(
                     ),
                     history_idx=previous.history_idx,
                     season=previous.season,
+                    game_codes=game_codes,
                 )
             else:
                 merged.append(fold)
@@ -393,6 +476,7 @@ def build_rolling_origin_plan(
                 valid_idx=fold.valid_idx,
                 history_idx=fold.history_idx,
                 season=fold.season,
+                game_codes=fold.game_codes,
             )
             for number, fold in enumerate(merged, start=1)
         ]
@@ -429,6 +513,7 @@ def build_rolling_origin_plan(
                 valid_idx=fold.valid_idx,
                 history_idx=fold.history_idx,
                 season=fold.season,
+                game_codes=fold.game_codes,
             )
             for number, fold in enumerate(folds, start=1)
         ]
@@ -441,9 +526,19 @@ def build_rolling_origin_plan(
                 "fold": fold.fold,
                 # At the nominal window (the largest choice when tuning), so the
                 # column answers "does every fold get the window I asked for?".
-                "train_n_games": int(len(fold.train_idx(nominal_window))),
-                "history_n_games": int(len(fold.history_idx)),
-                "test_n_games": int(len(fold.valid_idx)),
+                #
+                # *_n_games are GAMES and *_n_rows are training/scoring rows.
+                # They are equal on every one-row-per-game dataset and differ by
+                # the snapshot count on a pooled one, which is the difference
+                # that used to be invisible: "3500" meant 350 games and the
+                # fold table said 3500 either way.
+                "train_n_games": _distinct(
+                    fold.game_codes, fold.train_idx(nominal_window)
+                ),
+                "train_n_rows": int(len(fold.train_idx(nominal_window))),
+                "history_n_games": fold.n_history_games,
+                "test_n_games": fold.n_valid_games,
+                "test_n_rows": int(len(fold.valid_idx)),
                 "n_valid_days": len(fold.valid_dates),
                 "train_start_date": pd.Timestamp(
                     dates.to_numpy()[fold.train_idx(nominal_window)].min()
@@ -463,7 +558,8 @@ def build_rolling_origin_plan(
     plan = RollingOriginPlan(
         folds=folds,
         fold_info=fold_info,
-        n_validation_games=int(sum(len(fold.valid_idx) for fold in folds)),
+        n_validation_games=int(sum(fold.n_valid_games for fold in folds)),
+        n_validation_rows=int(sum(len(fold.valid_idx) for fold in folds)),
         n_validation_days=int(sum(len(fold.valid_dates) for fold in folds)),
         n_folds_before_max=n_folds_before_max,
         min_validation_games=wf.min_validation_games,
@@ -483,10 +579,16 @@ def build_rolling_origin_plan(
 
     if wf.verbose >= 1:
         counts = plan.fold_game_counts
+        pooled_note = (
+            ""
+            if plan.n_validation_rows == plan.n_validation_games
+            else f" / {plan.n_validation_rows} rows"
+        )
         print(
             f"Created {plan.n_folds} rolling-origin folds "
             f"({plan.n_validation_days} game-days, {plan.n_validation_games} "
-            f"validation games, min history {plan.min_history_games})"
+            f"validation games{pooled_note}, min history "
+            f"{plan.min_history_games} games)"
         )
         print(
             f"  games/fold: min {min(counts)} median "

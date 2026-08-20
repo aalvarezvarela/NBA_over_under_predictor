@@ -49,6 +49,7 @@ from training_pipeline.data import (
     PreparedDataset,
     build_feature_matrix,
     prepare_dataset,
+    rolling_window_index,
     training_eligible_mask,
 )
 from training_pipeline.evaluation import (
@@ -56,6 +57,10 @@ from training_pipeline.evaluation import (
     evaluate_on_holdout,
 )
 from training_pipeline.season_phase import describe_phases, phases_present
+from training_pipeline.snapshot_scoring import (
+    build_snapshot_report,
+    save_snapshot_report,
+)
 from training_pipeline.splits import (
     TRAIN_GAMES_PARAM,
     build_holdout_split,
@@ -70,16 +75,38 @@ from training_pipeline.tuning import (
 )
 
 
+def _window_game_ids(
+    df: pd.DataFrame, config: ExperimentConfig, prepared: PreparedDataset
+) -> pd.Series | None:
+    """Per-row game identifier for window arithmetic, or None for row counts.
+
+    None on every one-row-per-game frame, which is what keeps the closing-line
+    path on the tail slice it has always used.
+    """
+    if not prepared.is_pooled_snapshots:
+        return None
+    if config.data.game_id_col not in df.columns:
+        return None
+    return df[config.data.game_id_col]
+
+
 def _feature_target_subset(
-    df_subset: pd.DataFrame, config: ExperimentConfig
+    df_subset: pd.DataFrame, config: ExperimentConfig, prepared: PreparedDataset
 ) -> tuple[pd.DataFrame, pd.Series]:
     """Rebuild X/y directly from a dev/test subset rather than slicing
     PreparedDataset.X/.y by index -- split_latest_dates_holdout resets the
     index on both halves it returns, so index-based alignment back to the
     full prepared frame would silently misalign rows.
+
+    Selected by ``prepared.feature_names`` rather than by dropping the
+    configured exclusions, so a frame carrying non-feature columns (GAME_ID for
+    the window arithmetic, joined closing lines for re-scoring) yields the same
+    matrix prepare_dataset settled on.
     """
     return build_feature_matrix(
-        df_subset, target_col=config.target_col, exclude_cols=config.exclude_cols
+        df_subset,
+        target_col=config.target_col,
+        feature_names=prepared.feature_names,
     )
 
 
@@ -219,6 +246,14 @@ class ExperimentResult:
     run_dir: Path | None
     model_path: Path | None
     meta_path: Path | None
+    #: Per-horizon betting tables, keyed "cv"/"holdout". Populated automatically
+    #: whenever the dataset holds several rows per game, because on such a frame
+    #: the headline betting numbers count one game once per snapshot and are the
+    #: ONLY numbers in the run that cannot be read at face value. Building it
+    #: here rather than in a wrapper script is the point: it used to require
+    #: remembering to launch a different entry point, and the plain CLI happily
+    #: printed the inflated pooled row with nothing saying so.
+    snapshot_report: dict[str, pd.DataFrame] | None = None
 
 
 def _save_planted_signal_artifact(
@@ -318,8 +353,8 @@ def run_experiment(
     prepared = prepare_dataset(config)
     df_dev, df_test = build_holdout_split(prepared.df_full, config)
 
-    X_dev, y_dev = _feature_target_subset(df_dev, config)
-    X_test, y_test = _feature_target_subset(df_test, config)
+    X_dev, y_dev = _feature_target_subset(df_dev, config, prepared)
+    X_test, y_test = _feature_target_subset(df_test, config, prepared)
     dates_dev = df_dev[config.data.date_col]
 
     # Resolve the output bundle path and check writability *before* tuning:
@@ -570,16 +605,21 @@ def run_experiment(
         if not eligible.all():
             df_production = df_production.loc[eligible].copy()
 
-        X_full, y_full = _feature_target_subset(df_production, config)
+        X_full, y_full = _feature_target_subset(df_production, config, prepared)
         dates_full = df_production[config.data.date_col]
         # The SELECTED window, not the configured one: when Optuna tuned it, the
         # shipped model must be fitted on the amount of history the chosen
         # hyperparameters were actually scored under.
         train_games = selected_train_games
         if config.refit.strategy == RefitStrategy.ROLLING_WINDOW and train_games:
-            X_full = X_full.tail(train_games)
-            y_full = y_full.loc[X_full.index]
-            dates_full = dates_full.loc[X_full.index]
+            window = rolling_window_index(
+                df_production.index,
+                train_games,
+                game_ids=_window_game_ids(df_production, config, prepared),
+            )
+            X_full = X_full.loc[window]
+            y_full = y_full.loc[window]
+            dates_full = dates_full.loc[window]
         model = fit_final_model(
             X_dev=X_full,
             y_dev=y_full,
@@ -700,6 +740,17 @@ def run_experiment(
                 # boundary can still close a fold early.
                 "cv_min_validation_games": config.walk_forward.min_validation_games,
                 "cv_fold_game_counts": split_provider.fold_game_counts,
+                # --- dataset grain -------------------------------------------
+                # What one row IS. On the closing-line dataset a row is a game
+                # and these are all trivial; on a pooled intermediate-line frame
+                # rows_per_game is the factor separating a bet count from a game
+                # count, and the factor every *_games knob is defined against.
+                "dataset_type": config.data.dataset_type.value,
+                "n_games": prepared.n_games,
+                "n_rows": len(prepared.df_full),
+                "n_snapshots": prepared.n_snapshots,
+                "rows_per_game": round(prepared.rows_per_game, 4),
+                "snapshot_minutes": prepared.snapshot_minutes,
                 # How the tie band that ran the lexicographic selection was
                 # derived, and how much of the study it admitted. A fraction
                 # near 1.0 means the SECONDARY metric chose this model.
@@ -858,7 +909,7 @@ def run_experiment(
             metadata=metadata,
         )
 
-    return ExperimentResult(
+    result = ExperimentResult(
         config=config,
         prepared=prepared,
         df_dev=df_dev,
@@ -880,3 +931,15 @@ def run_experiment(
         model_path=model_path,
         meta_path=meta_path,
     )
+
+    # Built from the finished result, so it can reuse the same evaluate_betting
+    # and the same threshold the run already applied -- it regroups predictions
+    # and fits nothing, and therefore cannot introduce look-ahead.
+    if prepared.is_pooled_snapshots:
+        result.snapshot_report = build_snapshot_report(
+            result, snapshot_col=config.data.snapshot_col
+        )
+        if run_dir is not None and result.snapshot_report:
+            save_snapshot_report(result.snapshot_report, run_dir)
+
+    return result

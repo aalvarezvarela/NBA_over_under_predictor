@@ -67,6 +67,12 @@ FACTOR_SOURCES: dict[str, str] = {
     #: redundancy. Closing-line and intermediate-line runs are not the same
     #: experiment and must never be averaged together.
     "dataset_type": "data.dataset_type",
+    #: Pooled (null) vs one model per timepoint. These answer different
+    #: questions -- "can one model price any hour?" against "what is the edge at
+    #: 12 hours out?" -- and they do not even have the same number of training
+    #: rows, so matching them as one experiment would read the grain as though
+    #: it were the treatment.
+    "snapshot_minutes": "data.snapshot_minutes",
     "n_trials": "optuna.n_trials",
     # --- rolling-origin CV and the tuned training protocol -------------------
     # These change what a trial IS, so a run before and after any of them is not

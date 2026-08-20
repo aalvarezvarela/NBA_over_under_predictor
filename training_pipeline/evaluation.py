@@ -26,6 +26,7 @@ from training_pipeline.calibration import (
     calibration_table,
 )
 from training_pipeline.config import ExperimentConfig, RefitStrategy
+from training_pipeline.data import rolling_window_index
 from training_pipeline.decisions import (
     collect_prices,
     predict_decisions,
@@ -47,6 +48,7 @@ def train_production_model(
     dates_dev: pd.Series | None,
     study: optuna.Study,
     config: ExperimentConfig,
+    game_ids: pd.Series | None = None,
 ) -> tuple[XGBRegressor, optuna.trial.FrozenTrial | None]:
     """Fit the model that would actually be shipped.
 
@@ -58,7 +60,13 @@ def train_production_model(
     RefitStrategy.FULL_DATASET fits on everything using study.best_trial
     directly. ROLLING_WINDOW (default) optionally re-selects the trial
     lexicographically, then fits on the most recent
-    ``walk_forward.train_games`` rows.
+    ``walk_forward.train_games`` GAMES.
+
+    ``game_ids`` is a per-row game identifier sharing X_dev's index, needed only
+    on a frame holding several rows per game (the pooled intermediate-line
+    dataset). Without it the window counts rows, which on that dataset is a
+    tenth of the history the hyperparameters were selected under. None on every
+    one-row-per-game frame, where the two are the same number.
     """
     if config.refit.strategy == RefitStrategy.FULL_DATASET:
         model = strategy.fit_best(
@@ -84,9 +92,10 @@ def train_production_model(
         )
 
     if train_games is not None:
-        X_dev = X_dev.tail(train_games)
-        y_dev = y_dev.loc[X_dev.index]
-        dates_dev = dates_dev.loc[X_dev.index] if dates_dev is not None else None
+        window = rolling_window_index(X_dev.index, train_games, game_ids=game_ids)
+        X_dev = X_dev.loc[window]
+        y_dev = y_dev.loc[window]
+        dates_dev = dates_dev.loc[window] if dates_dev is not None else None
 
     if selected_trial is not None:
         model = strategy.fit_best(

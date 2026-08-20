@@ -159,18 +159,28 @@ def train_production_model_from_run(
     # OVER_LABEL, and handing an XGBClassifier continuous point totals under a
     # binary objective is a silent nonsense at best.
     target_col = config.target_col
-    from training_pipeline.data import build_feature_matrix
+    from training_pipeline.data import build_feature_matrix, rolling_window_index
 
     X, y = build_feature_matrix(
-        prepared.df_full, target_col=target_col, exclude_cols=config.exclude_cols
+        prepared.df_full, target_col=target_col, feature_names=prepared.feature_names
     )
     dates = prepared.df_full[config.data.date_col]
 
     train_games = config.walk_forward.train_games
     if config.refit.strategy == RefitStrategy.ROLLING_WINDOW and train_games:
-        X = X.tail(train_games)
-        y = y.loc[X.index]
-        dates = dates.loc[X.index]
+        window = rolling_window_index(
+            prepared.df_full.index,
+            train_games,
+            game_ids=(
+                prepared.df_full[config.data.game_id_col]
+                if prepared.is_pooled_snapshots
+                and config.data.game_id_col in prepared.df_full.columns
+                else None
+            ),
+        )
+        X = X.loc[window]
+        y = y.loc[window]
+        dates = dates.loc[window]
 
     model = fit_final_model(
         X_dev=X,

@@ -35,15 +35,20 @@ device: cuda
 # `data` block is byte-identical, so a drift here fails the suite rather than
 # quietly turning the comparison into a two-variable one.
 #
-# Measured on this CSV (scripts/preflight_campaign.py):
-#   cleaned 5752, dev 5336, holdout 416 (2026-02-19 -> 2026-04-17),
-#   30 folds, 117 game-days, 850 validation games, window ceiling 4486.
-# The inherited train_games_choices [2500, 3000, 3500, 4000] all fit, with 486
+# Measured on this CSV (scripts/preflight_campaign.py, 2026-08-20):
+#   cleaned 6148, dev 5732, holdout 416 (2026-02-19 -> 2026-04-17),
+#   28 folds, 117 game-days, 855 validation games, window ceiling 4877.
+# The inherited train_games_choices [2500, 3000, 3500, 4000] all fit, with 877
 # games of headroom on the largest.
 data:
-  csv_path: data/train_data/training_data_2_0_20260704.csv
-  data_version: "20260704-2_0"
-  expected_checksum: "sha256:2fc9ed86d2f42a78"
+  # Repointed from training_data_2_0_20260704.csv, which no longer exists and
+  # could not be loaded by today's code even if it did: it predates the ODDS_
+  # prefix unification and carries zero ODDS_ columns. The layout above was
+  # re-measured on THIS file; the earlier figures (5752/5336, 30 folds, ceiling
+  # 4486) described the old one and are not comparable.
+  csv_path: data/train_data/training_data_2_0_20260819.csv
+  data_version: "20260819-2_0"
+  expected_checksum: "sha256:27a291de0ae78165"
 
 diagnostics:
   planted_signal:

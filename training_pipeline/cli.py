@@ -13,6 +13,7 @@ import yaml  # type: ignore[import-untyped]
 
 from training_pipeline.config import ExperimentConfig
 from training_pipeline.pipeline import run_experiment
+from training_pipeline.snapshot_scoring import format_snapshot_table
 
 #: Shared defaults every experiment file is merged on top of. Looked up by
 #: walking upwards from the experiment file, so nested directories such as
@@ -120,10 +121,27 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         description="Run a training_pipeline experiment from a YAML config file."
     )
     parser.add_argument("config_path", help="Path to a YAML experiment config file.")
+    # Tri-state on purpose: default None means "let refit.train_production_model
+    # decide". It used to be a plain store_true, so the absent flag passed
+    # save_model=True and OVERRODE a config that had turned the refit off --
+    # which is why every campaign runner in experiments/runners/ passes
+    # --no-save-model with a comment explaining that its cells would otherwise
+    # collide on the bundle name. The config asked for no model and got one.
+    parser.add_argument(
+        "--save-model",
+        dest="save_model",
+        action="store_true",
+        default=None,
+        help=(
+            "Force a production refit and save the bundle, overriding "
+            "refit.train_production_model."
+        ),
+    )
     parser.add_argument(
         "--no-save-model",
-        action="store_true",
-        help="Skip saving the final model bundle to disk.",
+        dest="save_model",
+        action="store_false",
+        help="Force-skip the production refit even if the config asks for one.",
     )
     parser.add_argument(
         "--dry-run",
@@ -131,6 +149,55 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Validate and print the resolved config; do not train.",
     )
     return parser
+
+
+def _print_snapshot_report(result: Any) -> None:
+    """Print the per-horizon tables, or say why the pooled row cannot be read.
+
+    This runs on the ordinary CLI path rather than in a wrapper script, because
+    a wrapper is something you have to remember. Before this, running a pooled
+    intermediate-line config through ``python -m training_pipeline.cli``
+    trained and evaluated it correctly and then printed a headline ROI whose
+    ``n_bets`` counted one game once per snapshot, with a Wilson interval built
+    on that count and nothing anywhere saying so. The only warning lived in a
+    comment in an archived YAML.
+    """
+    if not result.prepared.is_pooled_snapshots:
+        return
+
+    print(
+        f"\n{'=' * 78}\n"
+        f"POOLED ROW IS NOT A BET COUNT: this dataset holds "
+        f"{result.prepared.rows_per_game:.1f} rows per game "
+        f"({result.prepared.n_snapshots} pre-game horizons over "
+        f"{result.prepared.n_games:,} games), so the ROI above counts one game "
+        f"once per horizon.\nRead the per-horizon tables below: within one "
+        f"horizon there is exactly one row per\ngame, so n_bets counts "
+        f"independent events and the interval is honest."
+    )
+
+    report = getattr(result, "snapshot_report", None)
+    if not report:
+        print(
+            "\nNo per-horizon table was produced -- the snapshot column was not "
+            "found on the\nprediction frames. The pooled numbers above should "
+            "not be reported."
+        )
+        return
+
+    for name, table in report.items():
+        title = {
+            "cv": "CROSS-VALIDATION FOLDS (pooled validation rows)",
+            "holdout": "HELD-OUT TEST PERIOD (daily walk-forward)",
+        }.get(name, name.upper())
+        print(f"\n{'=' * 78}\n{title}\nby virtual bet time, minutes before tip\n")
+        print(format_snapshot_table(table))
+
+    print(
+        "\nThe ALL row pools every horizon, so its interval and significance "
+        "verdict are\nleft blank rather than reported: correlated repeats break "
+        "the binomial\nassumption behind them in the anti-conservative direction."
+    )
 
 
 def main() -> None:
@@ -143,7 +210,7 @@ def main() -> None:
         print(config.model_dump_json(indent=2))
         return
 
-    result = run_experiment(config, save_model=not args.no_save_model)
+    result = run_experiment(config, save_model=args.save_model)
 
     print(f"Experiment: {config.experiment_name}")
     print(f"Target: {config.family.value}")
@@ -159,10 +226,20 @@ def main() -> None:
         print(f"Bookmaker-line baseline MAE: {baseline.mae:.4f}")
         primary = evaluation.betting_primary
         if primary.roi is not None:
+            pooled = result.prepared.is_pooled_snapshots
+            unit = "rows" if pooled else "bets"
+            significance = (
+                "see per-horizon table"
+                if pooled
+                else f"significant: {primary.is_significant}"
+            )
             print(
                 f"ROI @ edge>{primary.min_edge}: {primary.roi:+.2%} "
-                f"on {primary.n_bets} bets (significant: {primary.is_significant})"
+                f"on {primary.n_bets} {unit} ({significance})"
             )
+
+    _print_snapshot_report(result)
+
     if result.run_dir is not None:
         print(f"Run directory: {result.run_dir}")
     if result.model_path is not None:

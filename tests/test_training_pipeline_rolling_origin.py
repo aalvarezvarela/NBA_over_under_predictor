@@ -264,7 +264,7 @@ def test_a_window_larger_than_the_earliest_fold_raises_instead_of_shrinking(
     plan = build_rolling_origin_plan(dev_frame, config)
 
     plan.assert_window_fits(plan.min_history_games)
-    with pytest.raises(ValueError, match="exceeds the .* games the earliest"):
+    with pytest.raises(ValueError, match="exceeds the .* GAMES the earliest"):
         plan.assert_window_fits(plan.min_history_games + 1)
 
 

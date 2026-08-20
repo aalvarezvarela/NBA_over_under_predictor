@@ -149,6 +149,15 @@ class DatasetType(StrEnum):
     INTERMEDIATE_LINE = "intermediate_line"
 
 
+#: Minutes before tip-off. Present only on the intermediate-line dataset, where
+#: it is what makes the grain one row per (game, snapshot) rather than one per
+#: game. Defined here rather than in ``training_pipeline.data`` because the
+#: config layer now validates against it and ``data`` imports from here, never
+#: the other way round; ``data.SNAPSHOT_COLUMN`` re-exports it so the cleaner
+#: and the scorer cannot end up grouping by different spellings.
+SNAPSHOT_COLUMN = "TIME_TO_MATCH_MIN"
+
+
 #: MedianPruner's warmup before this became fold-count aware. Kept as the floor
 #: so no configuration ever becomes *less* patient than the runs already in
 #: artifacts/experiments.
@@ -393,6 +402,69 @@ class DataConfig(BaseModel):
     #: in place is caught loudly instead of silently changing your results.
     #: The actual checksum is always recorded in run metadata regardless.
     expected_checksum: str | None = None
+
+    #: Column carrying minutes-before-tip on the intermediate-line dataset.
+    snapshot_col: str = SNAPSHOT_COLUMN
+
+    #: ONE MODEL PER TIMEPOINT. Keep only this horizon, in minutes before tip,
+    #: reducing the intermediate-line frame to one row per game.
+    #:
+    #: The two modes this dataset supports, and the whole difference between
+    #: them:
+    #:
+    #:   null  POOLED. Every snapshot of every game is a training row and
+    #:         ``snapshot_col`` is an ordinary feature, so one model learns how
+    #:         the mapping changes with time to tip and can price a bet placed
+    #:         at any hour. Its betting numbers must be read per horizon --
+    #:         see training_pipeline.snapshot_scoring.
+    #:   720   ONE HORIZON. One row per game, structurally identical to the
+    #:         closing-line dataset. This is the control that answers "is
+    #:         pooling earning its complexity?", and the only mode a single
+    #:         fixed bet time needs.
+    #:
+    #: This supersedes scripts/create_train_data/slice_intermediate_snapshot.py,
+    #: which did the same thing by writing a second ~187MB CSV. Filtering here
+    #: means both arms read the identical bytes, so the checksum pin covers the
+    #: control too and the two cannot silently diverge.
+    #:
+    #: In fingerprint(): it changes which rows exist, so a pooled study must
+    #: never resume a single-horizon one.
+    snapshot_minutes: int | None = None
+
+    #: Sidecar CSV of closing lines and timestamps, joined on
+    #: (``game_id_col``, ``snapshot_col``) AFTER the feature matrix is built.
+    #:
+    #: The intermediate-line builder holds these in a separate file on purpose:
+    #: a model betting the line on the board at T-720 must not be able to read
+    #: the closing line, and physical separation is the only version of that
+    #: which cannot be undone by a forgotten config entry. Naming the file here
+    #: attaches those columns to ``df_full`` only -- never to X -- so
+    #: ``betting.comparison_line_cols`` can measure closing-line value.
+    scoring_csv_path: Path | None = None
+
+    @model_validator(mode="after")
+    def _validate_snapshot_options(self) -> DataConfig:
+        if self.dataset_type is DatasetType.INTERMEDIATE_LINE:
+            if self.snapshot_minutes is not None and self.snapshot_minutes < 0:
+                raise ValueError(
+                    "data.snapshot_minutes is minutes BEFORE tip-off and cannot "
+                    "be negative."
+                )
+            return self
+        # Both knobs describe a (game, snapshot) frame. On a closing-line CSV
+        # there is no snapshot column to filter or join on, so they would be
+        # silent no-ops -- the exact failure dataset_type exists to prevent.
+        for field, value in (
+            ("snapshot_minutes", self.snapshot_minutes),
+            ("scoring_csv_path", self.scoring_csv_path),
+        ):
+            if value is not None:
+                raise ValueError(
+                    f"data.{field} requires data.dataset_type="
+                    f"{DatasetType.INTERMEDIATE_LINE.value!r}; on a "
+                    f"{self.dataset_type.value!r} frame it would do nothing."
+                )
+        return self
 
     @model_validator(mode="after")
     def _validate_allowed_season_types(self) -> DataConfig:
@@ -1604,6 +1676,47 @@ class ExperimentConfig(BaseModel):
         if self.strategy == PredictionStrategy.OVER_UNDER_CLASSIFIER:
             return OVER_LABEL_COL
         return "TOTAL_POINTS"
+
+    @model_validator(mode="after")
+    def _pooled_snapshots_need_a_game_aware_splitter(self) -> ExperimentConfig:
+        """A pooled (game, snapshot) frame may only be split by rolling_origin.
+
+        Under ``rolling_origin`` the fold layout is built here, in
+        training_pipeline.splits, which counts distinct games -- so
+        ``train_games: 3500`` is 3,500 games however many snapshots each one
+        contributes.
+
+        ``test_anchored`` and ``last_n_seasons`` come from nba_ou.modeling and
+        describe a fold as a block of N ROWS. On a ten-snapshot frame that
+        makes every window a tenth of what it says: ``test_games: 50`` scores 5
+        games, ``train_games: 3500`` trains on 350. Nothing errors -- the run
+        completes and reports numbers that look ordinary. The archived
+        intermediate-line configs handled it by hand-multiplying every knob by
+        the snapshot count in a YAML comment, which is a correction no test can
+        check and which stops being right the moment the grid changes.
+
+        Refused rather than auto-scaled: multiplying silently would leave the
+        config saying one thing and the run doing another, and the whole reason
+        this dataset needs care is that rows and games are not the same number.
+        Use rolling_origin, or set data.snapshot_minutes to train one model per
+        timepoint, where one row IS one game and every splitter is correct
+        again.
+        """
+        if self.data.dataset_type is not DatasetType.INTERMEDIATE_LINE:
+            return self
+        if self.data.snapshot_minutes is not None:
+            return self
+        if self.walk_forward.strategy is CVStrategy.ROLLING_ORIGIN:
+            return self
+        raise ValueError(
+            f"walk_forward.strategy={self.walk_forward.strategy.value!r} counts "
+            "a fold in ROWS, and a pooled intermediate-line frame holds several "
+            "rows per game, so every *_games knob would silently mean a "
+            f"fraction of what it says. Use "
+            f"{CVStrategy.ROLLING_ORIGIN.value!r}, which counts games, or set "
+            "data.snapshot_minutes to train a single-timepoint model (one row "
+            "per game, where the two are the same number)."
+        )
 
     @model_validator(mode="after")
     def _diagnostic_runs_must_announce_themselves(self) -> ExperimentConfig:

@@ -8,7 +8,7 @@ single canonical LINE_ERROR derivation, rather than re-implementing it.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -22,18 +22,20 @@ from nba_ou.data_processing.missing_data.cleaning_report import CleaningReport
 from nba_ou.data_processing.missing_data.column_redundancy import (
     RepeatedMeasuresRedundancy,
 )
+from nba_ou.modeling.meta_learner_training_data import (
+    _ensure_line_error_column as ensure_line_error_column,
+)
 
 # Reused, not duplicated: this is documented as the one canonical implementation
 # of LINE_ERROR = TOTAL_POINTS - ODDS_TOTAL_LINE_<book> in the repo. The leading
 # underscore is a naming convention, not an enforced boundary; duplicating the
 # formula here would risk the two definitions drifting apart over time.
-from nba_ou.modeling.meta_learner_training_data import (
-    _ensure_line_error_column as ensure_line_error_column,
-)
+from nba_ou.modeling.modeling import tail_n_games
 
 from training_pipeline.config import (
     LEAKING_TARGET_COLUMNS,
     OVER_LABEL_COL,
+    SNAPSHOT_COLUMN,
     BaselineConfig,
     CleaningConfig,
     DatasetType,
@@ -58,14 +60,12 @@ from training_pipeline.diagnostics import (
 # as the baseline when a caller explicitly opts in via BaselineConfig.line_col.
 BOOKMAKER_MEDIAN_LINE_COL = "ODDS_total_line_books_median"
 
-#: Minutes before tip-off, present only on the intermediate-line dataset, where
-#: it makes the grain one row per (game, snapshot) rather than one per game.
-#:
-#: Defined here rather than in snapshot_scoring because cleaning needs it too
-#: and snapshot_scoring pulls in xgboost by way of decisions. Cleaning uses it
-#: only to report row retention per horizon; its absence is the ordinary case
-#: for the closing-line dataset and is not an error.
-SNAPSHOT_COLUMN = "TIME_TO_MATCH_MIN"
+# SNAPSHOT_COLUMN is imported above rather than defined here. It moved to
+# training_pipeline.config so the config layer can validate against it, and is
+# still importable from this module because cleaning, snapshot_scoring and the
+# pipeline all reach for it by this name -- one spelling is what stops the
+# cleaner and the scorer grouping by different columns. Its absence from a frame
+# is the ordinary case for the closing-line dataset and is not an error.
 
 
 def compute_file_checksum(path: str | Path, *, chunk_size: int = 1 << 20) -> str:
@@ -160,6 +160,117 @@ def filter_allowed_season_types(
     return df.loc[keep].copy()
 
 
+def filter_to_snapshot(
+    df: pd.DataFrame, *, snapshot_col: str, minutes: int
+) -> pd.DataFrame:
+    """Keep one pre-game horizon, reducing the frame to one row per game.
+
+    This is the "one model per timepoint" arm. It replaces the old approach of
+    writing a second CSV with ``slice_intermediate_snapshot.py``: filtering here
+    means the pooled arm and its control read the identical bytes, so one
+    ``expected_checksum`` covers both and the two cannot drift apart.
+
+    A horizon that is not in the frame is an error listing what IS there, not an
+    empty frame. Asking for T=90 on a grid that stops at 60 and 120 is a typo,
+    and the alternative -- training on zero rows -- fails much further downstream
+    with nothing pointing back at the cause.
+    """
+    if snapshot_col not in df.columns:
+        raise KeyError(
+            f"data.snapshot_minutes={minutes} was requested but the frame has no "
+            f"{snapshot_col!r} column. Only the intermediate-line dataset carries "
+            "one; a closing-line CSV is already one row per game and needs no "
+            "filtering."
+        )
+    horizons = pd.to_numeric(df[snapshot_col], errors="coerce")
+    kept = df.loc[horizons == minutes].copy()
+    if kept.empty:
+        available = sorted(int(v) for v in horizons.dropna().unique())
+        raise ValueError(
+            f"data.snapshot_minutes={minutes} matched no rows. Horizons present "
+            f"in {snapshot_col!r}: {available}."
+        )
+    return kept
+
+
+def assert_one_row_per_game(
+    df: pd.DataFrame, *, game_id_col: str, snapshot_col: str, context: str
+) -> None:
+    """Confirm the invariant every per-snapshot confidence interval rests on.
+
+    Within one horizon there must be exactly one row per game. That is what
+    makes ``n_bets`` a count of independent events, and it is checked rather
+    than assumed because a duplicated (game, snapshot) pair would not error
+    anywhere -- it would quietly narrow the interval and make a coin flip look
+    significant.
+
+    Silently skipped when either column is absent, which is the closing-line
+    case: a frame with no snapshot column has nothing to check.
+    """
+    if game_id_col not in df.columns or snapshot_col not in df.columns:
+        return
+    duplicated = int(df.duplicated(subset=[game_id_col, snapshot_col]).sum())
+    if duplicated:
+        raise ValueError(
+            f"{duplicated} ({game_id_col}, {snapshot_col}) pairs are duplicated "
+            f"in {context}. A snapshot group would then hold the same game more "
+            "than once, and every confidence interval computed on it would be "
+            "too narrow. Refusing to continue."
+        )
+
+
+def load_scoring_sidecar(
+    df: pd.DataFrame,
+    *,
+    csv_path: str | Path,
+    game_id_col: str,
+    snapshot_col: str,
+) -> tuple[pd.DataFrame, list[str]]:
+    """Attach the closing-line sidecar to ``df``, returning it and its columns.
+
+    Call this AFTER the feature matrix is built. The sidecar holds the closing
+    line, which the intermediate-line builder deliberately keeps in a separate
+    file so a model pricing a bet at T-720 cannot read the market's final
+    number. Joining it before X was built would hand that number straight to
+    the model, so the ordering is the safety property, not a detail.
+
+    Left join on (game, snapshot): every training row keeps its place, and a row
+    the sidecar has no entry for gets NaN rather than disappearing.
+    """
+    csv_path = Path(csv_path)
+    keys = [game_id_col, snapshot_col]
+    missing_keys = [key for key in keys if key not in df.columns]
+    if missing_keys:
+        raise KeyError(
+            f"data.scoring_csv_path needs {missing_keys} in the training frame "
+            "to join on, and they are not there. Both survive cleaning only on "
+            "the intermediate-line path."
+        )
+
+    header = pd.read_csv(csv_path, nrows=0).columns
+    missing_keys = [key for key in keys if key not in header]
+    if missing_keys:
+        raise KeyError(f"{csv_path} has no {missing_keys} column(s) to join on.")
+
+    sidecar = pd.read_csv(csv_path, dtype={game_id_col: str})
+    sidecar[snapshot_col] = pd.to_numeric(sidecar[snapshot_col], errors="coerce")
+
+    attached = [c for c in sidecar.columns if c not in keys]
+    collisions = sorted(set(attached) & set(df.columns))
+    if collisions:
+        raise ValueError(
+            f"{csv_path} would overwrite {collisions}, which the training frame "
+            "already carries. Rename them in the sidecar rather than letting a "
+            "join decide which version wins."
+        )
+
+    merged = df.copy()
+    merged[game_id_col] = merged[game_id_col].astype(str)
+    merged[snapshot_col] = pd.to_numeric(merged[snapshot_col], errors="coerce")
+    merged = merged.merge(sidecar, on=keys, how="left", validate="many_to_one")
+    return merged, attached
+
+
 def resolve_baseline_line_col(df: pd.DataFrame, baseline: BaselineConfig) -> str:
     """Resolve which column stands in for "trust the bookmaker's line".
 
@@ -213,6 +324,27 @@ def _required_keep_columns(
     # cleaning even though it is never a feature.
     if config.data.exclude_overtime_from_training:
         keep.add(config.data.overtime_col)
+
+    # Carrier columns for the intermediate-line dataset, kept ONLY there.
+    #
+    # GAME_ID is what makes a row-count and a game-count different numbers, so
+    # every *_games knob needs it to mean games rather than rows, and
+    # snapshot_scoring needs it to report n_games. advanced_column_cleaning
+    # drops it by default (its name contains "_ID") and on the closing-line
+    # path that is right: rows are games there, nothing needs it, and keeping it
+    # would change a cleaned frame that a dozen archived runs were produced
+    # from. It is excluded from the feature matrix explicitly in
+    # prepare_dataset -- as a string encoding date and sequence it is the last
+    # thing that should reach a model.
+    #
+    # The snapshot column is kept only in POOLED mode, where it is both a real
+    # feature and the grouping key for the per-horizon report. Under
+    # snapshot_minutes it is constant, and force-keeping a constant would only
+    # smuggle a dead column past the cleaning that exists to remove it.
+    if config.data.dataset_type is DatasetType.INTERMEDIATE_LINE:
+        keep.add(config.data.game_id_col)
+        if config.data.snapshot_minutes is None:
+            keep.add(config.data.snapshot_col)
     return sorted(keep)
 
 
@@ -451,11 +583,58 @@ def add_over_under_label(
 
 
 def build_feature_matrix(
-    df: pd.DataFrame, *, target_col: str, exclude_cols: list[str]
+    df: pd.DataFrame,
+    *,
+    target_col: str,
+    exclude_cols: list[str] | None = None,
+    feature_names: list[str] | None = None,
 ) -> tuple[pd.DataFrame, pd.Series]:
-    X = df.drop(columns=exclude_cols, errors="ignore")
+    """X and y for a frame, by allow-list when one is available.
+
+    ``feature_names`` is the allow-list -- ``PreparedDataset.feature_names``,
+    settled once by prepare_dataset. Prefer it: a deny-list only removes what it
+    was told about, so every non-feature column added to the frame later (a game
+    identifier kept for the window arithmetic, a closing line joined in for
+    re-scoring) reaches the model unless someone remembers to extend
+    ``exclude_cols`` at all five call sites. An allow-list cannot forget.
+
+    ``exclude_cols`` remains for prepare_dataset itself, which is where the
+    feature list is *derived* and so cannot consult it yet.
+    """
+    if feature_names is not None:
+        missing = [name for name in feature_names if name not in df.columns]
+        if missing:
+            raise KeyError(
+                f"{len(missing)} feature(s) the run was prepared with are absent "
+                f"from this frame, e.g. {missing[:5]}. The feature schema and the "
+                "frame disagree, which would train on a different matrix than the "
+                "one that was evaluated."
+            )
+        X = df[list(feature_names)]
+    else:
+        X = df.drop(columns=exclude_cols or [], errors="ignore")
     y = pd.to_numeric(df[target_col], errors="coerce")
     return X, y
+
+
+def rolling_window_index(
+    index: pd.Index, train_games: int, *, game_ids: pd.Series | None
+) -> pd.Index:
+    """Index labels of the last ``train_games`` GAMES of a chronological frame.
+
+    The one place the rolling refit window becomes a set of rows, so the shipped
+    model, the promoted model and the CV folds cannot disagree about what
+    "3500" means.
+
+    ``game_ids`` is a per-row game identifier sharing ``index``. None -- every
+    one-row-per-game frame -- returns ``index[-train_games:]``, exactly the tail
+    slice this replaced, so the closing-line path is untouched.
+    """
+    train_games = int(train_games)
+    if game_ids is None:
+        return index[-train_games:]
+    frame = pd.DataFrame({"_game": game_ids.to_numpy()}, index=index)
+    return tail_n_games(frame, train_games, group_col="_game").index
 
 
 @dataclass(frozen=True)
@@ -486,6 +665,29 @@ class PreparedDataset:
     #: run directory as cleaning_report.json. Answers "where did this feature
     #: go?" without re-running the pipeline at verbose=2.
     cleaning_report: CleaningReport | None = None
+    #: Distinct games behind ``df_full``. Equal to len(df_full) on every
+    #: one-row-per-game dataset; smaller on a pooled intermediate-line frame,
+    #: where it is the number the *_games knobs are supposed to mean.
+    n_games: int = 0
+    #: Distinct pre-game horizons present. 1 means one row per game, and is the
+    #: readable flag that pooled betting metrics can be taken at face value.
+    n_snapshots: int = 1
+    #: The horizon this run was filtered to, or None for the pooled arm.
+    snapshot_minutes: int | None = None
+    #: Columns attached from data.scoring_csv_path. Present on df_full only --
+    #: never in ``feature_names`` -- so they can be re-scored against without
+    #: ever having been visible to the model.
+    scoring_columns: list[str] = field(default_factory=list)
+
+    @property
+    def rows_per_game(self) -> float:
+        """How many rows one game contributes. 1.0 unless the frame is pooled."""
+        return len(self.df_full) / self.n_games if self.n_games else 1.0
+
+    @property
+    def is_pooled_snapshots(self) -> bool:
+        """Several rows per game, so a row count is not a game count."""
+        return self.n_snapshots > 1
 
 
 def prepare_dataset(config: ExperimentConfig) -> PreparedDataset:
@@ -493,6 +695,25 @@ def prepare_dataset(config: ExperimentConfig) -> PreparedDataset:
         config.data.csv_path, expected_checksum=config.data.expected_checksum
     )
     df = load_raw_training_csv(config.data.csv_path, date_col=config.data.date_col)
+
+    # Before anything else measures the frame. Filtering to one horizon changes
+    # the row count, the cleaning statistics and the meaning of every *_games
+    # knob, so it has to happen while the frame is still raw -- a horizon
+    # dropped after cleaning would leave the cleaning decisions computed over
+    # nine horizons the run then never sees.
+    if config.data.snapshot_minutes is not None:
+        df = filter_to_snapshot(
+            df,
+            snapshot_col=config.data.snapshot_col,
+            minutes=config.data.snapshot_minutes,
+        )
+    assert_one_row_per_game(
+        df,
+        game_id_col=config.data.game_id_col,
+        snapshot_col=config.data.snapshot_col,
+        context=str(config.data.csv_path),
+    )
+
     df = apply_season_year_floor(
         df, season_col=config.data.season_col, floor=config.data.season_year_floor
     )
@@ -581,10 +802,51 @@ def prepare_dataset(config: ExperimentConfig) -> PreparedDataset:
     df[config.data.date_col] = pd.to_datetime(df[config.data.date_col])
     df = df.sort_values(config.data.date_col).reset_index(drop=True)
 
+    # GAME_ID survives cleaning on the intermediate-line path (see
+    # _required_keep_columns) because the window arithmetic needs it. It must
+    # not survive into X: it is a string that monotonically encodes date and
+    # sequence, which a tree will happily split on. Excluded here rather than
+    # via config.exclude_cols so no existing fingerprint changes.
     X, y = build_feature_matrix(
-        df, target_col=target_col, exclude_cols=config.exclude_cols
+        df,
+        target_col=target_col,
+        exclude_cols=[*config.exclude_cols, config.data.game_id_col],
     )
     assert_no_leaking_features(X)
+    if config.data.game_id_col in X.columns:
+        raise ValueError(
+            f"{config.data.game_id_col!r} reached the feature matrix. It encodes "
+            "date and sequence, so a model given it would split on when a game "
+            "was played rather than on anything about the game."
+        )
+
+    n_games = (
+        int(df[config.data.game_id_col].nunique())
+        if config.data.game_id_col in df.columns
+        else len(df)
+    )
+    n_snapshots = (
+        int(pd.to_numeric(df[config.data.snapshot_col], errors="coerce").nunique())
+        if config.data.snapshot_col in df.columns
+        else 1
+    )
+
+    # AFTER X: these are closing lines the model must never see. See
+    # load_scoring_sidecar -- the ordering is the safety property.
+    scoring_columns: list[str] = []
+    if config.data.scoring_csv_path is not None:
+        df, scoring_columns = load_scoring_sidecar(
+            df,
+            csv_path=config.data.scoring_csv_path,
+            game_id_col=config.data.game_id_col,
+            snapshot_col=config.data.snapshot_col,
+        )
+        leaked = sorted(set(scoring_columns) & set(X.columns))
+        if leaked:
+            raise ValueError(
+                f"Sidecar column(s) {leaked} are already in the feature matrix. "
+                "The sidecar exists to hold columns the model must not see."
+            )
 
     planted_result = None
     if planted.enabled:
@@ -612,4 +874,8 @@ def prepare_dataset(config: ExperimentConfig) -> PreparedDataset:
         n_pushes_excluded=n_pushes_excluded,
         planted_signal=planted_result,
         cleaning_report=cleaning_report,
+        n_games=n_games,
+        n_snapshots=n_snapshots,
+        snapshot_minutes=config.data.snapshot_minutes,
+        scoring_columns=scoring_columns,
     )

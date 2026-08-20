@@ -832,7 +832,11 @@ short pairs carry little independent information. Consequences:
 Handled dataset-side only, deliberately leaving `training_pipeline` untouched so
 the closing-line model is unaffected:
 
-- `SNAPSHOT_WEIGHT` = 1 / snapshots-for-that-game ships in the scoring sidecar.
+- A `SNAPSHOT_WEIGHT` column was tried here and removed. It was emitted by
+  the builder and read by nothing, and a correction nobody applies is worse
+  than an acknowledged limitation: it reads as though the problem is handled.
+  The correction that shipped is `training_pipeline.snapshot_scoring`, which
+  regroups finished predictions one horizon at a time.
 - `GAME_ID` and `TIME_TO_MATCH_MIN` stay in the training frame so predictions
   can be regrouped by game.
 

@@ -109,6 +109,19 @@ def xgb_params_from_trial(
     return params, get_trial_n_estimators(trial), lambda_
 
 
+def _window_group_col(
+    config: ExperimentConfig, prepared: PreparedDataset
+) -> str | None:
+    """The column ``train_games`` must be counted over, or None for row counts.
+
+    None whenever the frame holds one row per game, which keeps every
+    closing-line run on exactly the arithmetic it has always used.
+    """
+    if not prepared.is_pooled_snapshots:
+        return None
+    return config.data.game_id_col
+
+
 def _build_static_params(
     config: ExperimentConfig, *, random_state: int | None = None
 ) -> dict[str, Any]:
@@ -131,6 +144,7 @@ def _make_fit_and_predict(
     xgb_params: dict[str, Any],
     n_estimators: int,
     sample_weight_lambda: float | None,
+    feature_names: list[str],
     random_state: int | None = None,
 ) -> Callable[[pd.DataFrame, pd.DataFrame], np.ndarray]:
     """Closure fitting one model per day and predicting that day's games."""
@@ -156,11 +170,14 @@ def _make_fit_and_predict(
         if not eligible.all():
             train_df = train_df.loc[eligible].copy()
 
+        # By allow-list: these frames carry GAME_ID (the daily window counts
+        # games with it) and may carry joined closing lines, and a deny-list
+        # would hand both to the model.
         X_train, y_train = build_feature_matrix(
-            train_df, target_col=target_col, exclude_cols=config.exclude_cols
+            train_df, target_col=target_col, feature_names=feature_names
         )
         X_test, _ = build_feature_matrix(
-            test_df, target_col=target_col, exclude_cols=config.exclude_cols
+            test_df, target_col=target_col, feature_names=feature_names
         )
 
         sample_weight = None
@@ -369,12 +386,20 @@ def run_walk_forward_evaluation(
             xgb_params=resolved_params,
             n_estimators=resolved_n_estimators,
             sample_weight_lambda=resolved_lambda,
+            feature_names=prepared.feature_names,
             random_state=resolved_random_state,
         ),
         metric_fn=lambda y_true, y_pred: float(mean_absolute_error(y_true, y_pred)),
         target_col=target_col,
         date_col=config.data.date_col,
         max_games=train_games,
+        # So train_games means GAMES here too. Without it the daily retrain
+        # would keep train_games ROWS while CV kept train_games games, and the
+        # holdout would be scoring a model trained on a tenth of the history
+        # the tuning was done under -- the two measurements would no longer be
+        # about the same model. None on any one-row-per-game frame, where it
+        # changes nothing.
+        max_games_group_col=_window_group_col(config, prepared),
         metric_name="mae",
         show_progress=show_progress,
         progress_desc=f"Daily backtest ({config.experiment_name})",
