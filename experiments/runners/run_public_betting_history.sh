@@ -89,7 +89,16 @@ CELLS=("a_keep_columns" "c_drop_and_extend")
 for cell in "${CELLS[@]}"; do
   echo ""
   echo "=== $(date -Is) $cell ==="
-  poetry run python -m training_pipeline.cli "$CAMPAIGN/$cell.yaml"
+  # --no-save-model: this is an evaluation campaign, not a deployment. Without
+  # it every cell writes a production bundle named
+  # <window_name_label>_xgb_<target>_<DD_MM_YY> -- and since no cell sets
+  # window_name_label (both tune train_games, so both resolve to
+  # "tuned_window") and the date comes from the END of the dev split, which the
+  # extra history does not move, EVERY cell resolves to the same path. The
+  # first cell writes it and the rest die on the overwrite guard before tuning.
+  # Promote a winner afterwards with:
+  #   poetry run python -m training_pipeline.promote <run_dir>
+  poetry run python -m training_pipeline.cli "$CAMPAIGN/$cell.yaml" --no-save-model
   status=$?
   if [ $status -ne 0 ]; then
     echo "!!! $cell FAILED (exit $status) -- continuing with the rest"
