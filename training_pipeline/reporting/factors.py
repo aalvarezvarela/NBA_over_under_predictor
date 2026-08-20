@@ -49,6 +49,20 @@ FACTOR_SOURCES: dict[str, str] = {
     "season_floor": "data.season_year_floor",
     "max_na_per_row": "cleaning.max_na_per_row",
     "nan_threshold": "cleaning.nan_threshold",
+    #: How hard redundant columns are pruned. Tightening this from 0.995 to
+    #: 0.95 removed 150 features that the earlier runs trained on, so a run
+    #: before and after it is not the same experiment.
+    "corr_threshold": "cleaning.corr_threshold",
+    #: The other half of data.extend_history_dropping_season_gated_columns.
+    #: That flag resolves into season_year_floor AND this, so season_floor
+    #: alone happens to separate the runs of the campaign it was built for --
+    #: but a config that moved this without moving the floor would drop a
+    #: different column set and still match as identical.
+    "seasonal_nan_spread": "cleaning.max_seasonal_nan_spread",
+    #: Which dataset a run trained on, and therefore how cleaning judged
+    #: redundancy. Closing-line and intermediate-line runs are not the same
+    #: experiment and must never be averaged together.
+    "dataset_type": "data.dataset_type",
     "n_trials": "optuna.n_trials",
     # --- rolling-origin CV and the tuned training protocol -------------------
     # These change what a trial IS, so a run before and after any of them is not

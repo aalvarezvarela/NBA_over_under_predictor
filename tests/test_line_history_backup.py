@@ -5,7 +5,7 @@ partitioned parent, and treating it like an ordinary table would write the
 whole fact table twice.
 """
 
-from datetime import date
+from datetime import UTC, datetime
 
 import pandas as pd
 import pytest
@@ -139,11 +139,16 @@ class TestBackupRun:
         assert len(result.uploaded) == 6
         assert result.rows == 0
 
-    def test_date_tag_defaults_to_today(self, monkeypatch):
+    def test_date_tag_defaults_to_today_in_utc(self, monkeypatch):
+        # UTC, not date.today(): backup_line_history tags in UTC deliberately,
+        # so that a nightly job and the S3 listing agree no matter where the
+        # machine is. Asserting the LOCAL date made this fail for the two hours
+        # after local midnight in CEST -- a real red suite, once a day, on
+        # correct code.
         self._patch_export(monkeypatch)
         s3 = _S3()
         result = bk.backup_line_history(_Conn(), s3_client=s3, progress=False)
-        assert date.today().isoformat() in result.prefix
+        assert datetime.now(UTC).date().isoformat() in result.prefix
 
     def test_empty_schema_uploads_nothing(self, monkeypatch):
         self._patch_export(monkeypatch)

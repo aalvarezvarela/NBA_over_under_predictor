@@ -222,3 +222,61 @@ def test_single_shot_mode_skips_the_daily_loop(patched, tmp_path):
 def test_save_model_kwarg_overrides_the_config_flag(patched, tmp_path):
     config = _config(tmp_path, refit=RefitConfig(train_production_model=True))
     assert run_experiment(config, save_model=False).model is None
+
+
+# ---------------------------------------------------------------------------
+# the drift null on the walk-forward path
+# ---------------------------------------------------------------------------
+
+
+def _betting_metrics(run_dir):
+    import json
+    from pathlib import Path
+
+    return json.loads((Path(run_dir) / "betting_metrics.json").read_text())
+
+
+def test_walk_forward_runs_record_a_real_drift_null(patched, tmp_path):
+    """DailyBacktestResult carried no bias-corrected null, so run_experiment
+    fell back to the model's OWN metrics when holdout_result was None -- which
+    is every daily_walk_forward run, i.e. the default. betting_metrics.json
+    then held a byte-copy of the model under the null's name, and the
+    leaderboard's roi_vs_bias_baseline (roi - bias_baseline_roi) was 0.00 by
+    construction. Nothing errored and nothing looked wrong.
+    """
+    config = _config(tmp_path, save_experiment_artifacts=True)
+    result = run_experiment(config)
+    assert result.holdout_result is None  # the branch that used to fall back
+
+    metrics = _betting_metrics(result.run_dir)
+    model = metrics["primary"]
+    null = metrics["baseline_bias_corrected_betting"]
+
+    assert model != null
+    # The null bets every candidate game; the model selects among them.
+    assert null["n_bets"] == null["n_candidates"]
+    assert metrics["baseline_bias_corrected"]["mae"] != pytest.approx(
+        result.walk_forward_result.mae
+    )
+
+
+def test_both_evaluation_modes_score_against_the_same_dev_drift(patched, tmp_path):
+    """The bias must come from dev either way, or the two modes are measured
+    against different nulls and their roi_vs_bias_baseline is not comparable."""
+    # Distinct names: the run directory is <name>_<timestamp> to the second,
+    # so two same-named runs in one test collide.
+    walk_forward = run_experiment(
+        _config(tmp_path, experiment_name="wf", save_experiment_artifacts=True)
+    )
+    single_shot = run_experiment(
+        _config(
+            tmp_path,
+            experiment_name="ss",
+            save_experiment_artifacts=True,
+            holdout_evaluation=HoldoutEvaluation.SINGLE_SHOT,
+        )
+    )
+
+    assert _betting_metrics(walk_forward.run_dir)["dev_line_error_bias"] == (
+        pytest.approx(_betting_metrics(single_shot.run_dir)["dev_line_error_bias"])
+    )

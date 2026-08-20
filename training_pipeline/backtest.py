@@ -36,7 +36,12 @@ from nba_ou.modeling.modeling import (
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from xgboost import XGBClassifier, XGBRegressor
 
-from training_pipeline.baseline import BaselineMetrics, compute_baseline_metrics
+from training_pipeline.baseline import (
+    BaselineMetrics,
+    compute_baseline_metrics,
+    compute_bias_corrected_baseline_metrics,
+    compute_line_error_bias,
+)
 from training_pipeline.betting import (
     BettingMetrics,
     betting_threshold_sweep,
@@ -192,6 +197,15 @@ class DailyBacktestResult:
     baseline: BaselineMetrics
     betting_primary: BettingMetrics
     betting_sweep: pd.DataFrame
+    #: "Trust the line + its historical drift" null, fitted on the history rows
+    #: only and applied to the evaluated ones. The same pair of fields
+    #: HoldoutEvaluationResult carries, and for the same reason: without them
+    #: this path has no harder null than the raw line, and anything reading
+    #: "model versus drift" off a daily_walk_forward run would be comparing the
+    #: model against itself.
+    baseline_bias_corrected: BaselineMetrics
+    baseline_bias_corrected_betting: BettingMetrics
+    dev_line_error_bias: float
     #: One row per game-day: metric, training-set size and its date range.
     daily_results: pd.DataFrame
     #: One row per game with y_true/y_pred/line/edge, in chronological order.
@@ -310,6 +324,7 @@ def run_walk_forward_evaluation(
     sample_weight_lambda: float | None = None,
     show_progress: bool = True,
     random_state: int | None = None,
+    dev_line_error_bias: float | None = None,
 ) -> DailyBacktestResult:
     """Score ``df_evaluation`` one game-day at a time, retraining each day.
 
@@ -320,6 +335,13 @@ def run_walk_forward_evaluation(
     ``random_state`` overrides ``config.random_state`` for every daily fit,
     which is how the same evaluation gets repeated under several seeds to
     measure how much of a result is just fit noise.
+
+    ``dev_line_error_bias`` is the drift the bias-corrected null adds to the
+    line. It must be measured on data the evaluation window cannot see; the
+    caller passes the value it already computed on dev, and when it is omitted
+    this falls back to ``df_history``, which is by construction everything
+    before the evaluation period. Never derived from ``df_evaluation``: a null
+    fitted on the rows it is scored on is not a null.
     """
     resolved_random_state = (
         config.random_state if random_state is None else random_state
@@ -412,6 +434,31 @@ def run_walk_forward_evaluation(
         line_col=prepared.baseline_line_col,
     )
 
+    resolved_bias = (
+        compute_line_error_bias(
+            df_history, baseline_line_col=prepared.baseline_line_col
+        )
+        if dev_line_error_bias is None
+        else dev_line_error_bias
+    )
+    # Scored on exactly the games the model was scored on -- df_backtest rows
+    # the walk-forward actually predicted, in its order -- so the two are
+    # comparable game for game.
+    baseline_bias_corrected = compute_bias_corrected_baseline_metrics(
+        df_backtest.iloc[positions],
+        baseline_line_col=prepared.baseline_line_col,
+        bias=resolved_bias,
+    )
+    # A constant edge on every game, so a min-edge filter would take either all
+    # of them or none. It is a fixed, non-selective strategy: score every
+    # candidate game and let the model's selectivity be the thing that has to
+    # earn its keep.
+    baseline_bias_corrected_betting = evaluate_betting(
+        predicted_edge=np.full_like(actual_total, resolved_bias),
+        min_edge=0.0,
+        **betting_kwargs,
+    )
+
     # A classifier has no view on the total, so there is nothing to re-score
     # against a different line: its label was defined relative to THIS one.
     line_comparison = (
@@ -471,6 +518,9 @@ def run_walk_forward_evaluation(
         baseline=baseline,
         betting_primary=betting_primary,
         betting_sweep=betting_sweep,
+        baseline_bias_corrected=baseline_bias_corrected,
+        baseline_bias_corrected_betting=baseline_bias_corrected_betting,
+        dev_line_error_bias=resolved_bias,
         daily_results=walk_forward.daily_results,
         predictions=predictions,
         xgb_params=resolved_params,

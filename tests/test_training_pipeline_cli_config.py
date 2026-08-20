@@ -392,3 +392,80 @@ def test_artifact_root_stays_out_of_the_fingerprint(tmp_path):
     moved.experiment_root_dir = Path("somewhere/entirely/different")
 
     assert config.fingerprint() == moved.fingerprint()
+
+
+# ---------------------------------------------------------------------------
+# clearing an inherited mapping
+# ---------------------------------------------------------------------------
+
+
+def test_an_empty_mapping_clears_the_inherited_one():
+    """Merging {} key-by-key is a no-op by construction, so without an explicit
+    rule there is NO way to say "none of these" about an inherited mapping --
+    the cell silently keeps the parent's. This is the merge-level half of the
+    bug; the config-level half is asserted below."""
+    base = {"cleaning": {"corr_threshold_overrides": {"ODDS_": 0.99}}}
+    override = {"cleaning": {"corr_threshold_overrides": {}}}
+
+    assert deep_merge(base, override)["cleaning"]["corr_threshold_overrides"] == {}
+
+
+def test_a_non_empty_mapping_still_merges_key_by_key():
+    """The clearing rule must not cost the ordinary case: naming one key of a
+    section still leaves its siblings alone."""
+    base = {"cleaning": {"corr_threshold": 0.95, "corr_threshold_overrides": {
+        "ODDS_": 0.99, "PLAYER_": 0.9
+    }}}
+    override = {"cleaning": {"corr_threshold_overrides": {"ODDS_": 0.995}}}
+
+    merged = deep_merge(base, override)["cleaning"]
+    assert merged["corr_threshold"] == 0.95
+    assert merged["corr_threshold_overrides"] == {"ODDS_": 0.995, "PLAYER_": 0.9}
+
+
+BASE_WITH_OVERRIDES = """
+experiment_root_dir: artifacts/experiments
+prediction_strategy: line_error_regressor
+data:
+  csv_path: data/train_data/x.csv
+cleaning:
+  corr_threshold: 0.95
+  corr_threshold_overrides:
+    ODDS_: 0.99
+"""
+
+
+def test_a_cell_can_switch_off_inherited_correlation_overrides(tmp_path):
+    """The case that actually bit: a diagnostic cell meant to differ from its
+    baseline in ONE thing wrote `corr_threshold_overrides: {}`, resolved to the
+    inherited {ODDS_: 0.99}, and became a two-factor cell without erroring.
+
+    `{}` and None are deliberately different downstream -- clean_dataframe_for_
+    training reads None as "use DEFAULT_CORR_THRESHOLD_OVERRIDES" -- so a cell
+    must be able to reach the empty mapping specifically."""
+    root = tmp_path / "experiments"
+    _write_text(root / "_base.yaml", BASE_WITH_OVERRIDES)
+    cell = _write_text(
+        root / "campaign" / "control.yaml",
+        "experiment_name: control\ncleaning:\n  corr_threshold_overrides: {}\n",
+    )
+
+    config = load_config(cell)
+    assert config.cleaning.corr_threshold_overrides == {}
+    assert config.cleaning.corr_threshold == 0.95
+
+
+def test_clearing_the_overrides_forks_the_optuna_study(tmp_path):
+    """It changes which columns the model is given, so it must not share a
+    study with the cell it is a control for."""
+    root = tmp_path / "experiments"
+    _write_text(root / "_base.yaml", BASE_WITH_OVERRIDES)
+    inherits = _write_text(
+        root / "campaign" / "a.yaml", "experiment_name: a\n"
+    )
+    clears = _write_text(
+        root / "campaign" / "b.yaml",
+        "experiment_name: b\ncleaning:\n  corr_threshold_overrides: {}\n",
+    )
+
+    assert load_config(inherits).fingerprint() != load_config(clears).fingerprint()

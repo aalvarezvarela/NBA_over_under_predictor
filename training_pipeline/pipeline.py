@@ -92,6 +92,13 @@ class _EvaluationMetrics:
     baseline: BaselineMetrics
     betting_primary: BettingMetrics
     betting_sweep: pd.DataFrame
+    #: The harder "line + its historical drift" null. Both modes compute it;
+    #: it used to be read off holdout_result alone, with the walk-forward
+    #: branch falling back to the MODEL's own metrics -- which made
+    #: roi_vs_bias_baseline exactly 0.00 on every daily_walk_forward run,
+    #: silently, because a model always ties itself.
+    baseline_bias_corrected: BaselineMetrics
+    baseline_bias_corrected_betting: BettingMetrics
     predictions: pd.DataFrame
     line_comparison: pd.DataFrame | None
     calibration: CalibrationSummary | None
@@ -111,6 +118,10 @@ def _normalize_evaluation(
             baseline=holdout_result.baseline_holdout,
             betting_primary=holdout_result.betting_primary,
             betting_sweep=holdout_result.betting_sweep,
+            baseline_bias_corrected=holdout_result.baseline_bias_corrected,
+            baseline_bias_corrected_betting=(
+                holdout_result.baseline_bias_corrected_betting
+            ),
             predictions=holdout_result.predictions_df,
             line_comparison=holdout_result.line_comparison,
             calibration=holdout_result.calibration,
@@ -128,6 +139,10 @@ def _normalize_evaluation(
         baseline=walk_forward_result.baseline,
         betting_primary=walk_forward_result.betting_primary,
         betting_sweep=walk_forward_result.betting_sweep,
+        baseline_bias_corrected=walk_forward_result.baseline_bias_corrected,
+        baseline_bias_corrected_betting=(
+            walk_forward_result.baseline_bias_corrected_betting
+        ),
         predictions=walk_forward_result.predictions,
         line_comparison=walk_forward_result.line_comparison,
         calibration=walk_forward_result.calibration,
@@ -413,6 +428,7 @@ def run_experiment(
                 sample_weight_lambda=tuned_lambda,
                 show_progress=config.backtest.show_progress,
                 random_state=seed,
+                dev_line_error_bias=dev_line_error_bias,
             )
 
         # One model fitted on the dev window, predicting the whole test period
@@ -705,15 +721,9 @@ def run_experiment(
             run_dir,
             betting_sweep=test_betting_sweep,
             betting_primary=test_betting_primary,
-            baseline_bias_corrected=(
-                holdout_result.baseline_bias_corrected
-                if holdout_result is not None
-                else test_baseline
-            ),
+            baseline_bias_corrected=evaluation.baseline_bias_corrected,
             baseline_bias_corrected_betting=(
-                holdout_result.baseline_bias_corrected_betting
-                if holdout_result is not None
-                else test_betting_primary
+                evaluation.baseline_bias_corrected_betting
             ),
             dev_line_error_bias=dev_line_error_bias,
         )

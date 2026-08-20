@@ -31,11 +31,21 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
     section (e.g. only ``optuna.mae_tolerance_abs``) without restating the rest
     of it. Lists are replaced wholesale, not concatenated -- appending would
     make it impossible to shrink a list such as ``edge_thresholds``.
+
+    An EMPTY mapping in the override replaces rather than merges, which is the
+    only way to say "none of these" about an inherited mapping. Merging it
+    key-by-key is a no-op by construction -- it has no keys -- so without this
+    rule ``corr_threshold_overrides: {}`` resolves to whatever ``_base.yaml``
+    set, and a cell written to have no overrides silently inherits them. That
+    exact case turned a single-factor control into a two-factor one. ``null``
+    is not an escape either: several fields read None as "use my built-in
+    default", so it means the opposite of empty. Nothing writes ``{}`` to mean
+    "leave this alone", which is why the shorter rule loses nothing.
     """
     merged = dict(base)
     for key, value in override.items():
         existing = merged.get(key)
-        if isinstance(existing, dict) and isinstance(value, dict):
+        if isinstance(existing, dict) and isinstance(value, dict) and value:
             merged[key] = deep_merge(existing, value)
         else:
             merged[key] = value
