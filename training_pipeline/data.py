@@ -337,13 +337,16 @@ def _required_keep_columns(
     # prepare_dataset -- as a string encoding date and sequence it is the last
     # thing that should reach a model.
     #
-    # The snapshot column is kept only in POOLED mode, where it is both a real
-    # feature and the grouping key for the per-horizon report. Under
-    # snapshot_minutes it is constant, and force-keeping a constant would only
-    # smuggle a dead column past the cleaning that exists to remove it.
+    # The snapshot column is a feature in POOLED mode. A single-horizon model
+    # does not need the constant as a feature, but the scoring-sidecar join does
+    # still need it as part of the (game, snapshot) key. In that case it is a
+    # carrier column only and prepare_dataset excludes it from X explicitly.
     if config.data.dataset_type is DatasetType.INTERMEDIATE_LINE:
         keep.add(config.data.game_id_col)
-        if config.data.snapshot_minutes is None:
+        if (
+            config.data.snapshot_minutes is None
+            or config.data.scoring_csv_path is not None
+        ):
             keep.add(config.data.snapshot_col)
     return sorted(keep)
 
@@ -807,10 +810,19 @@ def prepare_dataset(config: ExperimentConfig) -> PreparedDataset:
     # not survive into X: it is a string that monotonically encodes date and
     # sequence, which a tree will happily split on. Excluded here rather than
     # via config.exclude_cols so no existing fingerprint changes.
+    carrier_columns = [config.data.game_id_col]
+    if (
+        config.data.dataset_type is DatasetType.INTERMEDIATE_LINE
+        and config.data.snapshot_minutes is not None
+    ):
+        # Force-kept only when a scoring sidecar needs the join key. It is
+        # constant after the horizon filter and must not become a model input.
+        carrier_columns.append(config.data.snapshot_col)
+
     X, y = build_feature_matrix(
         df,
         target_col=target_col,
-        exclude_cols=[*config.exclude_cols, config.data.game_id_col],
+        exclude_cols=[*config.exclude_cols, *carrier_columns],
     )
     assert_no_leaking_features(X)
     if config.data.game_id_col in X.columns:

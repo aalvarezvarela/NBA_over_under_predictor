@@ -166,7 +166,13 @@ def train_production_model_from_run(
     )
     dates = prepared.df_full[config.data.date_col]
 
-    train_games = config.walk_forward.train_games
+    # The selected trial may have tuned the window. The value saved in the run
+    # config is only the fallback used when no trial-level value was selected.
+    train_games = (
+        hyperparameters.train_games
+        if hyperparameters.train_games is not None
+        else config.walk_forward.train_games
+    )
     if config.refit.strategy == RefitStrategy.ROLLING_WINDOW and train_games:
         window = rolling_window_index(
             prepared.df_full.index,
@@ -181,6 +187,16 @@ def train_production_model_from_run(
         X = X.loc[window]
         y = y.loc[window]
         dates = dates.loc[window]
+
+    # On a pooled intermediate dataset one game contributes several snapshot
+    # rows. Bundle metadata is consumed as a game window later, so recording
+    # len(X) here would multiply the intended window by the snapshot count.
+    if config.data.game_id_col in prepared.df_full.columns:
+        n_train_games = int(
+            prepared.df_full.loc[X.index, config.data.game_id_col].nunique()
+        )
+    else:
+        n_train_games = len(X)
 
     model = fit_final_model(
         X_dev=X,
@@ -209,7 +225,7 @@ def train_production_model_from_run(
             source_run=run_dir,
             train_date_min=pd.Timestamp(dates.min()),
             train_date_max=pd.Timestamp(dates.max()),
-            n_train_games=len(X),
+            n_train_games=n_train_games,
         )
         model_path, meta_path = save_model_bundle(
             model=model,
@@ -226,7 +242,7 @@ def train_production_model_from_run(
         source_run=run_dir,
         csv_path=Path(config.data.csv_path),
         dataset_checksum=prepared.dataset_checksum,
-        n_train_games=len(X),
+        n_train_games=n_train_games,
         train_date_min=pd.Timestamp(dates.min()),
         train_date_max=pd.Timestamp(dates.max()),
         n_features=len(X.columns),
@@ -354,8 +370,17 @@ def main() -> None:
     print(f"  weight lambda: {hyperparameters.sample_weight_lambda}")
     print(f"Target         : {config.family.value}")
     print(f"Training data  : {csv_path}")
-    print(f"Window         : {config.walk_forward.train_games} games "
-          f"({config.refit.strategy.value})")
+    selected_train_games = (
+        hyperparameters.train_games
+        if hyperparameters.train_games is not None
+        else config.walk_forward.train_games
+    )
+    window_label = (
+        "full dataset"
+        if args.full_dataset or config.refit.strategy == RefitStrategy.FULL_DATASET
+        else f"{selected_train_games} games"
+    )
+    print(f"Window         : {window_label} ({config.refit.strategy.value})")
 
     if args.dry_run:
         print("\n--dry-run: nothing trained or saved.")

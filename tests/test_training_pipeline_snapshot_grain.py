@@ -594,6 +594,35 @@ def test_the_sidecar_reaches_df_full_and_not_the_feature_matrix(tmp_path):
     assert "ODDS_CLOSING_TOTAL_LINE_bet365" not in prepared.X.columns
 
 
+def test_single_horizon_keeps_the_sidecar_join_key_out_of_features(tmp_path):
+    """The constant horizon is still needed to join closing-line scoring data,
+    but it remains metadata rather than a model input.
+    """
+    from training_pipeline.data import prepare_dataset
+
+    csv_path = _write_intermediate_csv(tmp_path)
+    source = pd.read_csv(csv_path, dtype={"GAME_ID": str})
+    sidecar = source[["GAME_ID", "TIME_TO_MATCH_MIN"]].copy()
+    sidecar["ODDS_CLOSING_TOTAL_LINE_bet365"] = 221.5
+    sidecar_path = tmp_path / "single_horizon_scoring.csv"
+    sidecar.to_csv(sidecar_path, index=False)
+
+    prepared = prepare_dataset(
+        _prepared_config(
+            tmp_path,
+            csv_path,
+            snapshot_minutes=720,
+            scoring_csv_path=sidecar_path,
+        )
+    )
+
+    assert (prepared.df_full["TIME_TO_MATCH_MIN"] == 720).all()
+    assert "TIME_TO_MATCH_MIN" not in prepared.feature_names
+    assert "TIME_TO_MATCH_MIN" not in prepared.X.columns
+    assert "ODDS_CLOSING_TOTAL_LINE_bet365" in prepared.df_full.columns
+    assert "ODDS_CLOSING_TOTAL_LINE_bet365" not in prepared.X.columns
+
+
 # --- the CLI ----------------------------------------------------------------
 
 

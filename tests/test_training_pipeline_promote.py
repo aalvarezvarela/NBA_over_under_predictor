@@ -13,7 +13,14 @@ from training_pipeline.config import (
 from training_pipeline.promote import load_run_config, train_production_model_from_run
 
 
-def _make_run(tmp_path: Path, csv_path: str) -> Path:
+def _make_run(
+    tmp_path: Path,
+    csv_path: str,
+    *,
+    selected_train_games: int | None = None,
+    data: DataConfig | None = None,
+    walk_forward: WalkForwardConfig | None = None,
+) -> Path:
     run_dir = tmp_path / "src_run_20260101_120000"
     run_dir.mkdir(parents=True)
     config = ExperimentConfig(
@@ -21,8 +28,8 @@ def _make_run(tmp_path: Path, csv_path: str) -> Path:
         training_version="2.1",
         target_family=TargetFamily.TOTAL_POINTS,
         line_col="ODDS_TOTAL_LINE_bet365",
-        data=DataConfig(csv_path=csv_path, expected_checksum="sha256:stale"),
-        walk_forward=WalkForwardConfig(train_games=40),
+        data=data or DataConfig(csv_path=csv_path, expected_checksum="sha256:stale"),
+        walk_forward=walk_forward or WalkForwardConfig(train_games=40),
         model_output_root=tmp_path / "models",
     )
     (run_dir / "config.json").write_text(config.model_dump_json())
@@ -33,7 +40,15 @@ def _make_run(tmp_path: Path, csv_path: str) -> Path:
                     "number": 4,
                     "value": 13.4,
                     "params": {"max_depth": 2, "learning_rate": 0.03},
-                    "user_attrs": {"median_best_iteration": 60, "mean_mae": 13.4},
+                    "user_attrs": {
+                        "median_best_iteration": 60,
+                        "mean_mae": 13.4,
+                        **(
+                            {"train_games": selected_train_games}
+                            if selected_train_games is not None
+                            else {}
+                        ),
+                    },
                 }
             }
         )
@@ -119,6 +134,45 @@ def test_full_dataset_strategy_uses_every_game(tmp_path, csv):
         run_dir, csv_path=csv, refit_strategy=RefitStrategy.FULL_DATASET
     )
     assert result.n_train_games > 40
+
+
+def test_promotion_uses_selected_window_and_records_games_not_snapshot_rows(
+    tmp_path, csv
+):
+    import pandas as pd
+
+    closing = pd.read_csv(csv, dtype={"GAME_ID": str})
+    pooled = pd.concat(
+        [
+            closing.assign(TIME_TO_MATCH_MIN=720, SNAPSHOT_FEATURE=0.0),
+            closing.assign(TIME_TO_MATCH_MIN=360, SNAPSHOT_FEATURE=1.0),
+        ],
+        ignore_index=True,
+    )
+    pooled_path = tmp_path / "pooled.csv"
+    pooled.to_csv(pooled_path, index=False)
+
+    run_dir = _make_run(
+        tmp_path,
+        str(pooled_path),
+        selected_train_games=25,
+        data=DataConfig(
+            csv_path=pooled_path,
+            dataset_type="intermediate_line",
+        ),
+        walk_forward=WalkForwardConfig(
+            strategy="rolling_origin",
+            train_games=40,
+            train_games_choices=(25, 40),
+            min_train_games=20,
+        ),
+    )
+    result = train_production_model_from_run(run_dir)
+
+    assert result.hyperparameters.train_games == 25
+    assert result.n_train_games == 25
+    metadata = json.loads(Path(result.meta_path).read_text())
+    assert metadata["training_metrics"]["train_games"] == 25
 
 
 def test_refuses_to_clobber_an_existing_bundle(tmp_path, csv):
