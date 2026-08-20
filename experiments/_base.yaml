@@ -355,6 +355,35 @@ walk_forward:
   # worse than days 2+ (53.4%). Retraining daily would cost 4x the fits to buy
   # that. Spend the budget on eval_span_games instead.
   retrain_every_days: 4
+  # FLOOR on how many games a validation fold must hold. A fold starts at
+  # retrain_every_days game-days and then absorbs further WHOLE days until it
+  # reaches this many games; a fold that still finishes short -- because the
+  # region ran out or a season boundary closed it -- is merged into its
+  # predecessor from the same season rather than dropped.
+  #
+  # Measured on cell A's real layout (dev = 5,732 games, eval_span_games 850):
+  #
+  #                       folds  games/fold min-median-max  days/fold  <25 games
+  #     no floor            30        2 -  30 - 36           1 - 4 - 4      3
+  #     min 25              28       25 -  30 - 36           4 - 4 - 6      0
+  #
+  # The same 855 validation games either way -- none added, none dropped, none
+  # duplicated. Only the grouping changes, which is what makes a cell with the
+  # floor comparable to one without.
+  #
+  # Why 25 rather than leaving it off: the layout above contained a 2-game fold
+  # (2025-04-18, the last day of season 2024, closed by require_same_season_test)
+  # plus folds of 15 and 17. Under objective_aggregation: pooled a 2-game fold is
+  # harmless in the OBJECTIVE -- it carries 2/855 of the weight, which is
+  # correct -- but the pruner reads a RUNNING metric whose early steps are those
+  # same folds, so a trial can be killed on a handful of games. 25 is roughly
+  # the median night's schedule times three and costs two folds.
+  #
+  # null restores the pre-floor layout exactly, for reproducing an older run --
+  # and a test_anchored cell MUST set null explicitly, because the config layer
+  # rejects this knob outside rolling_origin rather than letting it be a silent
+  # no-op. Inheriting it there is a parse error, not a quiet nothing.
+  min_validation_games: 25
   # Approximate size of the validation region in games, measured back from the
   # end of dev. Approximate because the region grows in whole game-days; the
   # realised count is recorded in metadata.json as cv_n_validation_games.

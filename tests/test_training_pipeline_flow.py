@@ -4,6 +4,8 @@
                       ->  [optional] production refit on the full-data tail
 """
 
+from pathlib import Path
+
 import numpy as np
 import optuna
 import pandas as pd
@@ -280,3 +282,134 @@ def test_both_evaluation_modes_score_against_the_same_dev_drift(patched, tmp_pat
     assert _betting_metrics(walk_forward.run_dir)["dev_line_error_bias"] == (
         pytest.approx(_betting_metrics(single_shot.run_dir)["dev_line_error_bias"])
     )
+
+
+# ---------------------------------------------------------------------------
+# baseline aggregation must follow the objective aggregation
+# ---------------------------------------------------------------------------
+
+
+def _cv_numbers(run_dir):
+    import json
+    from pathlib import Path
+
+    metrics = json.loads((Path(run_dir) / "final_test_metrics.json").read_text())
+    baseline = json.loads((Path(run_dir) / "baseline_metrics.json").read_text())
+    folds = pd.read_csv(Path(run_dir) / "baseline_fold_metrics.csv")
+    return metrics["cv"]["mae"], baseline["cv"]["mae"], folds
+
+
+def test_pooled_runs_compare_the_model_against_a_pooled_baseline(patched, tmp_path):
+    """The bug: cv_mae read pooled_mae while baseline_cv_mae stayed the mean of
+    fold MAEs, so every model-vs-line CV number under
+    objective_aggregation: pooled subtracted two different kinds of average.
+    On a real run it turned a +0.02 edge into a reported -0.19 deficit."""
+    from training_pipeline.config import ObjectiveAggregation, OptunaConfig
+
+    config = _config(
+        tmp_path,
+        experiment_name="pooled_base",
+        save_experiment_artifacts=True,
+        optuna=OptunaConfig(
+            n_trials=1,
+            objective_aggregation=ObjectiveAggregation.POOLED,
+            search_space=SearchSpaceConfig(n_estimators=8, early_stopping_rounds=4),
+        ),
+    )
+    _, baseline_cv_mae, folds = _cv_numbers(run_experiment(config).run_dir)
+
+    pooled = float((folds["mae"] * folds["n_games"]).sum() / folds["n_games"].sum())
+    fold_mean = float(folds["mae"].mean())
+
+    assert baseline_cv_mae == pytest.approx(pooled)
+    if pooled != pytest.approx(fold_mean):
+        assert baseline_cv_mae != pytest.approx(fold_mean)
+
+
+def test_mean_runs_keep_the_fold_mean_baseline(patched, tmp_path):
+    """The other half: runs that aggregate by mean must be unchanged."""
+    from training_pipeline.config import ObjectiveAggregation, OptunaConfig
+
+    config = _config(
+        tmp_path,
+        experiment_name="mean_base",
+        save_experiment_artifacts=True,
+        optuna=OptunaConfig(
+            n_trials=1,
+            objective_aggregation=ObjectiveAggregation.MEAN,
+            search_space=SearchSpaceConfig(n_estimators=8, early_stopping_rounds=4),
+        ),
+    )
+    _, baseline_cv_mae, folds = _cv_numbers(run_experiment(config).run_dir)
+
+    assert baseline_cv_mae == pytest.approx(float(folds["mae"].mean()))
+
+
+# ---------------------------------------------------------------------------
+# the tie band reaches the run, and is recorded
+# ---------------------------------------------------------------------------
+
+
+def _metadata(run_dir):
+    import json
+    from pathlib import Path
+
+    return json.loads((Path(run_dir) / "metadata.json").read_text())
+
+
+def test_the_tie_band_is_recorded_in_the_run_metadata(patched, tmp_path):
+    """Which metric actually chose the model is a property of the run. Before
+    this it was unrecoverable from the artifacts: the tolerance was a constant
+    in the config and the candidate count was never written down."""
+    from training_pipeline.config import OptunaConfig
+
+    config = _config(
+        tmp_path,
+        experiment_name="tie",
+        save_experiment_artifacts=True,
+        optuna=OptunaConfig(
+            n_trials=4,
+            search_space=SearchSpaceConfig(n_estimators=8, early_stopping_rounds=4),
+        ),
+    )
+    metadata = _metadata(run_experiment(config).run_dir)
+
+    assert metadata["tie_policy"] == "quantile"
+    assert metadata["tie_n_completed"] >= 1
+    assert 0 < metadata["tie_n_candidates"] <= metadata["tie_n_completed"]
+    assert metadata["tie_tolerance"] <= 0.10   # the configured hard cap
+    assert "tie_candidate_fraction" in metadata
+
+
+def test_the_saved_candidate_table_is_the_set_the_selector_ranked(
+    patched, tmp_path
+):
+    """Two independently-derived cutoffs would let the audit trail disagree
+    with the decision it is supposed to explain."""
+    from training_pipeline.config import OptunaConfig
+
+    config = _config(
+        tmp_path,
+        experiment_name="tie_candidates",
+        save_experiment_artifacts=True,
+        optuna=OptunaConfig(
+            n_trials=6,
+            search_space=SearchSpaceConfig(n_estimators=8, early_stopping_rounds=4),
+        ),
+    )
+    result = run_experiment(config)
+    metadata = _metadata(result.run_dir)
+    candidates = pd.read_csv(Path(result.run_dir) / "optuna_lexicographic_candidates.csv")
+
+    assert len(candidates) == metadata["tie_n_candidates"]
+
+
+def test_fold_sizes_are_recorded_so_a_two_game_fold_cannot_hide(patched, tmp_path):
+    """"30 folds, 855 games" hides the difference between thirty 28-game folds
+    and a layout containing a 2-game one."""
+    config = _config(tmp_path, experiment_name="folds", save_experiment_artifacts=True)
+    metadata = _metadata(run_experiment(config).run_dir)
+
+    counts = metadata["cv_fold_game_counts"]
+    assert sum(counts) == metadata["cv_n_validation_games"]
+    assert len(counts) == metadata["cv_n_folds"]

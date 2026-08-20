@@ -186,6 +186,12 @@ optuna:
   timeout: 16200          # 4.5h
   objective_name: reg:squarederror
   mae_tolerance_abs: 0.10
+  # Pinned explicitly so this frozen base keeps meaning what it meant. The
+  # pipeline default is now 'quantile', which derives the lexicographic tie band
+  # from the trial distribution instead of taking 0.10 on faith; leaving this
+  # unset would silently re-select a DIFFERENT trial from these studies than the
+  # one each archived run actually shipped. 'fixed' is the rule they ran under.
+  tie_tolerance: fixed
   persistent_storage: false
 
   # XGBoost hyperparameter search space. These defaults reproduce the space

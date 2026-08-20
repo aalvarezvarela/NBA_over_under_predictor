@@ -127,13 +127,32 @@ def compute_baseline_metrics_across_folds(
     splits: list[tuple[np.ndarray, np.ndarray]],
     *,
     baseline_line_col: str,
+    pooled: bool,
 ) -> tuple[pd.DataFrame, BaselineMetrics]:
     """Compute the baseline on each CV fold's *validation* rows (never train rows).
 
-    Returns a per-fold table (to sit next to the Optuna trial summary's
-    per-fold MAE/RMSE) and one aggregate BaselineMetrics: the aggregate MAE is
-    the mean of fold MAEs, matching how the Optuna objective itself aggregates
-    mean_mae across folds -- so the two numbers are directly comparable.
+    Returns a per-fold table (to sit next to the Optuna trial summary's per-fold
+    MAE/RMSE) and one aggregate BaselineMetrics.
+
+    ``pooled`` MUST mirror ``optuna.objective_aggregation``, because the
+    aggregate is subtracted from the model's ``cv_mae`` and the two have to be
+    the same kind of number:
+
+    * ``pooled=True`` concatenates every fold's validation rows and scores them
+      once, exactly as ``_PooledCollector`` does for the model. Each GAME counts
+      equally, so a 2-game fold contributes 2/855 rather than 1/30.
+    * ``pooled=False`` averages the folds' own metrics, which is what
+      ``mean_mae`` does.
+
+    This used to be hardcoded to the fold-mean. Under
+    ``objective_aggregation: pooled`` that made every model-vs-line CV number a
+    comparison between a pooled MAE and a fold-mean MAE -- on cell A of
+    public_betting_tradeoff_2026_08 it turned a real +0.02 edge into a reported
+    -0.19 deficit, purely from the aggregation mismatch.
+
+    Concatenation is deliberately NOT deduplicated: if a splitter lets two folds
+    share a game, the model's pooled metric counts it twice, so the baseline
+    must too. Matching the model beats being tidy.
     """
     fold_rows: list[dict] = []
     for fold_num, (_, val_idx) in enumerate(splits, start=1):
@@ -151,12 +170,19 @@ def compute_baseline_metrics_across_folds(
         )
 
     fold_df = pd.DataFrame(fold_rows)
-    aggregate = BaselineMetrics(
-        line_col=baseline_line_col,
-        n_games=int(fold_df["n_games"].sum()),
-        mae=float(fold_df["mae"].mean()),
-        rmse=float(fold_df["rmse"].mean()),
-        r2=float(fold_df["r2"].mean()),
-        ou_accuracy=None,
-    )
+
+    if pooled:
+        pooled_idx = np.concatenate([val_idx for _, val_idx in splits])
+        aggregate = compute_baseline_metrics_for_rows(
+            df_dev_full, pooled_idx, baseline_line_col=baseline_line_col
+        )
+    else:
+        aggregate = BaselineMetrics(
+            line_col=baseline_line_col,
+            n_games=int(fold_df["n_games"].sum()),
+            mae=float(fold_df["mae"].mean()),
+            rmse=float(fold_df["rmse"].mean()),
+            r2=float(fold_df["r2"].mean()),
+            ou_accuracy=None,
+        )
     return fold_df, aggregate

@@ -155,6 +155,46 @@ class DatasetType(StrEnum):
 _LEGACY_PRUNER_WARMUP_STEPS = 5
 
 
+class TieTolerancePolicy(StrEnum):
+    """How wide the band of "indistinguishable on the primary metric" is.
+
+    Selection is lexicographic: best primary metric within a tolerance, then the
+    best betting outcome. The tolerance decides which of the two metrics is
+    really choosing the model, and a fixed constant cannot know that -- on cell
+    A of public_betting_tradeoff_2026_08 the historical 0.10 admitted 58 of 60
+    completed trials, whose entire MAE spread was 0.0987. The primary metric
+    ranked nothing and the whole decision fell to pooled OU accuracy, a
+    statistic with ~1.7pp of binomial noise on 855 games.
+
+    ``fixed`` uses ``mae_tolerance_abs`` / ``mae_tolerance_pct`` exactly as
+    before. Reproducibility, and the only mode whose cutoff does not depend on
+    which trials happened to finish.
+
+    ``quantile`` (default) derives the band from the observed trial
+    distribution: it is the MAE gap spanning the best ``tie_max_fraction`` of
+    completed trials, clamped between ``tie_tolerance_floor`` and
+    ``tie_tolerance_cap``. That is a rank rule, deliberately, and it is worth
+    being clear about why rather than dressing it up.
+
+    The statistically ideal band would be the standard error of the DIFFERENCE
+    in pooled MAE between two trials. It cannot be computed here: it needs each
+    trial's per-game predictions, and only aggregates are stored. The available
+    substitutes are worse than useless -- the absolute SE of a pooled MAE is
+    ~0.37 on this data (larger than the historical constant it would replace,
+    so more permissive, not less), and a dispersion estimate expands the band
+    exactly when the metric is discriminating well, which is backwards.
+
+    A rank rule sidesteps both. It cannot admit "most trials" by construction,
+    it needs no distributional assumption, and it adapts in the right direction:
+    a tightly packed frontier yields a narrow MAE band, while a spread-out one
+    still admits only the same small share. The cap keeps it from ever being
+    more permissive than the old constant.
+    """
+
+    FIXED = "fixed"
+    QUANTILE = "quantile"
+
+
 class ObjectiveAggregation(StrEnum):
     """How per-fold metrics become the single number Optuna minimises.
 
@@ -493,6 +533,24 @@ class WalkForwardConfig(BaseModel):
     #: between training and validation. None uses every fold the data allows,
     #: subject to max_folds.
     eval_span_games: int | None = None
+    #: Floor on how many GAMES a validation fold must contain. None (default)
+    #: keeps the historical behaviour exactly: a fold is ``retrain_every_days``
+    #: game-days and whatever games those days happened to hold.
+    #:
+    #: When set, a fold starts at ``retrain_every_days`` days and then absorbs
+    #: further WHOLE game-days until it holds at least this many games. Whole
+    #: days only -- splitting a date between train and validation is the leak
+    #: the daily walk-forward exists to prevent -- and a fold still stops at a
+    #: season boundary when ``require_same_season_test`` is on, so it can end up
+    #: short there.
+    #:
+    #: Why it exists: on cell A's real layout the fold sizes ran
+    #: 2, 15, 17, 26, ... 36. Under ``objective_aggregation: pooled`` a 2-game
+    #: fold is harmless (it carries 2/855 of the weight, which is correct), but
+    #: under ``mean`` it carries 1/30 -- and the pruner reads a running metric
+    #: whose early steps are those same folds. This makes the floor explicit
+    #: rather than leaving it to the NBA calendar.
+    min_validation_games: int | None = None
     #: Discrete training-window sizes for Optuna to choose between. When set,
     #: ``train_games`` becomes a tuned hyperparameter sampled once per trial and
     #: held fixed across that trial's folds; ``train_games`` below is then only
@@ -511,6 +569,29 @@ class WalkForwardConfig(BaseModel):
     def _validate_rolling_origin(self) -> WalkForwardConfig:
         if self.retrain_every_days <= 0:
             raise ValueError("walk_forward.retrain_every_days must be > 0.")
+        if self.min_validation_games is not None:
+            if self.min_validation_games <= 0:
+                raise ValueError(
+                    "walk_forward.min_validation_games must be > 0 when set."
+                )
+            if self.strategy != CVStrategy.ROLLING_ORIGIN:
+                raise ValueError(
+                    "walk_forward.min_validation_games requires "
+                    "walk_forward.strategy='rolling_origin'. The other "
+                    "splitters already size their folds in games "
+                    "(walk_forward.test_games), so the knob would silently do "
+                    "nothing there."
+                )
+            if (
+                self.eval_span_games is not None
+                and self.min_validation_games > self.eval_span_games
+            ):
+                raise ValueError(
+                    f"walk_forward.min_validation_games="
+                    f"{self.min_validation_games} exceeds "
+                    f"walk_forward.eval_span_games={self.eval_span_games}, so "
+                    "the whole evaluation region could not fill a single fold."
+                )
         if self.eval_span_games is not None and self.eval_span_games <= 0:
             raise ValueError("walk_forward.eval_span_games must be > 0 when set.")
         if self.train_games_choices is not None:
@@ -813,6 +894,28 @@ class OptunaConfig(BaseModel):
     load_if_exists: bool = True
     mae_tolerance_abs: float | None = 0.10
     mae_tolerance_pct: float | None = None
+    #: Which rule turns the trial MAEs into a tie band. See TieTolerancePolicy.
+    #: 'fixed' reproduces every run made before this existed.
+    tie_tolerance: TieTolerancePolicy = TieTolerancePolicy.QUANTILE
+    #: Under 'quantile': the share of COMPLETED trials the band may span. 0.10
+    #: means "OU accuracy breaks ties among roughly the best tenth", which is
+    #: what a tie-break is for. The realised share can exceed it only through
+    #: exact ties at the boundary or through tie_tolerance_floor, both of which
+    #: are reported.
+    tie_max_fraction: float = 0.10
+    #: Lower bound on the band. Exists so trials separated by floating-point
+    #: dust are not ranked as if the difference were real. Raising it can admit
+    #: more than tie_max_fraction -- that is the point of a floor, and the
+    #: realised fraction is recorded either way.
+    tie_tolerance_floor: float = 0.001
+    #: Hard maximum, in primary-metric units. The band can never be wider than
+    #: this however the data falls. 0.10 is the historical constant, so 'quantile'
+    #: is guaranteed to be at least as strict as the old behaviour.
+    tie_tolerance_cap: float = 0.10
+    #: Diagnostic threshold. If the tie set ends up larger than this share of
+    #: completed trials, the secondary metric is effectively selecting and the
+    #: run says so out loud instead of letting it pass.
+    tie_warn_fraction: float = 0.25
     #: Lexicographic tolerance for the CLASSIFIER, in log-loss units. Two
     #: orders of magnitude tighter than mae_tolerance_abs because log loss has
     #: almost no dynamic range on a ~50/50 outcome: a perfectly calibrated 55%
@@ -903,6 +1006,16 @@ class OptunaConfig(BaseModel):
 
     @model_validator(mode="after")
     def _at_most_one_mae_tolerance(self) -> OptunaConfig:
+        if self.tie_tolerance_floor > self.tie_tolerance_cap:
+            raise ValueError(
+                f"optuna.tie_tolerance_floor={self.tie_tolerance_floor} exceeds "
+                f"optuna.tie_tolerance_cap={self.tie_tolerance_cap}; the band "
+                "would have no valid width."
+            )
+        if not 0.0 < self.tie_max_fraction <= 1.0:
+            raise ValueError("optuna.tie_max_fraction must be in (0, 1].")
+        if not 0.0 < self.tie_warn_fraction <= 1.0:
+            raise ValueError("optuna.tie_warn_fraction must be in (0, 1].")
         if self.mae_tolerance_abs is not None and self.mae_tolerance_pct is not None:
             raise ValueError(
                 "Provide at most one of optuna.mae_tolerance_abs or "

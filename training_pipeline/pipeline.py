@@ -11,6 +11,7 @@ same way the repo's example notebooks already do.
 from __future__ import annotations
 
 import uuid
+import warnings
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -60,7 +61,13 @@ from training_pipeline.splits import (
     build_holdout_split,
     build_split_provider,
 )
-from training_pipeline.tuning import fit_final_model, get_strategy
+from training_pipeline.tuning import (
+    TieToleranceResult,
+    completed_primary_values,
+    fit_final_model,
+    get_strategy,
+    resolve_tie_tolerance,
+)
 
 
 def _feature_target_subset(
@@ -344,6 +351,7 @@ def run_experiment(
     study: optuna.Study | None = None
     trials_df: pd.DataFrame | None = None
     candidates_df: pd.DataFrame | None = None
+    tie_tolerance: TieToleranceResult | None = None
     if not config.optuna.skip_tuning:
         study = strategy.tune(
             X=X_dev,
@@ -353,14 +361,48 @@ def run_experiment(
             dates=dates_dev,
         )
         trials_df = strategy.summarize_trials(study)
+        # Resolve the tie band HERE rather than inside the selectors: every
+        # strategy then gets the same rule for free, the saved candidate table
+        # and the selector are guaranteed to use the SAME band, and the
+        # diagnostics (how wide, how many trials it admitted) become recordable.
+        # A band that swallows the whole study means the secondary metric picked
+        # the model -- a fact about the run, which belongs in its metadata
+        # rather than in a log line nobody reads.
+        tie_tolerance = resolve_tie_tolerance(
+            completed_primary_values(study, primary_key=strategy.primary_metric_key),
+            policy=config.optuna.tie_tolerance,
+            fixed_abs=config.optuna.mae_tolerance_abs,
+            fixed_pct=config.optuna.mae_tolerance_pct,
+            max_fraction=config.optuna.tie_max_fraction,
+            floor=config.optuna.tie_tolerance_floor,
+            cap=config.optuna.tie_tolerance_cap,
+            warn_fraction=config.optuna.tie_warn_fraction,
+        )
+        if tie_tolerance.warning is not None:
+            warnings.warn(tie_tolerance.warning, RuntimeWarning, stacklevel=2)
+        # Same band the selector used, so the saved candidate table is exactly
+        # the set the tie-break ran over rather than a differently-derived one.
         candidates_df = strategy.summarize_candidates(
             study,
-            mae_tolerance_abs=config.optuna.mae_tolerance_abs,
-            mae_tolerance_pct=config.optuna.mae_tolerance_pct,
+            mae_tolerance_abs=(
+                config.optuna.mae_tolerance_abs
+                if tie_tolerance is None
+                else tie_tolerance.tolerance
+            ),
+            mae_tolerance_pct=(
+                config.optuna.mae_tolerance_pct if tie_tolerance is None else None
+            ),
         )
 
+    # pooled= mirrors optuna.objective_aggregation so the baseline is the same
+    # KIND of number as cv_mae below, which reads pooled_mae or mean_mae by the
+    # same flag. Anything else compares a pooled model MAE against a fold-mean
+    # baseline and reports the difference as if it meant something.
     baseline_fold_df, baseline_cv = compute_baseline_metrics_across_folds(
-        df_dev, splits, baseline_line_col=prepared.baseline_line_col
+        df_dev,
+        splits,
+        baseline_line_col=prepared.baseline_line_col,
+        pooled=config.pools_objective,
     )
 
     # Fitted on dev rows only, then applied to the test period, so the
@@ -382,10 +424,15 @@ def run_experiment(
     else:
         assert study is not None
         if config.refit.use_lexicographic_selection:
+            assert tie_tolerance is not None
             selected_trial = strategy.select_best_trial(
                 study,
-                mae_tolerance_abs=config.optuna.mae_tolerance_abs,
-                mae_tolerance_pct=config.optuna.mae_tolerance_pct,
+                # Already an absolute width in primary-metric units, whichever
+                # policy produced it, so the pct form is deliberately dropped:
+                # passing both would let the selector re-derive a cutoff that
+                # disagrees with the one just recorded.
+                mae_tolerance_abs=tie_tolerance.tolerance,
+                mae_tolerance_pct=None,
             )
         reporting_trial = (
             selected_trial if selected_trial is not None else study.best_trial
@@ -649,6 +696,16 @@ def run_experiment(
                 "cv_pruner_warmup_steps": config.resolve_pruner_warmup_steps(
                     split_provider.n_folds
                 ),
+                # Realised fold sizes, not the configured intent. A fold is
+                # whole game-days, so its game count is whatever the schedule
+                # gave it; min_validation_games raises the floor but a season
+                # boundary can still close a fold early.
+                "cv_min_validation_games": config.walk_forward.min_validation_games,
+                "cv_fold_game_counts": split_provider.fold_game_counts,
+                # How the tie band that ran the lexicographic selection was
+                # derived, and how much of the study it admitted. A fraction
+                # near 1.0 means the SECONDARY metric chose this model.
+                **({} if tie_tolerance is None else tie_tolerance.summary()),
                 # The window in force for every number in this run. When it was
                 # tuned this is the SELECTED value, not the configured fallback.
                 "train_games": selected_train_games,
@@ -773,7 +830,20 @@ def run_experiment(
             ),
             mean_best_iteration=tuned_n_estimators,
             median_best_iteration=tuned_n_estimators,
-            train_games=config.walk_forward.train_games,
+            # selected_train_games, NOT config.walk_forward.train_games. The
+            # config value is only the fallback for when tuning is skipped; when
+            # the window is tuned it is whatever _base.yaml happened to set, and
+            # the selected trial may have chosen something else entirely.
+            #
+            # This field is not decoration. retraining_utils.
+            # build_retraining_settings_from_production_metadata reads it off the
+            # shipped bundle and makes it THE window for every daily retrain, so
+            # writing the fallback here meant: Optuna selects 2500, evaluation
+            # and this very refit use 2500, and from tomorrow production trains
+            # on 3500 forever. The model in service stops being the model that
+            # was chosen, silently, with every recorded metric still describing
+            # the 2500-game one.
+            train_games=selected_train_games,
             cv_mae=cv_mae if cv_mae is not None else float("nan"),
             cv_rmse=cv_rmse,
             cv_ou_acc=cv_ou_acc,

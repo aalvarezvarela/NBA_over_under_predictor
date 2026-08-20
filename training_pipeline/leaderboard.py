@@ -202,7 +202,15 @@ def load_run_summary(run_dir: str | Path) -> dict[str, Any]:
         "cv_profit_units": cv_betting.get("profit_units"),
         "cv_n_profitable_folds": cv_betting.get("n_profitable_folds"),
         "cv_n_folds": cv_betting.get("n_folds"),
-        "cv_betting_mae": cv_betting.get("mae"),
+        # Follows objective_aggregation, exactly as baseline_cv_mae and cv_mae
+        # do. cv_betting records BOTH aggregations; taking the pooled one
+        # unconditionally would put a pooled number beside a fold-mean baseline
+        # on any run that aggregated by mean -- the same mismatch, mirrored.
+        "cv_betting_mae": (
+            cv_betting.get("mae")
+            if (optuna_cfg.get("objective_aggregation") or "mean") == "pooled"
+            else cv_betting.get("mean_fold_mae", cv_betting.get("mae"))
+        ),
         # --- probability quality (classifier only; None for regressors) ---
         # log_loss_improvement is the one to read: raw log loss looks flat
         # because a coin flip already scores 0.693, so the meaningful quantity

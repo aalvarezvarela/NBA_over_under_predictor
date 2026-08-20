@@ -10,6 +10,9 @@ reverted, the test observed to fail, and the fix restored.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import numpy as np
 import optuna
 import pandas as pd
@@ -788,3 +791,290 @@ def test_a_tuned_window_run_never_matches_a_fixed_window_run(tmp_path):
     assert factors._derived_factors(flat_fixed, {})["train_games_tuned"] is False
     assert factors._derived_factors(flat_tuned, {})["train_games_tuned"] is True
     assert fixed != tuned
+
+
+# ---------------------------------------------------------------------------
+# min_validation_games: a floor on fold size that keeps folds date-aligned
+# ---------------------------------------------------------------------------
+
+
+def _lumpy_schedule(
+    day_game_counts: list[int],
+    *,
+    start: str = "2025-11-01",
+    season: int = 2025,
+    seasons: list[int] | None = None,
+) -> pd.DataFrame:
+    """A calendar whose days hold DIFFERENT numbers of games.
+
+    The real NBA schedule swings from 2 to 15 games a night, which is the whole
+    reason this knob exists -- and an evenly-spaced fixture would make every
+    fold identical and hide exactly the behaviour under test.
+    """
+    rows: list[dict] = []
+    day = pd.Timestamp(start)
+    for position, count in enumerate(day_game_counts):
+        year = season if seasons is None else seasons[position]
+        for _ in range(count):
+            rows.append({"GAME_DATE": day, "SEASON_YEAR": year})
+        day += pd.Timedelta(days=1)
+
+    df = pd.DataFrame(rows)
+    rng = np.random.default_rng(3)
+    line = rng.uniform(205, 240, len(df)).round(1)
+    df["ODDS_TOTAL_LINE_bet365"] = line
+    df["TOTAL_POINTS"] = (line + rng.normal(0, 12, len(df))).round(1)
+    df["LINE_ERROR"] = df["TOTAL_POINTS"] - df["ODDS_TOTAL_LINE_bet365"]
+    df["FEATURE_A"] = rng.normal(size=len(df))
+    df["FEATURE_B"] = rng.normal(size=len(df))
+    return df
+
+
+def _plan_for(df, tmp_path, **wf):
+    kwargs = {
+        "strategy": "rolling_origin",
+        "retrain_every_days": 4,
+        "eval_span_games": None,
+        "min_train_games": 10,
+        "max_folds": None,
+        "train_games": 20,
+    }
+    kwargs.update(wf)
+    config = _rolling_config(tmp_path, walk_forward=WalkForwardConfig(**kwargs))
+    return build_rolling_origin_plan(df, config)
+
+
+def test_a_thin_stretch_of_days_is_extended_until_the_game_floor_is_met():
+    """4 days of 2 games each is 8, under a floor of 10, so the fold absorbs a
+    fifth whole day. This is the pathological case: on cell A's real layout the
+    smallest fold held 2 games against a median of 30."""
+    df = _lumpy_schedule([2] * 24)
+    plan = _plan_for(df, Path("/tmp"), min_validation_games=10, min_train_games=10)
+
+    first = plan.folds[0]
+    assert len(first.valid_dates) == 5
+    assert len(first.valid_idx) == 10
+    assert all(len(f.valid_idx) >= 10 for f in plan.folds)
+
+
+def test_a_dense_night_keeps_the_plain_four_day_fold():
+    """12 games a night already clears the floor at day 4, so nothing is
+    absorbed -- the knob is a floor, not a target."""
+    df = _lumpy_schedule([12] * 12)
+    plan = _plan_for(df, Path("/tmp"), min_validation_games=25)
+
+    first = plan.folds[0]
+    assert len(first.valid_dates) == 4
+    assert len(first.valid_idx) == 48
+
+
+def test_without_the_floor_the_layout_is_exactly_what_it_always_was():
+    """Backward compatibility is the default. None must reproduce the old
+    fold layout game for game, or every existing experiment silently changes."""
+    df = _lumpy_schedule([2] * 24)
+
+    before = _plan_for(df, Path("/tmp"), min_train_games=10)
+    after = _plan_for(df, Path("/tmp"), min_validation_games=None, min_train_games=10)
+
+    # Folds of four 2-game days, with the remainder standing alone: the old
+    # layout, floor or no floor.
+    assert [len(f.valid_idx) for f in before.folds] == [8, 8, 8, 8, 6]
+    assert [f.valid_dates for f in before.folds] == [
+        f.valid_dates for f in after.folds
+    ]
+
+
+def test_a_fold_never_takes_part_of_a_calendar_date():
+    """Extending must add WHOLE days. Half a date on each side of the split is
+    the leak the daily walk-forward exists to prevent, and a floor expressed in
+    games is precisely the knob that would tempt a partial day."""
+    df = _lumpy_schedule([3, 3, 3, 3, 9] * 4)
+    plan = _plan_for(df, Path("/tmp"), min_validation_games=14, min_train_games=10)
+
+    dates = pd.to_datetime(df["GAME_DATE"]).dt.normalize().to_numpy()
+    for fold in plan.folds:
+        validated = set(dates[fold.valid_idx])
+        for day in validated:
+            # Every game on a validated date is in the fold; none leaked out.
+            assert (dates == day).sum() == (dates[fold.valid_idx] == day).sum()
+
+
+def test_the_floor_never_pulls_a_fold_across_a_season_boundary():
+    """require_same_season_test still wins. Gluing late April onto late October
+    to reach a game count would give the fold an origin five months before the
+    games it predicts, which is worse than a short fold."""
+    df = _lumpy_schedule([3] * 24, seasons=[2024] * 12 + [2025] * 12)
+    plan = _plan_for(df, Path("/tmp"), min_validation_games=20, min_train_games=6)
+
+    seasons = df["SEASON_YEAR"].to_numpy()
+    for fold in plan.folds:
+        assert len(set(seasons[fold.valid_idx])) == 1
+
+    # The season's own remainder is absorbed BACKWARDS into a predecessor from
+    # the same season, never forwards across the summer -- so the floor is met
+    # without any fold acquiring an origin months before the games it predicts.
+    assert [len(f.valid_idx) for f in plan.folds] == [30, 36]
+    assert plan.n_folds_below_min == 0
+
+
+def test_a_short_fold_that_opens_a_season_is_left_alone():
+    """The one case merging must NOT fix. Gluing a thin October onto the
+    previous April would give that fold an origin five months before the games
+    it predicts, which is worse than a short fold. It stays short, and is
+    counted so nobody has to notice it by eye."""
+    df = _lumpy_schedule([6] * 12 + [2] * 3, seasons=[2024] * 12 + [2025] * 3)
+    plan = _plan_for(df, Path("/tmp"), min_validation_games=20, min_train_games=6)
+
+    seasons = df["SEASON_YEAR"].to_numpy()
+    opener = plan.folds[-1]
+    assert set(seasons[opener.valid_idx]) == {2025}
+    assert len(opener.valid_idx) == 6
+    assert plan.n_folds_below_min == 1
+
+
+def test_a_short_trailing_fold_is_merged_rather_than_dropped():
+    """13 days at 3 games with a floor of 10 leaves a 1-day remainder. Emitting
+    it as a 3-game fold recreates the problem; DROPPING it would silently shrink
+    the OOF cohort and make this cell incomparable with every other. Merge."""
+    df = _lumpy_schedule([2] * 24)
+
+    without = _plan_for(df, Path("/tmp"), min_train_games=10)
+    with_floor = _plan_for(
+        df, Path("/tmp"), min_validation_games=10, min_train_games=10
+    )
+
+    # Plain: four 8-game folds. Floored: 10, 10, and an 18-game tail -- the
+    # 2-day remainder absorbed into its predecessor instead of standing alone.
+    assert [len(f.valid_idx) for f in without.folds] == [8, 8, 8, 8, 6]
+    assert [len(f.valid_idx) for f in with_floor.folds] == [10, 10, 18]
+    assert min(len(f.valid_idx) for f in with_floor.folds) >= 10
+    # And nothing was thrown away to achieve it.
+    assert with_floor.n_validation_games == without.n_validation_games
+
+
+def test_the_floor_changes_grouping_only_never_the_oof_cohort():
+    """The strongest guarantee available: the same games, each exactly once,
+    regrouped. If this failed, two cells differing only in this knob would be
+    scored on different populations."""
+    lumpy = [2, 7, 3, 11, 4, 2, 9, 3, 6, 2, 8, 4, 3, 5, 12, 2, 7, 4, 9, 3, 6, 11, 2, 8]
+    df = _lumpy_schedule(lumpy)
+
+    without = _plan_for(df, Path("/tmp"), min_train_games=10)
+    with_floor = _plan_for(
+        df, Path("/tmp"), min_validation_games=25, min_train_games=10
+    )
+
+    plain = np.concatenate([f.valid_idx for f in without.folds])
+    floored = np.concatenate([f.valid_idx for f in with_floor.folds])
+
+    assert sorted(plain.tolist()) == sorted(floored.tolist())
+    assert len(set(floored.tolist())) == len(floored)   # nothing duplicated
+    assert with_floor.n_folds < without.n_folds         # fewer, larger folds
+
+
+def test_an_unreachable_floor_is_an_error_not_a_layout():
+    """Every fold short means the knob did nothing and every fold is 'small'.
+    Fail loudly rather than run a layout nobody asked for."""
+    # Folds ARE creatable here -- the season boundary just caps every one of
+    # them below the floor, so the knob would silently do nothing.
+    df = _lumpy_schedule([3] * 24, seasons=[2024] * 12 + [2025] * 12)
+
+    with pytest.raises(ValueError, match="met by none of the"):
+        _plan_for(df, Path("/tmp"), min_validation_games=50, min_train_games=6)
+
+
+def test_the_plan_reports_fold_sizes_in_both_games_and_days():
+    lumpy = [2, 7, 3, 11, 4, 2, 9, 3, 6, 2, 8, 4, 3, 5, 12, 2, 7, 4, 9, 3, 6, 11, 2, 8]
+    df = _lumpy_schedule(lumpy)
+    plan = _plan_for(df, Path("/tmp"), min_validation_games=20, min_train_games=10)
+
+    assert plan.fold_game_counts == [
+        int(n) for n in plan.fold_info["test_n_games"]
+    ]
+    assert list(plan.fold_info["n_valid_days"]) == [
+        len(f.valid_dates) for f in plan.folds
+    ]
+    assert plan.min_validation_games == 20
+
+
+def test_the_floor_is_rejected_outside_rolling_origin():
+    """Under test_anchored the fold is already sized in games, so the knob
+    would be a silent no-op -- the exact failure class this repo keeps hitting."""
+    with pytest.raises(ValueError, match="requires .*rolling_origin"):
+        WalkForwardConfig(strategy="test_anchored", min_validation_games=25)
+
+
+def test_a_floor_larger_than_the_evaluation_region_is_rejected():
+    with pytest.raises(ValueError, match="exceeds walk_forward.eval_span_games"):
+        WalkForwardConfig(
+            strategy="rolling_origin", eval_span_games=100, min_validation_games=200
+        )
+
+
+# ---------------------------------------------------------------------------
+# the shipped bundle must record the window that was SELECTED
+# ---------------------------------------------------------------------------
+
+
+def test_the_saved_bundle_records_the_selected_window_not_the_fallback(
+    dev_frame, tmp_path, monkeypatch
+):
+    """The bug this guards, end to end:
+
+    walk_forward.train_games is only the fallback for when tuning is skipped.
+    When the window is tuned, the selected trial may choose something else --
+    and the run correctly used the selected value for the CV folds, the daily
+    walk-forward AND this very refit. But the bundle metadata was written from
+    the config fallback.
+
+    That field is not decoration. retraining_utils.build_retraining_settings_
+    from_production_metadata reads it off the shipped bundle and makes it THE
+    window for every daily retrain. So: Optuna selects 200, everything measured
+    uses 200, the bundle says 400, and from the next morning production trains
+    on 400 forever -- while every recorded metric still describes the 200-game
+    model. Nothing errors and nothing looks wrong.
+
+    The fallback is pinned to a value NOT in train_games_choices, so a
+    regression cannot pass by coincidence.
+    """
+    config = _rolling_config(
+        tmp_path,
+        walk_forward=WalkForwardConfig(
+            strategy="rolling_origin",
+            retrain_every_days=4,
+            eval_span_games=160,
+            min_train_games=100,
+            max_folds=None,
+            # Deliberately unreachable by any trial.
+            train_games=333,
+            train_games_choices=(200, 400),
+        ),
+        optuna=OptunaConfig(
+            n_trials=2,
+            tune_n_estimators=True,
+            objective_aggregation=ObjectiveAggregation.POOLED,
+            search_space=SearchSpaceConfig(
+                n_estimators_range=None, n_estimators=8, early_stopping_rounds=4
+            ),
+        ),
+        refit={"train_production_model": True},
+    )
+    monkeypatch.setattr(
+        pipeline_module, "prepare_dataset", lambda cfg: _prepared(dev_frame)
+    )
+    # save_model=True on purpose: the assertion below reads the file that
+    # actually ships to the registry, not an in-memory copy of it.
+    result = run_experiment(config, save_model=True)
+
+    selected = resolve_selected_train_games(result.selected_trial, config)
+    assert selected in (200, 400)
+    assert selected != config.walk_forward.train_games
+
+    shipped = json.loads(Path(result.meta_path).read_text())
+    recorded = shipped["training_metrics"]["train_games"]
+    assert recorded == selected
+    assert recorded != config.walk_forward.train_games
+
+    # And the thing the field is read for actually agrees with it: the games the
+    # production model was fitted on.
+    assert set(result.walk_forward_result.daily_results["train_n_games"]) == {selected}

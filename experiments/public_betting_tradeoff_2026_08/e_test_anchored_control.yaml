@@ -85,6 +85,13 @@ walk_forward:
   # than it sounds but is not nothing: state it when reading the result.
   train_games: 3500
   train_games_choices: null
+  # Also null, and also not by choice: _base.yaml sets min_validation_games: 25,
+  # which the config layer accepts only under rolling_origin -- test_anchored
+  # already sizes its folds in games via test_games, so the knob would be a
+  # silent no-op there. Inheriting it makes this file fail to parse rather than
+  # quietly do nothing, which is the intended behaviour; stating null is how a
+  # test_anchored cell opts out.
+  min_validation_games: null
 
 optuna:
   # mean, not pooled: pooled belongs with rolling_origin, whose fold sizes the

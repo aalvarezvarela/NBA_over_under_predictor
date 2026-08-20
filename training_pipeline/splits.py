@@ -131,10 +131,31 @@ class RollingOriginPlan:
     n_validation_days: int
     #: Set when max_folds trimmed the layout, so callers can say so out loud.
     n_folds_before_max: int = 0
+    #: The configured floor, carried so readers of a saved plan can tell a fold
+    #: that is small because the schedule was thin from one that is small
+    #: because no floor was ever asked for.
+    min_validation_games: int | None = None
 
     @property
     def n_folds(self) -> int:
         return len(self.folds)
+
+    @property
+    def fold_game_counts(self) -> list[int]:
+        return [int(len(fold.valid_idx)) for fold in self.folds]
+
+    @property
+    def n_folds_below_min(self) -> int:
+        """Folds that still fall short of ``min_validation_games``.
+
+        Not necessarily a bug: a season boundary closes a fold early by design.
+        Reported rather than raised so the count is visible, because "the floor
+        was set and 9 folds ignored it" is a thing to know before reading the
+        objective.
+        """
+        if self.min_validation_games is None:
+            return 0
+        return sum(1 for n in self.fold_game_counts if n < self.min_validation_games)
 
     @property
     def min_history_games(self) -> int:
@@ -269,27 +290,112 @@ def build_rolling_origin_plan(
             window.append(candidate)
             next_cursor += 1
 
+        # Then, optionally, keep absorbing WHOLE game-days until the fold holds
+        # min_validation_games. Days, never part-days: a date split between
+        # train and validation is the leak the whole protocol is built to
+        # avoid. Same-season and end-of-region limits still bind, so a fold can
+        # legitimately finish short -- the trailing case is merged below.
+        if wf.min_validation_games is not None:
+            games_in_window = sum(games_on_day[day] for day in window)
+            while (
+                games_in_window < wf.min_validation_games
+                and next_cursor < len(region_days)
+            ):
+                candidate = region_days[next_cursor]
+                if wf.require_same_season_test and season_of_day[candidate] != season:
+                    break
+                window.append(candidate)
+                games_in_window += games_on_day[candidate]
+                next_cursor += 1
+
         origin_date = window[0]
         history_mask = (dates.to_numpy() < np.datetime64(origin_date)) & eligible
         history_idx = positions[history_mask]
         # Chronological, because the window is taken as a tail.
         history_idx = history_idx[np.argsort(dates.to_numpy()[history_idx], kind="stable")]
 
-        if len(history_idx) >= wf.min_train_games:
-            valid_idx = np.concatenate([idx_on_day[day] for day in window])
-            folds.append(
-                RollingOriginFold(
-                    fold=len(folds) + 1,
-                    origin_date=origin_date,
-                    valid_start=window[0],
-                    valid_end=window[-1],
-                    valid_dates=tuple(window),
-                    valid_idx=np.sort(valid_idx),
-                    history_idx=history_idx,
-                    season=season,
-                )
+        if len(history_idx) < wf.min_train_games:
+            # Not enough history yet. Step ONE day, not past the whole window:
+            # otherwise where the accepted region starts depends on how wide
+            # the window happens to be, and two cells differing only in
+            # retrain_every_days or min_validation_games would be scored on
+            # different games. Only ever runs at the very start of the data --
+            # with eval_span_games set, the region is a tail with ample history
+            # behind it and no fold is rejected at all.
+            cursor += 1
+            continue
+
+        valid_idx = np.concatenate([idx_on_day[day] for day in window])
+        folds.append(
+            RollingOriginFold(
+                fold=len(folds) + 1,
+                origin_date=origin_date,
+                valid_start=window[0],
+                valid_end=window[-1],
+                valid_dates=tuple(window),
+                valid_idx=np.sort(valid_idx),
+                history_idx=history_idx,
+                season=season,
             )
+        )
         cursor = next_cursor
+
+    # A fold can still finish short in two ways the growth loop cannot fix: the
+    # region runs out (the trailing remainder), or require_same_season_test
+    # closes it at a season boundary. Cell A has both -- a 2-game fold on
+    # 2025-04-18, the last day of season 2024, whose next available day is the
+    # following October.
+    #
+    # Absorb a short fold into its PREDECESSOR rather than dropping it. Dropping
+    # would silently shrink the OOF cohort, and a cell that changed this knob
+    # would then be scored on different games than the one it is compared with.
+    # Merging only extends the predecessor's validation window forward: its
+    # origin, and therefore its training history, is untouched, so no leak is
+    # introduced -- those games are simply predicted by a slightly staler model.
+    # The season check still binds, so a short fold that OPENS a season is left
+    # alone rather than glued onto the previous April.
+    #
+    # One left-to-right pass, against the running merged list, so a run of short
+    # folds collapses into one rather than pairing up arbitrarily. A short FIRST
+    # fold has no predecessor and stays short; n_folds_below_min reports it.
+    if wf.min_validation_games is not None and len(folds) > 1:
+        merged: list[RollingOriginFold] = []
+        for fold in folds:
+            previous = merged[-1] if merged else None
+            if (
+                previous is not None
+                and len(fold.valid_idx) < wf.min_validation_games
+                and not (
+                    wf.require_same_season_test and fold.season != previous.season
+                )
+            ):
+                merged[-1] = RollingOriginFold(
+                    fold=previous.fold,
+                    origin_date=previous.origin_date,
+                    valid_start=previous.valid_start,
+                    valid_end=fold.valid_end,
+                    valid_dates=previous.valid_dates + fold.valid_dates,
+                    valid_idx=np.sort(
+                        np.concatenate([previous.valid_idx, fold.valid_idx])
+                    ),
+                    history_idx=previous.history_idx,
+                    season=previous.season,
+                )
+            else:
+                merged.append(fold)
+        folds = [
+            RollingOriginFold(
+                fold=number,
+                origin_date=fold.origin_date,
+                valid_start=fold.valid_start,
+                valid_end=fold.valid_end,
+                valid_dates=fold.valid_dates,
+                valid_idx=fold.valid_idx,
+                history_idx=fold.history_idx,
+                season=fold.season,
+            )
+            for number, fold in enumerate(merged, start=1)
+        ]
 
     if not folds:
         raise ValueError(
@@ -360,13 +466,37 @@ def build_rolling_origin_plan(
         n_validation_games=int(sum(len(fold.valid_idx) for fold in folds)),
         n_validation_days=int(sum(len(fold.valid_dates) for fold in folds)),
         n_folds_before_max=n_folds_before_max,
+        min_validation_games=wf.min_validation_games,
     )
 
+    # An impossible floor is a config error, not a layout to run: if not one
+    # fold in the whole region can reach it, the knob is silently doing nothing
+    # useful and every fold is "short".
+    if wf.min_validation_games is not None and plan.n_folds_below_min == plan.n_folds:
+        raise ValueError(
+            f"walk_forward.min_validation_games={wf.min_validation_games} was "
+            f"met by none of the {plan.n_folds} folds (largest is "
+            f"{max(plan.fold_game_counts)} games). Lower it, raise "
+            "walk_forward.retrain_every_days, or widen "
+            "walk_forward.eval_span_games."
+        )
+
     if wf.verbose >= 1:
+        counts = plan.fold_game_counts
         print(
             f"Created {plan.n_folds} rolling-origin folds "
             f"({plan.n_validation_days} game-days, {plan.n_validation_games} "
             f"validation games, min history {plan.min_history_games})"
+        )
+        print(
+            f"  games/fold: min {min(counts)} median "
+            f"{int(np.median(counts))} max {max(counts)}"
+            + (
+                ""
+                if wf.min_validation_games is None
+                else f" | floor {wf.min_validation_games}, "
+                f"{plan.n_folds_below_min} fold(s) below it"
+            )
         )
         print(fold_info.to_string(index=False))
 
@@ -415,6 +545,19 @@ class SplitProvider:
             return self.plan.n_validation_games
         assert self.fixed_splits is not None
         return int(sum(len(valid) for _, valid in self.fixed_splits))
+
+    @property
+    def fold_game_counts(self) -> list[int]:
+        """Validation games per fold, in fold order.
+
+        Recorded per run because under rolling_origin the schedule decides it:
+        "30 folds, 855 games" hides the difference between thirty 28-game folds
+        and a layout with a 2-game one in it.
+        """
+        if self.plan is not None:
+            return self.plan.fold_game_counts
+        assert self.fixed_splits is not None
+        return [int(len(valid)) for _, valid in self.fixed_splits]
 
     def suggest_train_games(self, trial: optuna.Trial) -> int | None:
         """Sample the window for one trial, or return the fixed value.

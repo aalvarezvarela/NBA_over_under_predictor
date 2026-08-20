@@ -15,7 +15,8 @@ or optuna_error_line directly.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import math
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -42,6 +43,7 @@ from training_pipeline.config import (
     PredictionStrategy,
     SampleWeightConfig,
     SearchSpaceConfig,
+    TieTolerancePolicy,
 )
 from training_pipeline.splits import TRAIN_GAMES_PARAM, Split, SplitProvider
 
@@ -57,6 +59,13 @@ class TargetFamilyStrategy(Protocol):
         split_provider: SplitProvider | None = None,
         dates: pd.Series | None = None,
     ) -> optuna.Study: ...
+
+    #: The trial user-attr selection ranks on, in whatever aggregation this
+    #: strategy was built with. Named by the strategy rather than inferred from
+    #: which attrs happen to exist, so a run cannot be ranked one way while a
+    #: tolerance is derived from the other.
+    @property
+    def primary_metric_key(self) -> str: ...
 
     def select_best_trial(
         self,
@@ -759,6 +768,10 @@ class TotalPointsStrategy:
             config,
         )
 
+    @property
+    def primary_metric_key(self) -> str:
+        return "pooled_mae" if self.pooled else "mean_mae"
+
     def select_best_trial(
         self,
         study: optuna.Study,
@@ -910,6 +923,10 @@ class LineErrorStrategy:
             ),
             config,
         )
+
+    @property
+    def primary_metric_key(self) -> str:
+        return "pooled_mae" if self.pooled else "mean_mae"
 
     def select_best_trial(
         self,
@@ -1272,6 +1289,133 @@ def _pooled_metric(trial: optuna.trial.FrozenTrial, key: str) -> float:
     return float(value)
 
 
+#: Studies smaller than this never raise the tie-band diagnostic. Smoke runs
+#: use 1-2 trials, where a full tie set is inevitable and meaningless.
+_TIE_WARNING_MIN_TRIALS = 10
+
+
+@dataclass(frozen=True)
+class TieToleranceResult:
+    """The resolved tie band, plus everything needed to audit it afterwards."""
+
+    policy: str
+    #: Width of the band in primary-metric units.
+    tolerance: float
+    #: ``best + tolerance``. Trials at or under this enter the tie-break.
+    cutoff: float
+    best: float
+    n_completed: int
+    n_candidates: int
+    #: Before the floor and cap were applied. Records what the data asked for.
+    raw_tolerance: float
+    #: Non-None when the band is wider than ``warn_fraction`` of the trials,
+    #: i.e. when the secondary metric is doing the selecting.
+    warning: str | None
+
+    @property
+    def fraction(self) -> float:
+        return self.n_candidates / self.n_completed if self.n_completed else 0.0
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "tie_policy": self.policy,
+            "tie_tolerance": self.tolerance,
+            "tie_raw_tolerance": self.raw_tolerance,
+            "tie_cutoff": self.cutoff,
+            "tie_best_metric": self.best,
+            "tie_n_completed": self.n_completed,
+            "tie_n_candidates": self.n_candidates,
+            "tie_candidate_fraction": self.fraction,
+            "tie_warning": self.warning,
+        }
+
+
+def resolve_tie_tolerance(
+    values: Sequence[float],
+    *,
+    policy: TieTolerancePolicy,
+    fixed_abs: float | None,
+    fixed_pct: float | None,
+    max_fraction: float,
+    floor: float,
+    cap: float,
+    warn_fraction: float,
+) -> TieToleranceResult:
+    """Turn the completed trials' primary metric into a tie band.
+
+    ``fixed``: the historical rule, ``best + fixed_abs`` (or ``best * (1+pct)``).
+
+    ``quantile``: sort the completed values ascending and take the gap from the
+    best to the trial at index ``floor(max_fraction * n)`` -- the width that
+    spans the best ``max_fraction`` of trials -- then clamp into
+    ``[floor, cap]``. Lower metric is better, which is true of every primary
+    metric here (MAE, RMSE, log loss).
+
+    The realised candidate count can exceed ``max_fraction`` for exactly two
+    reasons, both intentional and both visible in the result: exact ties sitting
+    on the cutoff (breaking those by trial order would be worse), and the floor
+    widening a band that would otherwise be numerical dust.
+    """
+    finite = [float(v) for v in values if math.isfinite(float(v))]
+    if not finite:
+        raise ValueError("No finite trial metrics to derive a tie tolerance from.")
+
+    best = min(finite)
+    n = len(finite)
+
+    if policy == TieTolerancePolicy.FIXED:
+        if fixed_pct is not None:
+            tolerance = abs(best) * fixed_pct
+        else:
+            tolerance = float(fixed_abs or 0.0)
+        raw = tolerance
+    else:
+        ordered = sorted(finite)
+        # floor(max_fraction * n) is an INDEX, so it names the (index+1)-th best
+        # trial: at n=60 and 0.10 that is ordered[6], a band spanning 7 trials.
+        # Clamped to a valid index so a tiny study still produces a band.
+        index = min(n - 1, max(0, int(max_fraction * n)))
+        raw = ordered[index] - best
+        tolerance = min(cap, max(floor, raw))
+
+    cutoff = best + tolerance
+    n_candidates = sum(1 for v in finite if v <= cutoff)
+
+    warning = None
+    # Below a handful of completed trials there is no search to speak of, and
+    # "2 of 2 trials tied" is arithmetic rather than a finding. Warning there
+    # would train readers to ignore the warning that matters.
+    if n >= _TIE_WARNING_MIN_TRIALS and n_candidates / n > warn_fraction:
+        warning = (
+            f"{n_candidates} of {n} completed trials ({n_candidates / n:.0%}) "
+            f"fall inside the tie band of {tolerance:.4f}, above the "
+            f"{warn_fraction:.0%} diagnostic threshold. The secondary metric is "
+            "selecting the model, not breaking a tie between trials the primary "
+            "metric could not separate. Tighten optuna.tie_tolerance_cap or "
+            "optuna.tie_max_fraction, or widen the search space so the primary "
+            "metric has something to discriminate."
+        )
+
+    return TieToleranceResult(
+        policy=str(policy),
+        tolerance=tolerance,
+        cutoff=cutoff,
+        best=best,
+        n_completed=n,
+        n_candidates=n_candidates,
+        raw_tolerance=raw,
+        warning=warning,
+    )
+
+
+def completed_primary_values(study: optuna.Study, *, primary_key: str) -> list[float]:
+    """Every completed trial's primary metric, in the units selection ranks on."""
+    return [
+        _pooled_metric(trial, primary_key)
+        for trial in _completed_classifier_trials(study)
+    ]
+
+
 def select_best_trial_lexicographic_pooled(
     study: optuna.Study,
     *,
@@ -1547,6 +1691,10 @@ class OverUnderClassifierStrategy:
             ),
             config,
         )
+
+    @property
+    def primary_metric_key(self) -> str:
+        return "pooled_log_loss" if self.pooled else "mean_logloss"
 
     def select_best_trial(
         self,
