@@ -148,7 +148,16 @@ def threshold_units(runs: pd.DataFrame) -> list[str]:
 
 
 def seed_noise(runs: pd.DataFrame) -> list[str]:
+    """Error-bar commentary, for the runs that happen to have one.
+
+    Single-seed is the default, so ``seed_roi_range`` is usually absent from the
+    frame ENTIRELY -- not merely NaN. dropna(subset=[...]) raises KeyError on a
+    missing column, which is how a helper like this turns "no error bars" into
+    "the whole report failed to render".
+    """
     messages: list[str] = []
+    if "seed_roi_range" not in runs.columns:
+        return messages
     seeded = runs.dropna(subset=["seed_roi_range"])
     if len(runs) >= 2 and not seeded.empty:
         between = runs["roi"].max() - runs["roi"].min()
@@ -173,12 +182,15 @@ def seed_noise(runs: pd.DataFrame) -> list[str]:
             f"which is {verdict}{caveat}"
         )
 
+    # Only worth saying when the selection is MIXED: with every run single-seed
+    # (the default) this would just restate the protocol on every report.
     missing = runs[runs["seed_roi_range"].isna()]
-    if not missing.empty:
+    if not missing.empty and not seeded.empty:
         messages.append(
             f"_{len(missing)} run(s) have no seed data and no error bar: "
             + ", ".join(f"`{name}`" for name in missing["label"])
-            + ". Add `evaluation_seeds: [101, 202]` and rerun to qualify them._"
+            + ". Compare them on holdout MAE, which is far less noisy than ROI, "
+            "or set `evaluation_seeds: [101, 202]` and rerun to give them one._"
         )
     return messages
 
@@ -215,7 +227,10 @@ def cv_agreement(agreement: pd.DataFrame) -> list[str]:
 
 
 def strategy_spread(summary: pd.DataFrame, runs: pd.DataFrame) -> list[str]:
-    if not runs["seed_roi_range"].notna().any() or summary.empty:
+    # Absent column, not just absent values: single-seed runs never write one.
+    if "seed_roi_range" not in runs.columns or summary.empty:
+        return []
+    if not runs["seed_roi_range"].notna().any():
         return []
     noise = runs["seed_roi_range"].max()
     spread = summary["mean_roi"].max() - summary["mean_roi"].min()

@@ -1018,47 +1018,29 @@ class ClassifierFoldMetrics:
     #: row has a definite answer here -- pushes were removed when the label was
     #: built -- so this needs no line and no push handling.
     ou_accuracy: float
-    #: Outcome of actually betting the fold at the primary EV threshold.
-    n_bets: int
-    roi: float
     best_iteration: int
 
 
 def classifier_scores(
     y: np.ndarray,
     p_over: np.ndarray,
-    *,
-    flat_decimal_odds: float,
-    ev_threshold: float,
 ) -> dict[str, float]:
-    """Probability quality and betting outcome for a set of games.
+    """Probability quality and directional accuracy for a set of games.
 
-    Shared by the per-fold metrics and the pooled ones, so "log loss" and "ROI"
-    cannot come to mean two different things depending on which table you read.
+    Betting settlement is deliberately absent from the tuning objective. With
+    the pipeline's flat symmetric odds, ROI is only a rescaling of win rate, and
+    using it as another tie-breaker lets the same validation outcomes select the
+    trial twice. Profit remains available in the post-hoc holdout/CV evaluator.
     """
-    ev_over = p_over * flat_decimal_odds - 1.0
-    ev_under = (1.0 - p_over) * flat_decimal_odds - 1.0
-    bet_over = ev_over >= ev_under
-    placed = np.maximum(ev_over, ev_under) > ev_threshold
-
-    # Pushes were dropped when the label was built, so a correct side is simply
-    # a correct label call.
-    correct = np.where(bet_over, y == 1.0, y == 0.0)
-
-    n_bets = int(placed.sum())
-    if n_bets:
-        wins = int(correct[placed].sum())
-        profit = wins * (flat_decimal_odds - 1.0) - (n_bets - wins)
-        roi = profit / n_bets
-    else:
-        roi = 0.0
+    # Pushes were dropped when the label was built, so every row has a definite
+    # OVER/UNDER answer. A probability of exactly 0.5 follows the historical
+    # convention and calls OVER.
+    correct = np.where(p_over >= 0.5, y == 1.0, y == 0.0)
 
     return {
         "log_loss": log_loss(y, p_over),
         "brier": brier_score(y, p_over),
         "ou_acc": float(correct.mean()) if len(correct) else float("nan"),
-        "n_bets": float(n_bets),
-        "roi": float(roi),
         "n_games": float(len(y)),
     }
 
@@ -1070,14 +1052,10 @@ def _classifier_fold_metrics(
     *,
     fold: int,
     n_train: int,
-    flat_decimal_odds: float,
-    ev_threshold: float,
 ) -> ClassifierFoldMetrics:
     y = pd.to_numeric(y_valid, errors="coerce").to_numpy(dtype=float)
     p_over = np.asarray(model.predict_proba(X_valid), dtype=float)[:, 1]
-    scores = classifier_scores(
-        y, p_over, flat_decimal_odds=flat_decimal_odds, ev_threshold=ev_threshold
-    )
+    scores = classifier_scores(y, p_over)
 
     best_iteration = int(getattr(model, "best_iteration", 0) or 0) + 1
 
@@ -1088,15 +1066,11 @@ def _classifier_fold_metrics(
         log_loss=scores["log_loss"],
         brier=scores["brier"],
         ou_accuracy=scores["ou_acc"],
-        n_bets=int(scores["n_bets"]),
-        roi=scores["roi"],
         best_iteration=best_iteration,
     )
 
 
-def make_pooled_classifier_metrics(
-    config: ExperimentConfig,
-) -> Callable[[PooledPredictions], dict[str, float]]:
+def make_pooled_classifier_metrics() -> Callable[[PooledPredictions], dict[str, float]]:
     """Pooled classifier metrics, keyed the way run_objective expects.
 
     ``pooled_mae`` is deliberately absent: point error against a 0/1 label is not
@@ -1105,12 +1079,7 @@ def make_pooled_classifier_metrics(
     """
 
     def pooled_metrics(pooled: PooledPredictions) -> dict[str, float]:
-        return classifier_scores(
-            pooled.y_true,
-            pooled.y_pred,
-            flat_decimal_odds=config.betting.flat_decimal_odds,
-            ev_threshold=config.betting.primary_ev_threshold,
-        )
+        return classifier_scores(pooled.y_true, pooled.y_pred)
 
     return pooled_metrics
 
@@ -1182,8 +1151,6 @@ def run_classifier_objective(
                 y_valid,
                 fold=fold_num,
                 n_train=len(X_train),
-                flat_decimal_odds=config.betting.flat_decimal_odds,
-                ev_threshold=config.betting.primary_ev_threshold,
             )
         )
         # P(OVER) travels as "y_pred" so one collector serves every strategy.
@@ -1194,10 +1161,7 @@ def run_classifier_objective(
         if pool_objective:
             pooled_so_far = collector.pooled()
             running = classifier_scores(
-                pooled_so_far.y_true,
-                pooled_so_far.y_pred,
-                flat_decimal_odds=config.betting.flat_decimal_odds,
-                ev_threshold=config.betting.primary_ev_threshold,
+                pooled_so_far.y_true, pooled_so_far.y_pred
             )["log_loss"]
         else:
             running = float(np.mean([m.log_loss for m in fold_metrics]))
@@ -1216,8 +1180,6 @@ def run_classifier_objective(
     trial.set_user_attr("mean_logloss", mean_logloss)
     trial.set_user_attr("mean_brier", _mean("brier"))
     trial.set_user_attr("mean_ou_acc", _mean("ou_accuracy"))
-    trial.set_user_attr("mean_roi", _mean("roi"))
-    trial.set_user_attr("mean_n_bets", _mean("n_bets"))
     _record_protocol_attrs(
         trial,
         config=config,
@@ -1232,9 +1194,7 @@ def run_classifier_objective(
     if not pool_objective:
         return mean_logloss
 
-    for name, value in make_pooled_classifier_metrics(config)(
-        collector.pooled()
-    ).items():
+    for name, value in make_pooled_classifier_metrics()(collector.pooled()).items():
         trial.set_user_attr(f"pooled_{name}", value)
     return float(trial.user_attrs["pooled_log_loss"])
 
@@ -1266,8 +1226,6 @@ _POOLED_CLASSIFIER_KEYS: tuple[str, ...] = (
     "pooled_log_loss",
     "pooled_brier",
     "pooled_ou_acc",
-    "pooled_roi",
-    "pooled_n_bets",
     "pooled_n_games",
 )
 
@@ -1457,7 +1415,12 @@ def select_best_trial_lexicographic_pooled(
 def select_best_classifier_trial_lexicographic_pooled(
     study: optuna.Study, *, logloss_tolerance_abs: float | None = 0.002
 ) -> optuna.trial.FrozenTrial:
-    """Classifier selection on pooled metrics; same rule, pooled keys."""
+    """Near-best pooled log loss, then directional accuracy.
+
+    ROI is intentionally not a selector. Under flat symmetric odds it is a
+    rescaling of win rate, and with real prices it belongs to an outer/post-hoc
+    betting evaluation rather than the folds already used for model selection.
+    """
     trials = _completed_classifier_trials(study)
     best = min(_pooled_metric(t, "pooled_log_loss") for t in trials)
     cutoff = best + (logloss_tolerance_abs or 0.0)
@@ -1474,7 +1437,6 @@ def select_best_classifier_trial_lexicographic_pooled(
         candidates,
         key=lambda trial: (
             -float(trial.user_attrs.get("pooled_ou_acc", 0.0)),
-            -float(trial.user_attrs.get("pooled_roi", 0.0)),
             _pooled_metric(trial, "pooled_log_loss"),
             trial.number,
         ),
@@ -1504,8 +1466,6 @@ def summarize_trials_pooled(study: optuna.Study, *, keys: tuple[str, ...]) -> pd
         "mean_ou_acc",
         "mean_logloss",
         "mean_brier",
-        "mean_roi",
-        "mean_n_bets",
     )
     rows = [
         {
@@ -1565,7 +1525,7 @@ def select_best_classifier_trial_lexicographic(
     *,
     logloss_tolerance_abs: float | None = 0.002,
 ) -> optuna.trial.FrozenTrial:
-    """Best log loss within tolerance, then the best betting outcome.
+    """Best log loss within tolerance, then directional accuracy.
 
     Mirrors the regressors' lexicographic selection, and matters more here.
     Simulated at 600 validation games, log loss ranks a truly-53% trial above a
@@ -1586,11 +1546,11 @@ def select_best_classifier_trial_lexicographic(
     if not candidates:
         candidates = trials
 
-    def _key(trial: optuna.trial.FrozenTrial) -> tuple[float, float, float]:
+    def _key(trial: optuna.trial.FrozenTrial) -> tuple[float, float, int]:
         return (
             -float(trial.user_attrs.get("mean_ou_acc", 0.0)),
-            -float(trial.user_attrs.get("mean_roi", 0.0)),
             float(trial.user_attrs.get("mean_logloss", trial.value)),  # type: ignore[arg-type]
+            trial.number,
         )
 
     return min(candidates, key=_key)
@@ -1608,8 +1568,6 @@ def summarize_classifier_trials(study: optuna.Study) -> pd.DataFrame:
                     "mean_logloss",
                     "mean_brier",
                     "mean_ou_acc",
-                    "mean_roi",
-                    "mean_n_bets",
                     "median_best_iteration",
                     "sample_weight_lambda",
                 )
@@ -1635,8 +1593,6 @@ def summarize_classifier_candidates(
             "mean_logloss": trial.user_attrs.get("mean_logloss", trial.value),
             "mean_brier": trial.user_attrs.get("mean_brier"),
             "mean_ou_acc": trial.user_attrs.get("mean_ou_acc"),
-            "mean_roi": trial.user_attrs.get("mean_roi"),
-            "mean_n_bets": trial.user_attrs.get("mean_n_bets"),
             "within_tolerance": (
                 float(trial.user_attrs.get("mean_logloss", trial.value)) <= cutoff  # type: ignore[arg-type]
             ),

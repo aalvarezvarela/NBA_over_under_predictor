@@ -23,5 +23,3 @@ tags: [total_points, rolling_origin, tuned_window, tuned_rounds]
 optuna:
   n_trials: 200
   timeout: null
-
-evaluation_seeds: [101, 202, 303, 404]

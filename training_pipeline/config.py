@@ -1714,30 +1714,14 @@ class ExperimentConfig(BaseModel):
             return self.optuna.study_name
         return f"xgb_{self.family.value}_{self.resolved_window_name_label}_mae"
 
-    def _fingerprint_excluded_betting_fields(self) -> set[str] | bool:
-        """Which betting fields stay out of the fingerprint.
+    def _fingerprint_excluded_betting_fields(self) -> bool:
+        """Betting settings are post-hoc for every prediction strategy.
 
-        For the regressors, all of them: betting settings are applied after a
-        model exists, so changing a threshold must not throw away a study.
-
-        For the classifier, ``flat_decimal_odds`` and ``primary_ev_threshold``
-        feed the objective itself (they produce the ``mean_roi`` /
-        ``mean_n_bets`` attributes that lexicographic selection ranks on), so
-        they must be part of the identity of a trial. Everything else in
-        BettingConfig remains genuinely post-hoc for both.
+        Classifier tuning used to record ROI and use it as a lexicographic
+        tie-breaker. It now selects on probability loss and directional accuracy
+        only, so changing prices or reporting thresholds must not fork a study.
         """
-        if not self.is_classifier:
-            return True
-        return {
-            "edge_thresholds",
-            "primary_edge_threshold",
-            "over_price_col",
-            "under_price_col",
-            "evaluate_cv_folds",
-            "ev_thresholds",
-            "calibration_buckets",
-            "comparison_line_cols",
-        }
+        return True
 
     def fingerprint(self) -> str:
         """Short stable hash of everything that changes what a trial *means*.
@@ -1785,12 +1769,7 @@ class ExperimentConfig(BaseModel):
                 # Post-hoc scoring settings; changing a bet threshold or a
                 # backtest window must not invalidate an existing study's trials.
                 #
-                # EXCEPT for the classifier, where two of these stop being
-                # post-hoc: its objective records mean_roi and mean_n_bets from
-                # flat_decimal_odds and primary_ev_threshold, and lexicographic
-                # selection picks the final trial with them. Trials scored under
-                # different betting rules are therefore not comparable, and are
-                # re-included below so a persistent study cannot mix them.
+                # Betting outcomes are diagnostics, never model-selection inputs.
                 "betting": self._fingerprint_excluded_betting_fields(),
                 "backtest": True,
                 # n_trials/timeout change how *long* tuning runs, not what a

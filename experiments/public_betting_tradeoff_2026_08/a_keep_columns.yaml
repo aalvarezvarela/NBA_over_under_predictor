@@ -58,8 +58,10 @@
 # PRE-REGISTERED EXPECTATIONS
 # ============================================================================
 #   - Seed noise on this pipeline is 4.9-12.0 ROI points for one fixed config.
-#     Nothing smaller than one cell's own seed_roi_range is a result. Read
-#     seed_roi_range BEFORE any cell-to-cell difference.
+#     Runs are evaluated on the primary seed only, so no cell carries its own
+#     error bar. The floor was measured at 4.9-12.0 ROI points for one fixed
+#     config; treat any smaller ROI gap as indistinguishable, and prefer
+#     holdout MAE, which is much less noisy.
 #   - A -> B: no strong prior. These columns are public sentiment, not a sharp
 #     price, and the pipeline already declines to impute them
 #     (MARKET_KEEP_NA_SUBSTRINGS). If dropping 195 features costs nothing
@@ -127,5 +129,3 @@ optuna:
   # machine and silently un-matches cells meant to be comparable.
   n_trials: 120
   timeout: null
-
-evaluation_seeds: [101, 202]

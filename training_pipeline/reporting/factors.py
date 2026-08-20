@@ -43,6 +43,10 @@ from training_pipeline.reporting.loaders import load_config_flat
 #: assumed constant; if a new campaign varies something else, add it here or
 #: its runs will be matched as though they were identical.
 FACTOR_SOURCES: dict[str, str] = {
+    # NOTE this reads the CONFIG value, which on a tuned-window run is the
+    # fallback rather than the selected window. It is kept for runs whose
+    # metadata predates the selected value being recorded; the leaderboard
+    # column of the same name prefers metadata and is the one to trust.
     "train_games": "walk_forward.train_games",
     "max_folds": "walk_forward.max_folds",
     "wf_strategy": "walk_forward.strategy",

@@ -60,8 +60,3 @@ optuna:
   # full budget" -- say so when reporting results from this campaign.
   n_trials: 100
   timeout: null
-
-# Two extra seeds rather than four: the primary readout is the pooled CV number
-# over ~855 games, and the holdout re-evaluation is the expensive part. Enough
-# to have a noise floor to judge cell-to-cell differences against.
-evaluation_seeds: [101, 202]

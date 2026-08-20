@@ -78,5 +78,3 @@ optuna:
   # null, never a duration: a timeout makes trial count a function of how busy
   # the machine is, which silently un-matches cells meant to be comparable.
   timeout: null
-
-evaluation_seeds: [101, 202]

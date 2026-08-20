@@ -84,5 +84,3 @@ optuna:
   # optuna_trials.csv makes visible when grouped by train_games.
   n_trials: 120
   timeout: null
-
-evaluation_seeds: [101, 202]

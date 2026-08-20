@@ -31,7 +31,7 @@
 #
 # THIS CELL CHANGES EXACTLY ONE THING against cell A: the correlation
 # thresholds go back to the archived 0.995-everywhere. Same CSV, same checksum,
-# same floor, same windows, same trial budget, same seeds, same holdout. If MAE
+# same floor, same windows, same trial budget, same seed, same holdout. If MAE
 # returns to ~14.43 and beats the line again, the depuration cost accuracy and
 # the thresholds should be loosened. If it does not, the cause is the data
 # rework or the CV change, and this cell rules the cleaning out.
@@ -82,5 +82,3 @@ walk_forward:
 optuna:
   n_trials: 120
   timeout: null
-
-evaluation_seeds: [101, 202]

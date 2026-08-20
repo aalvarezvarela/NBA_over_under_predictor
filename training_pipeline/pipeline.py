@@ -611,8 +611,6 @@ def run_experiment(
                     attrs.get("mean_logloss", reporting_trial.value),
                 ),
                 "brier": attrs.get("pooled_brier", attrs.get("mean_brier")),
-                "roi": attrs.get("pooled_roi", attrs.get("mean_roi")),
-                "n_bets": attrs.get("pooled_n_bets", attrs.get("mean_n_bets")),
             }
         else:
             reported_mae = attrs.get(

@@ -34,10 +34,13 @@
 # control: if the larger cells do not beat it, the extra seasons earned nothing
 # and the production switch stays off.
 #
-# READ THE SEEDS FIRST. Measured seed ROI range on this pipeline is 4.9-12.0
-# points for one fixed config, and cell A of the previous campaign spanned 9.3
-# points across its three seeds. Nothing smaller than a cell's own seed range is
-# a result, and three cells against that noise floor means expecting roughly one
+# READ ROI SCEPTICALLY. These cells are evaluated on the primary seed only
+# (random_state 16), so no run here carries an error bar of its own. The noise
+# floor still exists -- previously measured at 4.9-12.0 ROI points and
+# 0.017-0.110 holdout MAE for ONE fixed config, re-fitted under other seeds --
+# it is simply no longer being measured per run. Judge cells on holdout MAE,
+# which is far less noisy than ROI, and treat any ROI gap under ~5 points as
+# indistinguishable. Three cells against that floor means expecting roughly one
 # to look good by luck.
 
 experiment_name: winax_d1_window_3000
@@ -47,7 +50,7 @@ comparison_group: window_axis_extended_2026_08
 hypothesis: >
   Control cell. At the 3,000-game window -- the one cell C's selection actually
   landed on -- the extended-history data regime performs at the level already
-  measured there (holdout MAE ~14.51, ROI negative on all three seeds). This
+  measured there (holdout MAE ~14.51, ROI negative). This
   cell exists to give D2 and D3 something to be read against at a window the
   sampler is not choosing.
 tags: [line_error, window_axis, extended_history, fixed_window, control]
@@ -106,5 +109,3 @@ optuna:
   # null, never a duration: a timeout makes trial count a function of how busy
   # the machine is, which silently un-matches cells meant to be comparable.
   timeout: null
-
-evaluation_seeds: [101, 202]

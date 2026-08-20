@@ -83,5 +83,3 @@ walk_forward:
 optuna:
   n_trials: 120
   timeout: null
-
-evaluation_seeds: [101, 202]

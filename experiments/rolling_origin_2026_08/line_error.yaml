@@ -51,5 +51,3 @@ optuna:
   # comparable.
   n_trials: 200
   timeout: null
-
-evaluation_seeds: [101, 202, 303, 404]

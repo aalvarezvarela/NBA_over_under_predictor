@@ -101,5 +101,3 @@ optuna:
   objective_aggregation: mean
   n_trials: 120
   timeout: null
-
-evaluation_seeds: [101, 202]

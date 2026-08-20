@@ -50,7 +50,7 @@ log() { echo "$@" | tee -a "$LOG"; }
 
 log "=========================================================="
 log "Rolling-origin campaign -- started $(date)"
-log "  ${#CONFIGS[@]} runs, 5 seeds each, GPU"
+log "  ${#CONFIGS[@]} runs, single seed (random_state 16), GPU"
 log "  Optuna chooses the training window AND the model complexity"
 log "  measured layout at eval_span_games=850: 30 folds, 117 game-days,"
 log "  855 validation games, window ceiling 4117"

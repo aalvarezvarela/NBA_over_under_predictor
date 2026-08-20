@@ -544,8 +544,10 @@ sample_weight:
   # trials preferred it.
   allow_unweighted: true
 
-# --- profit scoring ---------------------------------------------------------
-# Post-hoc only: changing these never invalidates a tuned study.
+# --- betting-outcome scoring ------------------------------------------------
+# Post-hoc only: changing these never invalidates a tuned study or selects a
+# trial. The headline is directional win rate, its Wilson interval and volume.
+# ROI is retained only as a hypothetical flat-odds settlement diagnostic.
 betting:
   # Finer at the bottom: that is where the question "is a 1-point edge better
   # than a 0.5-point one?" lives, and where nearly all the games are.
@@ -567,7 +569,8 @@ betting:
   # fork a persistent Optuna study. It DOES change what win_rate/roi/n_bets mean,
   # so runs before and after are not directly comparable on those columns.
   primary_edge_threshold: 0.1
-  # 1.909091 == -110 American. Break-even win rate is 1/odds = 52.38%.
+  # 1.909091 == -110 American. Used only to translate the same wins/losses into
+  # a hypothetical settlement diagnostic; it does not select a model.
   flat_decimal_odds: 1.9090909090909092
 
   # Score the CV folds for profit too, not just the holdout. This is about
@@ -583,10 +586,9 @@ betting:
   # The 12 CV folds hold ~600 validation games, ~5x the volume, for one extra
   # fit per fold (~= one Optuna trial).
   #
-  # Biased upward: these folds chose the hyperparameters. Use cv_roi to COMPARE
-  # configurations and holdout roi to ESTIMATE live performance. A big gap
-  # between them is the signature of selection overfitting, and is worth
-  # reading as a result in its own right.
+  # These folds chose the hyperparameters, so their win rate is a development
+  # comparison rather than an unbiased live estimate. Read cv_win_rate together
+  # with cv_n_bets and its interval; use untouched forward data for confirmation.
   evaluate_cv_folds: true
 
   # Re-score the same predictions against other total lines, for information.
@@ -607,24 +609,22 @@ backtest:
   train_games: null       # null = expanding window (all prior games)
   show_progress: true
 
-# --- seed stability ---------------------------------------------------------
-# random_state seeds BOTH the Optuna sampler and every model fit.
+# --- seeds -------------------------------------------------------------------
+# random_state seeds BOTH the Optuna sampler and every model fit, so it is the
+# single number that makes a run reproducible. Every run reports this seed's
+# evaluation and nothing else.
 random_state: 16
 #
-# evaluation_seeds repeats the whole holdout evaluation under more seeds,
-# holding data, split and tuned hyperparameters fixed, so the only thing that
-# varies is XGBoost's own randomness (subsample / colsample draws). It produces
-# seed_stability.csv, and seed_roi_range on the leaderboard.
+# evaluation_seeds re-runs the WHOLE holdout evaluation under additional seeds,
+# holding data, split and tuned hyperparameters fixed so that only XGBoost's own
+# randomness varies. Off, and left off deliberately: it costs a full
+# re-evaluation per seed (~55 daily retrains) and results are read on the
+# primary seed alone.
 #
-# Why bother: without it there is no error bar on any comparison between two
-# experiments, and the spread across seeds is plausibly the same size as the
-# differences being read as results. If run A and run B differ by less than one
-# run's own seed range, the difference is not evidence.
-#
-# Costs a full re-evaluation per seed (~35 fits under daily_walk_forward), so
-# it is off by default; 2 extra seeds is the useful minimum, 4 is thorough.
-# The primary seed is always evaluated and reported -- listing it here again is
-# ignored.
+# What it buys, if you ever want it back: it is the only error bar this pipeline
+# produces. Measured spreads on one fixed config were 4.2-9.3 ROI points and
+# 0.017-0.110 holdout MAE -- the same size as most differences between cells.
+# Set it to [101, 202] on a run whose result you are about to act on.
 evaluation_seeds: []
 
 # --- output -----------------------------------------------------------------

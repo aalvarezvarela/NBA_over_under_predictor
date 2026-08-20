@@ -37,7 +37,11 @@ from training_pipeline.config import (
 from training_pipeline.data import PreparedDataset, add_over_under_label
 from training_pipeline.decisions import predict_decisions, primary_threshold
 from training_pipeline.pipeline import run_experiment
-from training_pipeline.tuning import get_strategy
+from training_pipeline.tuning import (
+    get_strategy,
+    select_best_classifier_trial_lexicographic,
+    select_best_classifier_trial_lexicographic_pooled,
+)
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -477,11 +481,8 @@ def test_leak_guard_keeps_the_engineered_before_rollups():
     )
 
 
-def test_classifier_betting_rules_fork_a_persistent_study(tmp_path):
-    """The classifier objective records mean_roi/mean_n_bets from these two
-    settings and lexicographic selection ranks on them, so trials scored under
-    different rules are not comparable and must not share a study.
-    """
+def test_classifier_betting_rules_are_post_hoc_to_the_study(tmp_path):
+    """Prices and thresholds no longer select a classifier trial."""
     def _mk(odds, ev):
         return _config(
             tmp_path,
@@ -491,14 +492,64 @@ def test_classifier_betting_rules_fork_a_persistent_study(tmp_path):
             ),
         )
 
-    assert _mk(1.9090909090909092, 0.0).fingerprint() != _mk(2.5, 0.05).fingerprint()
+    assert _mk(1.9090909090909092, 0.0).fingerprint() == _mk(2.5, 0.05).fingerprint()
     assert _mk(2.5, 0.05).fingerprint() == _mk(2.5, 0.05).fingerprint()
 
 
+def test_classifier_selection_ignores_roi_when_accuracy_ties():
+    study = optuna.create_study(direction="minimize")
+    study.add_trial(
+        optuna.trial.create_trial(
+            value=0.690,
+            user_attrs={"mean_logloss": 0.690, "mean_ou_acc": 0.54, "mean_roi": -0.9},
+        )
+    )
+    study.add_trial(
+        optuna.trial.create_trial(
+            value=0.691,
+            user_attrs={"mean_logloss": 0.691, "mean_ou_acc": 0.54, "mean_roi": 9.0},
+        )
+    )
+
+    selected = select_best_classifier_trial_lexicographic(
+        study, logloss_tolerance_abs=0.002
+    )
+
+    assert selected.number == 0
+
+
+def test_pooled_classifier_selection_ignores_roi_when_accuracy_ties():
+    study = optuna.create_study(direction="minimize")
+    study.add_trial(
+        optuna.trial.create_trial(
+            value=0.690,
+            user_attrs={
+                "pooled_log_loss": 0.690,
+                "pooled_ou_acc": 0.54,
+                "pooled_roi": -0.9,
+            },
+        )
+    )
+    study.add_trial(
+        optuna.trial.create_trial(
+            value=0.691,
+            user_attrs={
+                "pooled_log_loss": 0.691,
+                "pooled_ou_acc": 0.54,
+                "pooled_roi": 9.0,
+            },
+        )
+    )
+
+    selected = select_best_classifier_trial_lexicographic_pooled(
+        study, logloss_tolerance_abs=0.002
+    )
+
+    assert selected.number == 0
+
+
 def test_a_post_hoc_sweep_list_still_does_not_fork_the_study(tmp_path):
-    """Only the two settings the objective actually reads are identity-bearing.
-    Widening the reporting sweep must not throw away a study.
-    """
+    """Changing a reporting sweep must not throw away a tuned study."""
     base = _config(
         tmp_path,
         betting=BettingConfig(ev_thresholds=(0.0, 0.02), primary_ev_threshold=0.0),

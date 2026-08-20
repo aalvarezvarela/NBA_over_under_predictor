@@ -19,8 +19,10 @@
 #
 # Budget ~3h per cell (~9h total). Tuning is the minority of that: measured on
 # cell C, 120 trials took ~32 min and the rest went to the daily walk-forward
-# holdout across three seeds. Raising pruner_warmup_fraction to 0.5 roughly
-# doubles the cost of a pruned trial, so expect tuning nearer 60 min per cell.
+# holdout. That budget was measured when the holdout was evaluated under three
+# seeds; at one seed the holdout stage costs roughly a third of that. Raising
+# pruner_warmup_fraction to 0.5 roughly doubles the cost of a pruned trial, so
+# expect tuning nearer 60 min per cell.
 #
 # set -u and pipefail, but deliberately NOT -e: one failed cell must not cancel
 # the others.
@@ -103,11 +105,12 @@ echo ""
 echo "=== $(date -Is) campaign finished ==="
 echo "Runs are under artifacts/experiments/window_axis_extended_2026_08/"
 echo ""
-echo "Read seed_roi_range FIRST. Measured seed noise on this pipeline is"
-echo "4.9-12.0 ROI points for ONE fixed config, and cell A of the previous"
-echo "campaign spanned 9.3 points across its three seeds. Nothing smaller than"
-echo "a cell's own seed range is a result, and at three cells against that"
-echo "noise floor, expect roughly one to look good by luck."
+echo "Judge on holdout MAE, not ROI. These runs are single-seed, so no cell"
+echo "carries an error bar of its own. The noise floor has not gone away --"
+echo "it was measured at 4.9-12.0 ROI points for ONE fixed config re-fitted"
+echo "under other seeds -- it is just no longer measured per run. Treat any"
+echo "ROI gap under ~5 points as indistinguishable, and at three cells expect"
+echo "roughly one to look good by luck."
 echo ""
 echo "Then, in order:"
 echo "  D1 vs D2  -- does more history help, using ordinary seasons only?"

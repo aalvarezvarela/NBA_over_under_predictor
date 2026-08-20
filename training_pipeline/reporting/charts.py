@@ -412,7 +412,16 @@ def plot_selectivity(runs: pd.DataFrame) -> None:
 
 # --------------------------------------------------------------- headline
 def plot_roi_with_seed_noise(runs: pd.DataFrame) -> None:
-    """Holdout ROI with the seed range each configuration produced."""
+    """Holdout ROI, with the seed range for any run that produced one.
+
+    Single-seed is the default, so usually no run has a range and this degrades
+    to plain bars. The title and legend follow suit rather than advertising an
+    error bar the chart is not drawing -- a legend entry for a mark that never
+    appears reads as "the bars ARE the interval", which is the opposite of true.
+    """
+    has_seed_range = (
+        "seed_roi_range" in runs.columns and runs["seed_roi_range"].notna().any()
+    )
     fig, ax = plt.subplots(figsize=(12.5, 5))
     x = np.arange(len(runs))
     ax.bar(x, runs["roi"], color=[colour_of(r) for _, r in runs.iterrows()],
@@ -445,11 +454,22 @@ def plot_roi_with_seed_noise(runs: pd.DataFrame) -> None:
     margin = (max(above) - min(below)) * 0.12
     ax.set_ylim(min(min(below), 0) - margin, max(above) + margin)
     ax.axhline(0, color=AXIS, linewidth=1.2, zorder=1)
-    ax.set_title("Holdout ROI, with the seed-noise range each configuration produces")
+    ax.set_title(
+        "Holdout ROI, with the seed-noise range each configuration produces"
+        if has_seed_range
+        else "Holdout ROI (single seed -- no error bar)"
+    )
     ax.set_ylabel("ROI")
     ax.set_xticks(x, runs["label"], rotation=25, ha="right")
-    strategy_legend(ax, runs["prediction_strategy"].unique(),
-                    extra=[Line2D([], [], color=INK, linewidth=2, label="seed range")])
+    strategy_legend(
+        ax,
+        runs["prediction_strategy"].unique(),
+        extra=(
+            [Line2D([], [], color=INK, linewidth=2, label="seed range")]
+            if has_seed_range
+            else None
+        ),
+    )
     plt.tight_layout()
     plt.show()
 
