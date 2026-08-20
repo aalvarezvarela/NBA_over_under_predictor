@@ -104,7 +104,12 @@ CELLS=("d_corr995_control" "e_test_anchored_control")
 for cell in "${CELLS[@]}"; do
   echo ""
   echo "=== $(date -Is) $cell ==="
-  poetry run python -m training_pipeline.cli "$CAMPAIGN/$cell.yaml"
+  # --no-save-model: this is an evaluation campaign, not a deployment. Without
+  # it the CLI passes save_model=True, which OVERRIDES the config's
+  # refit.train_production_model: false -- and cell D then collides with the
+  # bundle cell A already wrote at models/line_error/tuned_window/, because
+  # both tune the window and so share the "tuned_window" label.
+  poetry run python -m training_pipeline.cli "$CAMPAIGN/$cell.yaml" --no-save-model
   status=$?
   if [ $status -ne 0 ]; then
     echo "!!! $cell FAILED (exit $status) -- continuing with the rest"
