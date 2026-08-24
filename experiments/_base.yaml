@@ -652,14 +652,27 @@ random_state: 16
 #
 # evaluation_seeds re-runs the WHOLE holdout evaluation under additional seeds,
 # holding data, split and tuned hyperparameters fixed so that only XGBoost's own
-# randomness varies. Off, and left off deliberately: it costs a full
-# re-evaluation per seed (~55 daily retrains) and results are read on the
-# primary seed alone.
+# randomness varies. OFF BY DEFAULT, deliberately: it costs a full
+# re-evaluation per seed (~55 daily retrains), and the headline everywhere --
+# betting_metrics.json, final_test_metrics.json, the notebooks -- is seed 16
+# alone. A campaign that wants error bars opts in per cell.
 #
-# What it buys, if you ever want it back: it is the only error bar this pipeline
-# produces. Measured spreads on one fixed config were 4.2-9.3 ROI points and
-# 0.017-0.110 holdout MAE -- the same size as most differences between cells.
-# Set it to [101, 202] on a run whose result you are about to act on.
+# What it buys, measured on the 20-run horizon_*_2026_08 campaign, which did
+# opt in at [101, 202]:
+#
+#   - ONE config's holdout ROI moved 0.9 to 11.4 points across three seeds
+#     (median ~5). Single-seed ROI differences smaller than that are noise.
+#   - The 3-seed MEAN is far steadier: closing_reference against its own
+#     closing_replicate agreed to 0.1 points (line error) and 1.5 points
+#     (total points), tuning re-run and all. That is the real noise floor.
+#   - Holdout MAE spread was 0.017-0.110 -- the same size as most differences
+#     between cells.
+#
+# So: leave it off for exploratory sweeps, where the sweep's own consistency
+# across cells is the evidence. Set it to [101, 202] on a run whose result you
+# are about to act on, and on any pair you intend to report as a difference.
+# It is excluded from the config fingerprint, so switching it on reuses the
+# existing Optuna study rather than re-tuning.
 evaluation_seeds: []
 
 # --- output -----------------------------------------------------------------

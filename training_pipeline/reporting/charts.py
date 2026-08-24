@@ -1252,9 +1252,13 @@ def plot_headline_win_rate_and_roi(
     axes[0].set_yticks(positions, cv[label_col], fontsize=10, fontweight='semibold')
     axes[0].set_ylabel('Experiment', fontsize=11, fontweight='semibold')
     axes[0].set_ylim(-0.65, len(cv) - 0.35)
+    subtitle = (
+        'Every prediction, no bet threshold'
+        if operating_coverage >= 1.0
+        else f'Dynamic threshold retains at least {operating_coverage:.0%} of CV games'
+    )
     fig.suptitle(
-        'Experiment performance · CV versus holdout\n'
-        f'Dynamic threshold retains at least {operating_coverage:.0%} of CV games',
+        f'Experiment performance · CV versus holdout\n{subtitle}',
         fontsize=19, fontweight='bold', color='#222831',
     )
     return fig, axes

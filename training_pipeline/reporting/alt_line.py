@@ -60,6 +60,7 @@ from training_pipeline.reporting.loaders import settle_bets
 from training_pipeline.reporting.theme import (
     BREAK_EVEN,
     DECIMAL_ODDS,
+    GRID,
     INK,
     INK_2,
     MUTED,
@@ -248,10 +249,35 @@ def compare_settlement_lines(
     shared = set(swapped["game_id"])
     cohort = closing[closing["game_id"].isin(shared)].reset_index(drop=True)
 
+    def selected_at(frame: pd.DataFrame, target: float) -> tuple[float, set[Any]]:
+        cutoff = coverage.cutoff_for_coverage(frame["selection_score"], target)
+        keep = frame.loc[frame["selection_score"] > cutoff, "game_id"]
+        return cutoff, set(keep)
+
+    # How much of the two series' selections actually coincide, per coverage.
+    # The COHORT is identical by construction above, but the SELECTION is not:
+    # each side ranks by its own margin, and swapping the settlement line
+    # re-ranks the games. At 100% that is vacuous and the two series really are
+    # the same games; by 60% they share about half their picks, so part of any
+    # gap below full coverage is a different subset rather than a different
+    # price. Reported rather than hidden, because the chart used to assert the
+    # opposite.
+    overlap: dict[float, dict[str, float]] = {}
+    for target in coverage_grid:
+        _, left = selected_at(cohort, target)
+        _, right = selected_at(swapped, target)
+        union = left | right
+        overlap[target] = {
+            "n_selected_shared": float(len(left & right)),
+            "share_selection_shared": (
+                float(len(left & right) / len(union)) if union else float("nan")
+            ),
+        }
+
     rows: list[dict[str, Any]] = []
     for name, frame in (("closing line", cohort), (f"{alt_name} line", swapped)):
         for target in coverage_grid:
-            cutoff = coverage.cutoff_for_coverage(frame["selection_score"], target)
+            cutoff, _ = selected_at(frame, target)
             metrics = evaluate_betting(
                 predicted_edge=frame["predicted_edge"],
                 actual_total=frame["TOTAL_POINTS"],
@@ -266,6 +292,7 @@ def compare_settlement_lines(
                 "target_coverage": target,
                 "cutoff": cutoff,
                 **metrics,
+                **overlap[target],
             }
             row["realised_coverage"] = row.pop("bet_rate")
             rows.append(row)
@@ -334,10 +361,104 @@ def plot_settlement_comparison(
     ax.set_ylabel("win rate")
     ax.set_title(title, loc="left", color=INK, fontsize=9)
     ax.legend(fontsize=8, loc="best")
+    # Not "same games on both series". The cohort is identical, the SELECTION
+    # is not: each series keeps its own top share by its own margin, and the
+    # line swap re-ranks the games. Only the 100% point compares like with
+    # like, so say what the overlap actually is.
+    note = "same cohort; only the 100% point selects the same games"
+    if "share_selection_shared" in comparison.columns:
+        shares = comparison.groupby("target_coverage")["share_selection_shared"].first()
+        thinnest = shares.index.min()
+        if pd.notna(shares.get(thinnest)):
+            note += f" (at {thinnest:.0%} they share {shares[thinnest]:.0%} of picks)"
     ax.annotate(
-        "same games on both series", xy=(0.01, 0.02), xycoords="axes fraction",
+        note, xy=(0.01, 0.02), xycoords="axes fraction",
         fontsize=7.5, color=MUTED,
     )
+    return ax
+
+
+def plot_settlement_summary(
+    comparisons: pd.DataFrame,
+    *,
+    alt_name: str = "T-360",
+    coverage_level: float = 1.0,
+    label_map: Any = None,
+    ax: Any = None,
+) -> Any:
+    """One row per run: holdout win rate at the close versus at ``alt_name``.
+
+    The whole of section 6 in one picture, at ONE coverage -- 1.0 by default,
+    every game. That restriction is what makes it simple and what makes it
+    honest: at full coverage both series really are the same games, so the
+    horizontal distance is the settlement line and nothing else. The
+    coverage-swept chart answers a different, murkier question and is kept
+    separate for that reason.
+
+    A dumbbell rather than paired bars: the two values sit ~1-2 points apart on
+    a base of ~52%, which grouped bars render as two identical rectangles.
+    """
+    view = comparisons[np.isclose(comparisons["target_coverage"], coverage_level)]
+    if view.empty:
+        raise ValueError(
+            f"No rows at coverage {coverage_level:.0%}; the frame holds "
+            f"{sorted(comparisons['target_coverage'].unique())}."
+        )
+    alt_column = f"{alt_name} line"
+    wide = view.pivot_table(
+        index="label", columns="settled_at", values=["win_rate", "n_bets"]
+    )
+    wide = wide.sort_values(("win_rate", "closing line"))
+    names = [
+        str(label_map.get(label, label)) if label_map is not None else str(label)
+        for label in wide.index
+    ]
+
+    if ax is None:
+        _, ax = plt.subplots(
+            figsize=(9.0, 0.42 * len(wide) + 2.0), constrained_layout=True
+        )
+    positions = np.arange(len(wide))
+    closing = wide[("win_rate", "closing line")].to_numpy()
+    alternative = wide[("win_rate", alt_column)].to_numpy()
+
+    ax.hlines(positions, closing, alternative, color=GRID, linewidth=3.0, zorder=1)
+    ax.scatter(closing, positions, color=CLOSING_COLOR, s=54, zorder=3,
+               label="settled at the close")
+    ax.scatter(alternative, positions, color=ALT_COLOR, s=54, marker="^",
+               zorder=3, label=f"settled at {alt_name}")
+    ax.axvline(BREAK_EVEN, color=INK, linewidth=1.2, linestyle=(0, (4, 3)), zorder=2)
+    ax.annotate(
+        f"break-even {BREAK_EVEN:.1%}", xy=(BREAK_EVEN, 1.0),
+        xycoords=("data", "axes fraction"), xytext=(4, -10),
+        textcoords="offset points", fontsize=8, color=INK_2,
+    )
+
+    for y, (left, right) in enumerate(zip(closing, alternative, strict=True)):
+        ax.annotate(
+            f"{right - left:+.1%}", xy=(max(left, right), y), xytext=(9, 0),
+            textcoords="offset points", va="center", fontsize=8, color=INK_2,
+        )
+
+    ax.set_yticks(positions, names, fontsize=9)
+    ax.set_ylim(-0.7, len(wide) - 0.3)
+    ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0%}"))
+    ax.set_xlabel("holdout win rate — every game, no bet threshold")
+    # Headroom on the right for the delta labels, which sit outside the marker.
+    span = float(np.nanmax(np.r_[closing, alternative]) - np.nanmin(np.r_[closing, alternative]))
+    ax.set_xlim(
+        float(np.nanmin(np.r_[closing, alternative])) - 0.1 * max(span, 0.01),
+        float(np.nanmax(np.r_[closing, alternative])) + 0.35 * max(span, 0.01),
+    )
+    n_games = int(view[view["settled_at"] == alt_column]["n_bets"].max())
+    ax.set_title(
+        "Same picks, two settlement lines\n"
+        f"{coverage_level:.0%} of games · up to {n_games} per run",
+        loc="left", color=INK, fontsize=10, fontweight="bold",
+    )
+    # Lower right: rows are sorted by closing win rate, so the bottom row is
+    # the leftmost dumbbell and that corner stays clear.
+    ax.legend(fontsize=8, loc="lower right", frameon=False)
     return ax
 
 

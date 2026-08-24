@@ -252,6 +252,41 @@ class TestCompareSettlementLines:
         assert len(comparison) == 4
         assert set(comparison["settled_at"]) == {"closing line", "T-360 line"}
 
+    def test_selection_overlap_is_reported_not_assumed(self) -> None:
+        """Same cohort is not the same picks below full coverage.
+
+        The cohort control above holds, but each series then ranks that cohort
+        by ITS OWN margin, and swapping the settlement line re-ranks it. At 100%
+        that is vacuous and the selections coincide; below it they diverge, and
+        part of any win-rate gap is a different subset rather than a different
+        price. The chart used to assert the opposite, so the overlap is carried
+        in the frame where a reader can see it.
+        """
+        # Twelve games whose closing edges rank them one way and whose T-360
+        # edges rank them close to the reverse: the alt line is placed just
+        # past each implied total, so a large closing edge becomes a small one.
+        closing = settled([
+            {"game_id": chr(65 + i), "target_line": 218.0,
+             "TOTAL_POINTS": 220.0, "predicted_edge": float(i + 1)}
+            for i in range(12)
+        ])
+        lines = pd.Series({chr(65 + i): 218.0 + i + 1 - (12 - i) * 0.1
+                           for i in range(12)})
+        comparison = alt_line.compare_settlement_lines(
+            closing, alt_line.swap_settlement_line(closing, lines),
+            coverage_grid=(1.0, 0.5),
+        )
+        overlap = comparison.groupby("target_coverage")[
+            "share_selection_shared"
+        ].first()
+        assert overlap[1.0] == 1.0
+        assert overlap[0.5] < 1.0
+        # Both sides still keep the same NUMBER of games; only which ones
+        # differ, which is precisely what makes the divergence invisible
+        # without this column.
+        half = comparison[np.isclose(comparison["target_coverage"], 0.5)]
+        assert half["n_bets"].nunique() == 1
+
 
 class TestClosingLineRuns:
     def _runs(self, tmp_path: Path) -> pd.DataFrame:

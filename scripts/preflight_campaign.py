@@ -136,6 +136,8 @@ def check_configs(
             "strategy": c.strategy.value,
             "train_games": c.walk_forward.train_games,
             "csv": Path(c.data.csv_path).name,
+            "dataset_type": c.data.dataset_type.value,
+            "snapshot_minutes": c.data.snapshot_minutes,
             "no_overtime": c.data.exclude_overtime_from_training,
             "drop_playoffs": c.data.exclude_playoffs,
             "max_na_per_row": c.cleaning.max_na_per_row,
