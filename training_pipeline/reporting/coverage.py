@@ -64,7 +64,11 @@ import pandas as pd
 from matplotlib.lines import Line2D
 from scipy import stats
 
-from training_pipeline.betting import evaluate_betting, wilson_interval
+from training_pipeline.betting import (
+    evaluate_betting,
+    outcome_from_predictions,
+    wilson_interval,
+)
 from training_pipeline.reporting.theme import (
     AXIS,
     BREAK_EVEN,
@@ -146,7 +150,11 @@ def _score_at(
 ) -> dict[str, Any]:
     metrics = evaluate_betting(
         predicted_edge=frame["predicted_edge"],
-        actual_total=frame["TOTAL_POINTS"],
+        # Resolved per call rather than read by name: coverage is reached from
+        # several places, not all of which come through loaders' normalisation,
+        # and this helper accepts either spelling (and raises a named error if
+        # neither is present) instead of a bare KeyError.
+        actual_total=outcome_from_predictions(frame),
         line=frame["target_line"],
         selection_score=frame[SCORE_COLUMN],
         min_edge=cutoff,

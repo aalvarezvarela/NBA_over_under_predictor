@@ -63,8 +63,23 @@ ODDS_SHAPED_PREFIXES: tuple[str, ...] = (
 )
 
 
+#: Columns named after a TARGET relationship rather than after a market, which
+#: therefore must NOT be swept up by the ``ODDS_`` prefix invariant even though
+#: their names collide with an odds-shaped prefix.
+#:
+#: ``SPREAD_ERROR`` is the spread market's residual target (HOME_MARGIN minus the
+#: anchor spread). It begins with ``SPREAD_`` and so matches ODDS_SHAPED_PREFIXES
+#: by accident of naming, but prefixing it would make the training target look
+#: like a market feature to every consumer that selects on ``is_odds_column`` --
+#: exactly backwards. This is the same reasoning already applied to ``DIFF_FROM_``
+#: and ``IS_OVER_`` above; those simply do not happen to match a prefix.
+TARGET_NAMED_COLUMNS: frozenset[str] = frozenset({"SPREAD_ERROR"})
+
+
 def is_odds_shaped_column(column: str) -> bool:
     """True if ``column`` is odds-derived by its name shape, prefix or not."""
+    if column in TARGET_NAMED_COLUMNS:
+        return False
     return column.startswith(ODDS_SHAPED_PREFIXES)
 
 
@@ -128,8 +143,53 @@ def total_line_col(book: str | None = None) -> str:
 
 
 def spread_col(book: str | None = None) -> str:
+    """The RAW per-book spread column: a HOME HANDICAP, negative when home is favoured.
+
+    Verified on real games: this column correlates -0.457 with the realised home
+    margin. Do not use it as a line without converting -- see
+    ``spread_line_home_col`` and ``nba_ou.config.market_columns``.
+    """
     b = book or get_main_book()
     return f"ODDS_SPREAD_{b}"
+
+
+def spread_line_home_col(book: str | None = None) -> str:
+    """The CANONICAL spread column: market-implied final HOME MARGIN.
+
+    Deliberately shaped like ``total_line_col`` (``ODDS_TOTAL_LINE_<book>``) so
+    the spread residual target resolves through exactly the same machinery the
+    totals residual target already uses.
+
+    It carries the ``ODDS_`` marker because it IS a market quote and every
+    odds-derived column in this repo must be selectable via ``is_odds_column``.
+    The bare name ``SPREAD_LINE_HOME`` is the concept; this is its column.
+    """
+    b = book or get_main_book()
+    return f"ODDS_SPREAD_LINE_HOME_{b}"
+
+
+def extract_spread_line_home_books(df: pd.DataFrame) -> list[str]:
+    """Books with a canonical ``ODDS_SPREAD_LINE_HOME_<book>`` column, sorted."""
+    books = set()
+    for col in df.columns:
+        m = re.match(r"^ODDS_SPREAD_LINE_HOME_(.+)$", col)
+        if m:
+            books.add(m.group(1))
+    return sorted(books)
+
+
+def resolve_main_spread_line_col(
+    df: pd.DataFrame, book: str | None = None
+) -> str | None:
+    """Resolve the canonical spread line column for ``book``.
+
+    Unlike ``resolve_main_total_line_col`` this does NOT fall back to another
+    book. The spread target is defined as "home margin minus the Bet365 line";
+    silently answering with a different book's line would change what the target
+    MEANS from row to row, which is a worse outcome than a missing column.
+    """
+    preferred = spread_line_home_col(book)
+    return preferred if preferred in df.columns else None
 
 
 def moneyline_col(book: str | None = None) -> str:

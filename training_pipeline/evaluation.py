@@ -16,6 +16,7 @@ from training_pipeline.baseline import (
     compute_bias_corrected_baseline_metrics,
 )
 from training_pipeline.betting import (
+    OUTCOME_COLUMN,
     BettingMetrics,
     betting_threshold_sweep,
     evaluate_betting,
@@ -25,7 +26,11 @@ from training_pipeline.calibration import (
     calibration_summary,
     calibration_table,
 )
-from training_pipeline.config import ExperimentConfig, RefitStrategy
+from training_pipeline.config import (
+    RESIDUAL_TARGET_COLUMNS,
+    ExperimentConfig,
+    RefitStrategy,
+)
 from training_pipeline.data import rolling_window_index
 from training_pipeline.decisions import (
     collect_prices,
@@ -215,6 +220,7 @@ def evaluate_on_holdout(
         df_test_full,
         np.arange(len(df_test_full)),
         baseline_line_col=baseline_line_col,
+        outcome_col=config.outcome_col,
     )
 
     baseline_line = pd.to_numeric(
@@ -223,14 +229,20 @@ def evaluate_on_holdout(
 
     # baseline_pred must live in the SAME space as y_true/y_pred so the three
     # columns are directly comparable in the saved parquet. For a TOTAL_POINTS
-    # run that space is points (the line itself); for a LINE_ERROR run it is
+    # run that space is points (the line itself); for a RESIDUAL target it is
     # error-vs-line, where "trust the line" means predicting exactly 0. The
     # raw line is kept separately as baseline_line.
+    #
+    # SPREAD_ERROR is a residual target exactly as LINE_ERROR is, so it belongs
+    # in the same branch. Falling through to `baseline_line` would put a spread
+    # line (~0 +/- 7 points of handicap) beside a target that is already a
+    # residual -- two different spaces in adjacent columns, with no NaN and no
+    # error to reveal it.
     if config.is_classifier:
         # There is no prediction in points space to place beside y_true here;
         # the comparable "trust the line" null lives in the betting metrics.
         baseline_pred = np.full_like(y_pred, np.nan, dtype=float)
-    elif config.target_col == "LINE_ERROR":
+    elif config.target_col in RESIDUAL_TARGET_COLUMNS:
         baseline_pred = np.zeros_like(y_pred)
     else:
         baseline_pred = baseline_line
@@ -240,7 +252,7 @@ def evaluate_on_holdout(
     # not necessarily baseline_line_col (that one may point at an alternative
     # consensus line purely for the MAE comparison).
     actual_total = pd.to_numeric(
-        df_test_full["TOTAL_POINTS"], errors="coerce"
+        df_test_full[config.outcome_col], errors="coerce"
     ).to_numpy(dtype=float)
     target_line = target_line_values
     predicted_edge = decisions.predicted_edge
@@ -267,7 +279,10 @@ def evaluate_on_holdout(
     )
 
     baseline_bias_corrected = compute_bias_corrected_baseline_metrics(
-        df_test_full, baseline_line_col=baseline_line_col, bias=dev_line_error_bias
+        df_test_full,
+        baseline_line_col=baseline_line_col,
+        bias=dev_line_error_bias,
+        outcome_col=config.outcome_col,
     )
     # The bias-corrected null bets the same side on every game with a constant
     # edge, which makes it all-or-nothing under a min-edge filter: it would
@@ -310,7 +325,15 @@ def evaluate_on_holdout(
             "target_line": target_line,
             "predicted_edge": predicted_edge,
             "selection_score": decisions.selection_score,
-            "TOTAL_POINTS": actual_total,
+            OUTCOME_COLUMN: actual_total,
+            # Kept under its historical name too when it really is the total, so
+            # archived readers and notebooks that select "TOTAL_POINTS" keep
+            # working on totals runs. Absent on spread runs by design.
+            **(
+                {"TOTAL_POINTS": actual_total}
+                if config.outcome_col == "TOTAL_POINTS"
+                else {}
+            ),
             config.data.date_col: df_test_full[config.data.date_col].to_numpy(),
             **(
                 {}

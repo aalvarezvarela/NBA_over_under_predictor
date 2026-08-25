@@ -29,7 +29,17 @@ import pandas as pd
 from xgboost import XGBClassifier, XGBModel
 
 from training_pipeline.betting import expected_value
-from training_pipeline.config import ExperimentConfig, PredictionStrategy
+from training_pipeline.config import ExperimentConfig, Market, PredictionStrategy
+
+#: Strategies whose prediction is already the edge, so no line is subtracted.
+#: Both markets' residual regressors behave identically here -- the only
+#: difference is which market's line reconstructs the outcome level.
+_RESIDUAL_REGRESSORS = frozenset(
+    {
+        PredictionStrategy.LINE_ERROR_REGRESSOR,
+        PredictionStrategy.SPREAD_ERROR_REGRESSOR,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -39,7 +49,7 @@ class Decisions:
     #: The model's raw output, in the units it was trained on. Points for
     #: TOTAL_POINTS, points-vs-line for LINE_ERROR, P(OVER) for the classifier.
     raw_prediction: np.ndarray
-    #: Sign picks the side: positive => OVER.
+    #: Sign picks the side: positive => OVER (totals) / HOME (spread).
     predicted_edge: np.ndarray
     #: Magnitude compared against a threshold to decide whether to bet at all.
     #: Points for regressors, expected value for the classifier.
@@ -119,9 +129,10 @@ def predict_decisions(
         )
 
     y_pred = np.asarray(model.predict(X), dtype=float)
-    if config.strategy == PredictionStrategy.LINE_ERROR_REGRESSOR:
+    if config.strategy in _RESIDUAL_REGRESSORS:
         # The prediction already IS the edge; adding the line back recovers the
-        # implied total.
+        # implied outcome level (a total for LINE_ERROR, a home margin for
+        # SPREAD_ERROR).
         edge = y_pred
         predicted_total = line + y_pred
     else:
@@ -175,7 +186,7 @@ def decisions_from_pooled_predictions(
             predicted_total=None,
         )
 
-    if config.strategy == PredictionStrategy.LINE_ERROR_REGRESSOR:
+    if config.strategy in _RESIDUAL_REGRESSORS:
         edge = values
         predicted_total = line + values
     else:
@@ -217,9 +228,18 @@ def collect_prices(
     settling on real ones would score a bet the model never would have placed.
 
     ``positions`` positionally selects rows, for callers that predict a subset.
+
+    On a spread run the two sides are HOME and AWAY rather than OVER and UNDER.
+    They occupy the same slots because they play the same role: ``predicted_edge
+    > 0`` selects the first element in both markets (OVER for totals, HOME for
+    the spread), so everything downstream is identical arithmetic.
     """
-    over = price_column(df, config.betting.over_price_col)
-    under = price_column(df, config.betting.under_price_col)
+    if config.market is Market.SPREAD:
+        over = price_column(df, config.betting.home_price_col)
+        under = price_column(df, config.betting.away_price_col)
+    else:
+        over = price_column(df, config.betting.over_price_col)
+        under = price_column(df, config.betting.under_price_col)
     if positions is not None:
         over = None if over is None else over[positions]
         under = None if under is None else under[positions]

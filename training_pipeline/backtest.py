@@ -43,6 +43,7 @@ from training_pipeline.baseline import (
     compute_line_error_bias,
 )
 from training_pipeline.betting import (
+    OUTCOME_COLUMN,
     BettingMetrics,
     betting_threshold_sweep,
     evaluate_betting,
@@ -415,7 +416,7 @@ def run_walk_forward_evaluation(
         df_backtest[prepared.baseline_line_col], errors="coerce"
     ).to_numpy(dtype=float)[positions]
     actual_total = pd.to_numeric(
-        df_backtest["TOTAL_POINTS"], errors="coerce"
+        df_backtest[config.outcome_col], errors="coerce"
     ).to_numpy(dtype=float)[positions]
 
     y_true = walk_forward.predictions["y_true"].to_numpy(dtype=float)
@@ -461,7 +462,9 @@ def run_walk_forward_evaluation(
 
     resolved_bias = (
         compute_line_error_bias(
-            df_history, baseline_line_col=prepared.baseline_line_col
+            df_history,
+            baseline_line_col=prepared.baseline_line_col,
+            outcome_col=config.outcome_col,
         )
         if dev_line_error_bias is None
         else dev_line_error_bias
@@ -473,6 +476,7 @@ def run_walk_forward_evaluation(
         df_backtest.iloc[positions],
         baseline_line_col=prepared.baseline_line_col,
         bias=resolved_bias,
+        outcome_col=config.outcome_col,
     )
     # A constant edge on every game, so a min-edge filter would take either all
     # of them or none. It is a fixed, non-selective strategy: score every
@@ -506,7 +510,12 @@ def run_walk_forward_evaluation(
     predictions = walk_forward.predictions.assign(
         target_line=target_line,
         baseline_line=baseline_line,
-        TOTAL_POINTS=actual_total,
+        **{OUTCOME_COLUMN: actual_total},
+        **(
+            {"TOTAL_POINTS": actual_total}
+            if config.outcome_col == "TOTAL_POINTS"
+            else {}
+        ),
         predicted_edge=predicted_edge,
         selection_score=decisions.selection_score,
     )

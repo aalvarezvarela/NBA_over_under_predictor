@@ -438,12 +438,15 @@ def run_experiment(
         splits,
         baseline_line_col=prepared.baseline_line_col,
         pooled=config.pools_objective,
+        outcome_col=config.outcome_col,
     )
 
     # Fitted on dev rows only, then applied to the test period, so the
     # bias-corrected null never sees it.
     dev_line_error_bias = compute_line_error_bias(
-        df_dev, baseline_line_col=prepared.baseline_line_col
+        df_dev,
+        baseline_line_col=prepared.baseline_line_col,
+        outcome_col=config.outcome_col,
     )
 
     # The hyperparameters to hold fixed for evaluation: either recovered from

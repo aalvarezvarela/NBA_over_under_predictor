@@ -150,6 +150,10 @@ def check_configs(
             # being compared", which is the exact opposite of the truth.
             "cv_strategy": c.walk_forward.strategy.value,
             "retrain_every_days": c.walk_forward.retrain_every_days,
+            # Paired with retrain_every_days: the cadence sets where a fold
+            # STARTS and this floor sets how far it then grows, so a campaign
+            # moving one without the other is not the campaign it looks like.
+            "min_validation_games": c.walk_forward.min_validation_games,
             "eval_span_games": c.walk_forward.eval_span_games,
             "train_games_choices": str(c.walk_forward.train_games_choices),
             "tune_n_estimators": c.optuna.tune_n_estimators,

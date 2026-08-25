@@ -13,6 +13,11 @@ this keeps baseline numbers numerically comparable across both target
 families and directly comparable to TrainingMetrics.final_test_mae/cv_mae for
 TOTAL_POINTS runs.
 
+For a SPREAD_ERROR run the same argument holds one market over: the outcome is
+HOME_MARGIN and the line is the anchor spread, so the baseline is scored in
+HOME_MARGIN space. Callers select this with ``outcome_col``; it defaults to
+TOTAL_POINTS so nothing that predates the spread market changes behaviour.
+
 ou_accuracy is always reported as None (serialized as NaN), never 0.0:
 predicted edge (pred - line) is exactly 0 for every row, so every row is a
 "push" under the existing scorers' push-exclusion convention in
@@ -69,14 +74,18 @@ def compute_baseline_metrics(
 
 
 def compute_line_error_bias(
-    df: pd.DataFrame, *, baseline_line_col: str
+    df: pd.DataFrame, *, baseline_line_col: str, outcome_col: str = "TOTAL_POINTS"
 ) -> float:
-    """Mean signed line error (actual total minus line) over the given rows.
+    """Mean signed line error (actual outcome minus line) over the given rows.
 
     Must be computed on development rows only and then applied to the holdout,
     otherwise the "bias-corrected" baseline peeks at the test period.
+
+    ``outcome_col`` is TOTAL_POINTS for the totals market and HOME_MARGIN for the
+    spread. It defaults to the totals column so every existing caller keeps its
+    exact behaviour.
     """
-    actual = pd.to_numeric(df["TOTAL_POINTS"], errors="coerce")
+    actual = pd.to_numeric(df[outcome_col], errors="coerce")
     line = pd.to_numeric(df[baseline_line_col], errors="coerce")
     bias = (actual - line).mean()
     if not np.isfinite(bias):
@@ -89,6 +98,7 @@ def compute_bias_corrected_baseline_metrics(
     *,
     baseline_line_col: str,
     bias: float,
+    outcome_col: str = "TOTAL_POINTS",
 ) -> BaselineMetrics:
     """A deliberately harder null than "trust the line".
 
@@ -99,7 +109,7 @@ def compute_bias_corrected_baseline_metrics(
     non-zero edge on every row, so it does place bets and has a defined win
     rate.
     """
-    actual = pd.to_numeric(df["TOTAL_POINTS"], errors="coerce")
+    actual = pd.to_numeric(df[outcome_col], errors="coerce")
     line = pd.to_numeric(df[baseline_line_col], errors="coerce")
     return compute_baseline_metrics(
         y_true_total_points=actual,
@@ -113,10 +123,11 @@ def compute_baseline_metrics_for_rows(
     idx: np.ndarray,
     *,
     baseline_line_col: str,
+    outcome_col: str = "TOTAL_POINTS",
 ) -> BaselineMetrics:
     rows = df_full.iloc[idx]
     return compute_baseline_metrics(
-        y_true_total_points=rows["TOTAL_POINTS"],
+        y_true_total_points=rows[outcome_col],
         baseline_line=rows[baseline_line_col],
         line_col=baseline_line_col,
     )
@@ -128,6 +139,7 @@ def compute_baseline_metrics_across_folds(
     *,
     baseline_line_col: str,
     pooled: bool,
+    outcome_col: str = "TOTAL_POINTS",
 ) -> tuple[pd.DataFrame, BaselineMetrics]:
     """Compute the baseline on each CV fold's *validation* rows (never train rows).
 
@@ -157,7 +169,10 @@ def compute_baseline_metrics_across_folds(
     fold_rows: list[dict] = []
     for fold_num, (_, val_idx) in enumerate(splits, start=1):
         fold_metrics = compute_baseline_metrics_for_rows(
-            df_dev_full, val_idx, baseline_line_col=baseline_line_col
+            df_dev_full,
+            val_idx,
+            baseline_line_col=baseline_line_col,
+            outcome_col=outcome_col,
         )
         fold_rows.append(
             {
@@ -174,7 +189,10 @@ def compute_baseline_metrics_across_folds(
     if pooled:
         pooled_idx = np.concatenate([val_idx for _, val_idx in splits])
         aggregate = compute_baseline_metrics_for_rows(
-            df_dev_full, pooled_idx, baseline_line_col=baseline_line_col
+            df_dev_full,
+            pooled_idx,
+            baseline_line_col=baseline_line_col,
+            outcome_col=outcome_col,
         )
     else:
         aggregate = BaselineMetrics(

@@ -1,9 +1,15 @@
+from nba_ou.config.market_columns import (
+    HOME_MARGIN_COL,
+    PTS_AWAY_COL,
+    PTS_HOME_COL,
+)
 from nba_ou.config.odds_columns import (
     is_odds_column,
     moneyline_col,
     spread_col,
     total_line_col,
 )
+from nba_ou.data_processing.odds.canonical_markets import add_canonical_market_columns
 
 MAIN_TOTAL_LINE_COL = total_line_col()
 MAIN_SPREAD_COL = spread_col()
@@ -140,6 +146,25 @@ for book in SPORTSBOOKS:
 
 TARGET_COLUMN = "TOTAL_POINTS"
 
+#: Every outcome column that must survive selection.
+#:
+#: ``TARGET_COLUMN`` stays as the totals target's name so nothing that imports it
+#: changes behaviour. The three additions are what the spread market needs:
+#: PTS_TEAM_HOME/PTS_TEAM_AWAY are the raw per-team finals (kept so HOME_MARGIN
+#: stays reproducible and bets can be settled), and HOME_MARGIN is derived in
+#: merge_home_away.
+#:
+#: These are OUTCOME facts, not features. Keeping them in the CSV is what makes a
+#: spread target possible at all; keeping them out of X is enforced separately
+#: and unconditionally by training_pipeline (LEAKING_TARGET_COLUMNS +
+#: assert_no_leaking_features), for every strategy including the totals ones.
+TARGET_COLUMNS: tuple[str, ...] = (
+    TARGET_COLUMN,
+    HOME_MARGIN_COL,
+    PTS_HOME_COL,
+    PTS_AWAY_COL,
+)
+
 FORBIDDEN_COLUMNS = [
     "DIFFERENCE_FROM_LINE",
     "DIFF_FROM_LINE",
@@ -204,10 +229,11 @@ def select_training_columns(
     # Deduplicate while preserving order (some columns can be added by multiple rules)
     columns_to_select = list(dict.fromkeys(columns_to_select))
 
-    # Add target column if it exists
-    if TARGET_COLUMN in df_merged.columns:
-        columns_to_select.append(TARGET_COLUMN)
-        columns_to_select = list(dict.fromkeys(columns_to_select))
+    # Add target/outcome columns if they exist
+    columns_to_select.extend(
+        column for column in TARGET_COLUMNS if column in df_merged.columns
+    )
+    columns_to_select = list(dict.fromkeys(columns_to_select))
 
     if debug:
         excluded_columns = [
@@ -239,7 +265,7 @@ def select_training_columns(
 
     # Safety check: Ensure no disallowed original columns are present
     # Allowed columns include: static columns, target, odds, and team info with suffixes
-    allowed_columns = set(STATIC_COLUMNS + [TARGET_COLUMN] + ODDS_COLUMNS)
+    allowed_columns = set(STATIC_COLUMNS + list(TARGET_COLUMNS) + ODDS_COLUMNS)
 
     # Add team info columns with HOME/AWAY suffixes
     for col in TEAM_INFO_COLUMNS:
@@ -274,4 +300,13 @@ def select_training_columns(
     # The unification is applied once at the end of each pipeline entry point
     # via nba_ou.config.odds_columns.apply_odds_prefix, and enforced there by
     # assert_odds_columns_prefixed.
+    #
+    # Canonical market normalisation runs HERE, at the one gate both datasets
+    # pass through (create_df_to_predict for the closing data,
+    # create_base_game_features for the intermediate data's base). Deriving the
+    # spread's home orientation once, in one place, is the whole defence against
+    # the two datasets disagreeing about a sign -- which they demonstrably would,
+    # since their raw spread columns are stored with OPPOSITE conventions.
+    df_training = add_canonical_market_columns(df_training)
+
     return df_training

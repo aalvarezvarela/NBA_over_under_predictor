@@ -114,6 +114,20 @@ def attach_game_ids(
     Returns the matched rows and a report of what happened to the rest, so the
     caller can print the match rate rather than assume it.
     """
+    # Totals-only by construction: the join key below includes TOTAL_POINTS, and
+    # the whole diagnostic re-scores against alternative TOTAL line columns. A
+    # spread run's predictions carry HOME_MARGIN under `actual_outcome` and no
+    # TOTAL_POINTS at all, so this must refuse rather than reach the merge --
+    # where the failure would be a bare KeyError naming a column the reader never
+    # asked for. Spread alternative-line comparison is not implemented.
+    if "TOTAL_POINTS" not in predictions.columns:
+        raise AlternativeLineError(
+            "Alternative-line comparison is implemented for the TOTALS market "
+            "only: it joins on TOTAL_POINTS and re-scores against other "
+            "ODDS_TOTAL_LINE_* columns. This prediction frame has no "
+            "TOTAL_POINTS, which is what a spread run looks like."
+        )
+
     source_csv = Path(source_csv)
     if not source_csv.exists():
         raise AlternativeLineError(

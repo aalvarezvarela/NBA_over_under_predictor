@@ -36,6 +36,7 @@ from typing import Any
 
 import pandas as pd
 
+from training_pipeline.config import PredictionStrategy
 from training_pipeline.reporting.loaders import load_config_flat
 
 #: One column per experimental knob that has actually been varied across runs,
@@ -80,6 +81,15 @@ FACTOR_SOURCES: dict[str, str] = {
     # rolling-origin run against a test-anchored one as though they were
     # identical and quietly average the two.
     "retrain_every_days": "walk_forward.retrain_every_days",
+    #: The fold-size FLOOR, which decides how many folds a given cadence
+    #: actually produces: a fold starts at ``retrain_every_days`` game-days and
+    #: absorbs further whole days until it reaches this many games. 4 days with
+    #: a 25-game floor and 1 day with a 5-game floor score the SAME validation
+    #: games and differ only in how those games are grouped -- but the grouping
+    #: is what the pruner reads and what the pooled objective is aggregated
+    #: over, so the two are not the same trial. Without this here a campaign
+    #: that moves only the floor matches as identical.
+    "min_validation_games": "walk_forward.min_validation_games",
     "eval_span_games": "walk_forward.eval_span_games",
     "objective_aggregation": "optuna.objective_aggregation",
     "tune_n_estimators": "optuna.tune_n_estimators",
@@ -93,6 +103,13 @@ FACTOR_SOURCES: dict[str, str] = {
 #: Factors needing a rule rather than a straight read; see ``_derived_factors``.
 DERIVED_FACTORS: tuple[str, ...] = (
     "strategy",
+    #: Which betting market the run is about. Without it a totals run and a
+    #: spread run match as "the same experiment differing only in strategy" and
+    #: get averaged together -- and every metric NAME they report is identical,
+    #: so nothing else in the reporting layer would notice. They are scored
+    #: against different lines, in different units, against different null
+    #: baselines; pooling them is meaningless.
+    "market",
     "data_build",
     "exclude_overtime",
     "keep_playoffs",
@@ -135,6 +152,21 @@ def _render_range(value: Any) -> str:
     return f"{low}-{high}:{scale}"
 
 
+def _market_for_strategy(strategy: Any) -> str | None:
+    """The market a strategy belongs to, tolerant of unknown/missing values.
+
+    Reads through PredictionStrategy so the mapping stays in exactly one place,
+    and returns None when the value is absent or unrecognised -- a run whose
+    market cannot be established must not be grouped with one whose can.
+    """
+    if strategy is None:
+        return None
+    try:
+        return PredictionStrategy(str(strategy)).market.value
+    except ValueError:
+        return None
+
+
 def _derived_factors(config: dict[str, Any], row: Any) -> dict[str, Any]:
     """The factors that are not a single field read straight out of the config.
 
@@ -148,6 +180,11 @@ def _derived_factors(config: dict[str, Any], row: Any) -> dict[str, Any]:
         # prepare_runs has already back-filled this from target_family for runs
         # saved before prediction_strategy existed.
         "strategy": row.get("prediction_strategy"),
+        # Derived from the strategy rather than read from the config, because no
+        # archived run recorded a market and every one of them is a totals run.
+        # An unrecognised strategy resolves to None rather than defaulting to
+        # "totals": guessing here would silently pool a market we do not know.
+        "market": _market_for_strategy(row.get("prediction_strategy")),
         # The training CSV identifies the feature build; the file name is the
         # only thing that distinguishes them in every run, old and new.
         "data_build": "old" if Path(csv_path).name.startswith("old_") else "2.0",
@@ -221,6 +258,7 @@ _DEVIATION_TAGS: dict[str, Any] = {
     "season_floor": lambda value: f"from{value:.0f}",
     "wf_strategy": lambda value: str(value),
     "retrain_every_days": lambda value: f"every{value:.0f}d",
+    "min_validation_games": lambda value: f"minfold{value:.0f}",
     "eval_span_games": lambda value: f"span{value:.0f}",
     "objective_aggregation": lambda value: str(value),
     "tune_n_estimators": "tuned-rounds",

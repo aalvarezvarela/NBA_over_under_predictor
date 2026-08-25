@@ -856,6 +856,14 @@ class TotalPointsStrategy:
 
 @dataclass
 class LineErrorStrategy:
+    """Residual regression: the target IS the edge.
+
+    Serves BOTH ``line_error_regressor`` (totals) and ``spread_error_regressor``
+    (spread). Nothing in here is market-specific -- it never sees a line, because
+    a residual model's prediction is already the quantity being bet -- so the two
+    markets share it rather than each carrying a near-identical copy.
+    """
+
     sample_weight: SampleWeightConfig
     #: Rank trials on metrics pooled over every validation game rather than on
     #: the mean of the folds' own metrics. Set from
@@ -1773,6 +1781,26 @@ def get_strategy(config: ExperimentConfig) -> TargetFamilyStrategy:
         return TotalPointsStrategy(
             line_col=config.line_col, pooled=config.pools_objective
         )
-    return LineErrorStrategy(
-        sample_weight=config.sample_weight, pooled=config.pools_objective
+    if config.strategy in (
+        PredictionStrategy.LINE_ERROR_REGRESSOR,
+        PredictionStrategy.SPREAD_ERROR_REGRESSOR,
+    ):
+        # One strategy object for both markets' residual regressors: the fold
+        # loop, the objective and the directional scorer are identical, and the
+        # only market-specific quantity (which line) never enters here because a
+        # residual model's prediction already IS the edge.
+        #
+        # SPREAD_ERROR inherits the push convention for free, which is the
+        # behaviour required of it: over_under_betting_accuracy_error_line drops
+        # rows where the true side is 0 (a push) and rows where the predicted
+        # side is exactly 0, so neither is silently scored as HOME or AWAY.
+        return LineErrorStrategy(
+            sample_weight=config.sample_weight, pooled=config.pools_objective
+        )
+
+    # Explicit rather than a fall-through: a strategy added later must fail here
+    # instead of silently inheriting residual-regression semantics that may not
+    # apply to it.
+    raise ValueError(
+        f"No tuning strategy is registered for {config.strategy.value!r}."
     )

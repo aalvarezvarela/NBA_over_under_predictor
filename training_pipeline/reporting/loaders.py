@@ -16,6 +16,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from training_pipeline.betting import OUTCOME_COLUMN, outcome_from_predictions
+
 
 def run_dir_of(row: Any) -> Path:
     """The run's directory, from either the explicit column or its parts."""
@@ -170,11 +172,17 @@ def load_walk_forward(row: Any) -> dict[str, Any] | None:
 def settle_bets(frame: pd.DataFrame) -> pd.DataFrame:
     """Attach win/push outcomes to a predictions frame.
 
-    A bet is on OVER when the predicted edge is positive. A game landing exactly
-    on the line is a push: stake returned, and excluded from the win rate rather
-    than counted as a loss.
+    A bet is on OVER (totals) or HOME (spread) when the predicted edge is
+    positive. A game landing exactly on the line is a push: stake returned, and
+    excluded from the win rate rather than counted as a loss.
+
+    Reads the outcome from ``OUTCOME_COLUMN``, which every loader below
+    materialises on the way in -- see ``_normalise_outcome``.
     """
-    margin = frame["TOTAL_POINTS"] - frame["target_line"]
+    # Resolved via the helper, not read by name: settle_bets is called from
+    # charts and alt_line as well as from the loaders below, and those callers
+    # may hand it a frame that never passed through _normalise_outcome.
+    margin = outcome_from_predictions(frame) - frame["target_line"]
     bet_over = frame["predicted_edge"] > 0
     frame = frame.copy()
     frame["push"] = margin == 0
@@ -185,7 +193,32 @@ def settle_bets(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 #: Columns any settled-bet analysis needs, present for every strategy.
-_PREDICTION_COLUMNS = {"predicted_edge", "target_line", "TOTAL_POINTS"}
+#:
+#: The outcome is required under its market-neutral name. Requiring
+#: "TOTAL_POINTS" here instead would silently DROP every spread run: the check
+#: below is a ``continue``, so a run whose parquet carries ``actual_outcome``
+#: would vanish from every comparison without appearing in any error, any count,
+#: or any list of skipped runs.
+_PREDICTION_COLUMNS = {"predicted_edge", "target_line", OUTCOME_COLUMN}
+
+
+def _normalise_outcome(frame: pd.DataFrame) -> pd.DataFrame | None:
+    """Materialise ``OUTCOME_COLUMN``, whichever spelling the run wrote.
+
+    Runs predating the spread market wrote the outcome as ``TOTAL_POINTS``;
+    newer ones write ``actual_outcome`` (and ``TOTAL_POINTS`` too, when that is
+    genuinely what it is). Normalising once, here, is what lets every consumer
+    downstream read a single name instead of each deciding for itself.
+
+    Returns None when the frame carries no outcome at all, so the caller skips
+    it exactly as it would have before.
+    """
+    if OUTCOME_COLUMN in frame.columns:
+        return frame
+    try:
+        return frame.assign(**{OUTCOME_COLUMN: outcome_from_predictions(frame)})
+    except KeyError:
+        return None
 
 #: (filename, label) in the order they should be preferred/reported.
 PREDICTION_SOURCES = (
@@ -215,9 +248,10 @@ def load_all_predictions(
         if not path.exists():
             continue
         frame = pd.read_parquet(path)
-        if not _PREDICTION_COLUMNS <= set(frame.columns):
+        normalised = _normalise_outcome(frame)
+        if normalised is None or not _PREDICTION_COLUMNS <= set(normalised.columns):
             continue
-        frame = _ensure_selection_score(frame, row)
+        frame = _ensure_selection_score(normalised, row)
         if frame is None:
             continue
         frame = frame.dropna(subset=[*_PREDICTION_COLUMNS, "selection_score"])
@@ -311,16 +345,17 @@ def load_predictions(row: Any) -> tuple[pd.DataFrame, str] | None:
     Returns ``(frame, source)`` with pushes already removed, or None when the
     run wrote nothing usable.
     """
-    required = {"selection_score", "predicted_edge", "target_line", "TOTAL_POINTS"}
+    required = {"selection_score", "predicted_edge", "target_line", OUTCOME_COLUMN}
     for filename, source in (("cv_predictions.parquet", "CV"),
                              ("final_test_predictions.parquet", "holdout")):
         path = run_dir_of(row) / filename
         if not path.exists():
             continue
         frame = pd.read_parquet(path)
-        if not required <= set(frame.columns):
+        normalised = _normalise_outcome(frame)
+        if normalised is None or not required <= set(normalised.columns):
             continue
-        frame = frame.dropna(subset=list(required))
+        frame = normalised.dropna(subset=list(required))
         if frame.empty:
             continue
         settled = settle_bets(frame)

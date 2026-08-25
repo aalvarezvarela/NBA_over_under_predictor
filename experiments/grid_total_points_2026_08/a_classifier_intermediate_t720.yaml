@@ -55,11 +55,10 @@ walk_forward:
   # and never came near the edge, so widening theirs would only cost trials and
   # break comparability with horizon_*_2026_08.
   #
-  # 4200 rather than 4500 because the preflight measures the real ceiling on
-  # this dataset at 4372-4487 games depending on snapshot. A choice above the
-  # ceiling does not error -- tail(n) silently returns fewer rows and the folds
-  # shrink -- so the grid stops short of it deliberately.
-  train_games_choices: [2500, 3000, 3500, 4000, 4200]
+  # T-720 is the tight classifier cohort: after snapshot filtering and push
+  # removal the earliest fold only has 4091 training games available, so 4200
+  # would train short there. Keep the top of this cell's grid at 4000.
+  train_games_choices: [2500, 3000, 3500, 4000]
 
 optuna:
   # 150, down from the 300 the horizon campaign used. Measured on those 20 runs:

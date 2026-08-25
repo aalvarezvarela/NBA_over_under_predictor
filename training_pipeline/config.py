@@ -18,10 +18,21 @@ from pathlib import Path
 from typing import Any
 
 from nba_ou.config.constants import SEASON_TYPE_MAP
+from nba_ou.config.market_columns import Market
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from training_pipeline.betting import DECIMAL_ODDS_MINUS_110, DEFAULT_EDGE_THRESHOLDS
 
+#: Re-exported from nba_ou.config.market_columns rather than redefined.
+#:
+#: Two identical StrEnums in two packages is not a duplication that stays
+#: harmless: ``nba_ou...Market.SPREAD is training_pipeline...Market.SPREAD``
+#: would be False, so an identity check would silently take the wrong branch
+#: depending on which module the caller imported from. One class, one identity.
+#:
+#: MONEYLINE is declared there because the datasets now carry normalised
+#: moneyline data. It has no strategy and no target -- that is deliberate scope.
+__all_market_reexport__ = Market  # keeps linters aware the import is used
 
 class TargetFamily(StrEnum):
     TOTAL_POINTS = "total_points"
@@ -30,6 +41,9 @@ class TargetFamily(StrEnum):
     #: target -- kept in this enum only because artifact paths, the model
     #: registry and the leaderboard all key off target_family.
     OVER_UNDER = "over_under"
+    #: HOME_MARGIN minus the anchor book's spread. The spread market's exact
+    #: analogue of LINE_ERROR, and modelled by the same kind of regressor.
+    SPREAD_ERROR = "spread_error"
 
 
 class PredictionStrategy(StrEnum):
@@ -56,10 +70,25 @@ class PredictionStrategy(StrEnum):
     TOTAL_POINTS_REGRESSOR = "total_points_regressor"
     LINE_ERROR_REGRESSOR = "line_error_regressor"
     OVER_UNDER_CLASSIFIER = "over_under_classifier"
+    #: The spread market's residual regressor: predicts HOME_MARGIN minus the
+    #: Bet365 spread available at the prediction point. Structurally identical to
+    #: LINE_ERROR_REGRESSOR -- same model kind, same "the target IS the edge"
+    #: property, same absence of a line_col -- against a different market.
+    #:
+    #: There is deliberately ONE spread strategy, used with two dataset configs.
+    #: A closing run and an intermediate run predict the same conceptual
+    #: quantity; only the dataset decides which line "available at the prediction
+    #: point" refers to. Separate enum values would have encoded a dataset choice
+    #: as a modelling choice and doubled every branch below for no gain.
+    SPREAD_ERROR_REGRESSOR = "spread_error_regressor"
 
     @property
     def target_family(self) -> TargetFamily:
         return _STRATEGY_TARGET_FAMILY[self]
+
+    @property
+    def market(self) -> Market:
+        return _STRATEGY_MARKET[self]
 
     @property
     def is_classifier(self) -> bool:
@@ -70,6 +99,14 @@ _STRATEGY_TARGET_FAMILY: dict[PredictionStrategy, TargetFamily] = {
     PredictionStrategy.TOTAL_POINTS_REGRESSOR: TargetFamily.TOTAL_POINTS,
     PredictionStrategy.LINE_ERROR_REGRESSOR: TargetFamily.LINE_ERROR,
     PredictionStrategy.OVER_UNDER_CLASSIFIER: TargetFamily.OVER_UNDER,
+    PredictionStrategy.SPREAD_ERROR_REGRESSOR: TargetFamily.SPREAD_ERROR,
+}
+
+_STRATEGY_MARKET: dict[PredictionStrategy, Market] = {
+    PredictionStrategy.TOTAL_POINTS_REGRESSOR: Market.TOTALS,
+    PredictionStrategy.LINE_ERROR_REGRESSOR: Market.TOTALS,
+    PredictionStrategy.OVER_UNDER_CLASSIFIER: Market.TOTALS,
+    PredictionStrategy.SPREAD_ERROR_REGRESSOR: Market.SPREAD,
 }
 
 #: The reverse map, used only to infer a strategy from a legacy config that
@@ -103,6 +140,40 @@ LEAKING_TARGET_COLUMNS: tuple[str, ...] = (
     # DataConfig.exclude_overtime_from_training) -- never as a feature.
     "IS_OVERTIME",
 )
+
+#: Outcome-derived columns that the 2_1 datasets carry so a spread target can be
+#: built and settled, and which must NEVER reach a feature matrix -- for EVERY
+#: strategy, totals included. PTS_TEAM_HOME alone gives away TOTAL_POINTS,
+#: HOME_MARGIN and SPREAD_ERROR at once.
+#:
+#: Deliberately NOT merged into LEAKING_TARGET_COLUMNS, and deliberately not
+#: appended to ``exclude_cols``. ``exclude_cols`` is inside
+#: ``ExperimentConfig.fingerprint()``, so adding names to it would change the
+#: fingerprint of every archived totals config and fork every persistent Optuna
+#: study -- silently, since a forked study simply starts from zero trials and the
+#: run still completes.
+#:
+#: These are enforced the way GAME_ID already is (see
+#: ``training_pipeline.data.prepare_dataset``): dropped centrally just before the
+#: feature matrix is built, and asserted absent from X afterwards. That is
+#: strictly stronger than a config field a caller can overwrite.
+OUTCOME_ONLY_COLUMNS: tuple[str, ...] = (
+    "PTS_TEAM_HOME",
+    "PTS_TEAM_AWAY",
+    "HOME_MARGIN",
+    "SPREAD_ERROR",
+    # Not produced by any current strategy -- listed so that if a spread
+    # classifier is added later, the label cannot reach X during the window
+    # between deriving it and remembering to exclude it.
+    "COVER_LABEL",
+)
+
+#: Target columns whose value IS the edge, so "trust the line" is predicting 0.
+#: Both markets' residual regressors. Named once here because at least three
+#: places have to agree about it (baseline_pred's space, the decision layer's
+#: edge, and putting a prediction back into outcome-level space), and a fourth
+#: that forgets produces numbers in the wrong space rather than an error.
+RESIDUAL_TARGET_COLUMNS: frozenset[str] = frozenset({"LINE_ERROR", "SPREAD_ERROR"})
 
 #: XGBoost objective for the classifier. Logistic loss is what makes the raw
 #: output a probability rather than an arbitrary score, which is the whole
@@ -937,6 +1008,10 @@ CLASSIFIER_SEARCH_SPACE = SearchSpaceConfig(
 #: times out of ~1458 features) -- a region the old setup could not reach.
 N_ESTIMATORS_RANGES: dict[PredictionStrategy, IntRange] = {
     PredictionStrategy.LINE_ERROR_REGRESSOR: IntRange(low=10, high=500, log=True),
+    # Mirrors LINE_ERROR: the same residual-regression shape on a target with a
+    # comparable scale (spread errors have s.d. ~13 points against totals'
+    # ~15.7), so the range that suits one suits the other.
+    PredictionStrategy.SPREAD_ERROR_REGRESSOR: IntRange(low=10, high=500, log=True),
     PredictionStrategy.OVER_UNDER_CLASSIFIER: IntRange(low=10, high=500, log=True),
     PredictionStrategy.TOTAL_POINTS_REGRESSOR: IntRange(low=30, high=1000, log=True),
 }
@@ -1135,6 +1210,21 @@ class BettingConfig(BaseModel):
     over_price_col: str | None = None
     under_price_col: str | None = None
 
+    #: Spread-market prices, in the same role as over/under above: the price for
+    #: backing HOME and the price for backing AWAY.
+    #:
+    #: Separate fields rather than reusing over/under because the mapping is not
+    #: obvious and getting it backwards is silent. Verified on the real data:
+    #: HOME is the "over"-equivalent side, since predicted_edge > 0 means the home
+    #: team beats the spread. On the intermediate dataset the snapshot panel
+    #: stores the two sides as LEFT/RIGHT, where RIGHT is HOME -- confirmed by
+    #: the moneyline, whose cheaper RIGHT side won 68.8% of the time.
+    #:
+    #: Closing dataset:      ODDS_spread_bet365_price_home / _price_away
+    #: Intermediate dataset: ODDS_SNAP_SPR_BET365_PRICE_RIGHT / _PRICE_LEFT
+    home_price_col: str | None = None
+    away_price_col: str | None = None
+
     #: Also score the CV folds for profit, not just the holdout. Costs one extra
     #: fit per fold (~= one Optuna trial) and buys roughly 5x the bet volume:
     #: 12 folds x ~50 validation games ~= 600, versus ~290 in a 5% holdout. At
@@ -1191,6 +1281,11 @@ class BettingConfig(BaseModel):
         if (self.over_price_col is None) != (self.under_price_col is None):
             raise ValueError(
                 "Provide both betting.over_price_col and betting.under_price_col, "
+                "or neither."
+            )
+        if (self.home_price_col is None) != (self.away_price_col is None):
+            raise ValueError(
+                "Provide both betting.home_price_col and betting.away_price_col, "
                 "or neither."
             )
         if self.primary_edge_threshold not in self.edge_thresholds:
@@ -1534,11 +1629,15 @@ class ExperimentConfig(BaseModel):
                     "line_col is required for 'total_points_regressor' "
                     "(optuna_total_points.py scores against the betting line)."
                 )
-        elif strategy == PredictionStrategy.LINE_ERROR_REGRESSOR:
+        elif strategy in (
+            PredictionStrategy.LINE_ERROR_REGRESSOR,
+            PredictionStrategy.SPREAD_ERROR_REGRESSOR,
+        ):
             if self.line_col:
                 raise ValueError(
-                    "line_col must be omitted for 'line_error_regressor' "
-                    "(optuna_error_line.py never uses a line column)."
+                    f"line_col must be omitted for {strategy.value!r}: a residual "
+                    "regressor predicts the edge directly, so no line is needed "
+                    "to convert its output into one."
                 )
         else:  # OVER_UNDER_CLASSIFIER
             if not self.line_col:
@@ -1673,9 +1772,27 @@ class ExperimentConfig(BaseModel):
         """Column the model is trained against."""
         if self.strategy == PredictionStrategy.LINE_ERROR_REGRESSOR:
             return "LINE_ERROR"
+        if self.strategy == PredictionStrategy.SPREAD_ERROR_REGRESSOR:
+            return "SPREAD_ERROR"
         if self.strategy == PredictionStrategy.OVER_UNDER_CLASSIFIER:
             return OVER_LABEL_COL
         return "TOTAL_POINTS"
+
+    @property
+    def market(self) -> Market:
+        """Which betting market this run is about."""
+        return self.strategy.market
+
+    @property
+    def outcome_col(self) -> str:
+        """The realised outcome a bet settles against.
+
+        ``TOTAL_POINTS`` for the totals market, ``HOME_MARGIN`` for the spread.
+        Everything that scores profit compares this against a line, so naming it
+        once here is what lets one betting layer serve both markets instead of
+        two copies of the same arithmetic drifting apart.
+        """
+        return "HOME_MARGIN" if self.market is Market.SPREAD else "TOTAL_POINTS"
 
     @model_validator(mode="after")
     def _pooled_snapshots_need_a_game_aware_splitter(self) -> ExperimentConfig:

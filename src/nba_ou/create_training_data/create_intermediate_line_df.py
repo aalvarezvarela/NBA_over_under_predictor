@@ -31,7 +31,20 @@ from __future__ import annotations
 
 import pandas as pd
 
-from nba_ou.config.odds_columns import get_main_book, total_line_col
+from nba_ou.config.market_columns import (
+    HOME_MARGIN_COL,
+    PTS_AWAY_COL,
+    PTS_HOME_COL,
+    SPREAD_ERROR_COL,
+    home_margin,
+    spread_error,
+    spread_line_home_from_implied_margin,
+)
+from nba_ou.config.odds_columns import (
+    get_main_book,
+    spread_line_home_col,
+    total_line_col,
+)
 from nba_ou.create_training_data.create_base_game_features import (
     create_base_game_features,
 )
@@ -303,6 +316,42 @@ def _resolve_target_line(panel: pd.DataFrame, *, anchor: str) -> pd.DataFrame:
     )
 
 
+def _resolve_target_spread_line(panel: pd.DataFrame, *, anchor: str) -> pd.DataFrame:
+    """The Bet365 spread AS OF EACH SNAPSHOT, per (game, snapshot).
+
+    This is the whole point of the intermediate spread target: the row for the
+    720-minute snapshot must be scored against the line that was on the board 720
+    minutes before tip, not against the closing line. Because the panel is keyed
+    by ``(game_id, snapshot_minutes)`` and ``build_snapshot_panel`` already
+    resolves each snapshot with a strictly backward-looking ``>=`` filter, taking
+    the panel value here is contemporaneous by construction -- there is no way to
+    reach a later tick from this function.
+
+    Measured on the real data this genuinely matters: 92.6% of games take more
+    than one distinct spread value across their snapshots, and the 720-minute
+    line differs from the 0-minute line in 79.8% of games.
+
+    Orientation: ``norm_line`` for the spread market is ALREADY the market-implied
+    home margin (``snapshots.resolve_line`` stores the away side, which for a
+    mirrored spread equals the implied home margin). Verified against realised
+    margins at correlation +0.460. It is therefore passed through rather than
+    negated -- the opposite of the closing dataset's handicap column, which is
+    exactly why both go through ``nba_ou.config.market_columns``.
+
+    ``norm_line`` rather than ``raw_line`` matches the totals anchor above, and
+    carries the same caveat: it is the price-centred line, so ROI against it is
+    comparable rather than literally executable.
+    """
+    rows = panel[panel["market"].eq(MARKET_SPREAD) & panel["book"].eq(anchor)]
+    if rows.empty:
+        raise ValueError(
+            f"Anchor book {anchor!r} has no spread quotes in the line-history store."
+        )
+    return rows[["game_id", "snapshot_minutes", "norm_line"]].rename(
+        columns={"norm_line": "target_spread_line"}
+    )
+
+
 #: Columns that belong beside the predictions, never in the feature matrix.
 #: Keyed by (GAME_ID, TIME_TO_MATCH_MIN) so they can be joined back after
 #: scoring.
@@ -468,6 +517,15 @@ def create_intermediate_line_df(
         target_line, on=["game_id", "snapshot_minutes"], how="left"
     )
 
+    # The spread anchor, resolved on the SAME (game, snapshot) key as the totals
+    # anchor. Joining on snapshot_minutes is what keeps each row's reference line
+    # contemporaneous; a join on game_id alone would collapse every snapshot onto
+    # one line and silently produce ten copies of a single closing-spread target.
+    target_spread = _resolve_target_spread_line(panel, anchor=anchor)
+    snapshot_wide = snapshot_wide.merge(
+        target_spread, on=["game_id", "snapshot_minutes"], how="left"
+    )
+
     # ---- historical line dynamics (prior games only) -------------------
     # Per market: how a team's spread and moneyline get re-priced is different
     # information from how its totals do, and defaulting to totals alone threw
@@ -518,10 +576,28 @@ def create_intermediate_line_df(
     # up -- it is known ~25h before tip, so it is safe at every snapshot, and
     # renaming it silently broke the `comparison_line_cols` baseline configured
     # in experiments/_base.yaml.
+    # Every market's CURRENT-GAME closing value, not just totals. The spread and
+    # moneyline families are swept for the same reason totals always were: in
+    # this dataset those quantities must come from the SNAPSHOT panel, so a
+    # closing-valued column of the same shape sitting in the frame is either a
+    # leak or a silent overwrite of the snapshot value. Renaming them to
+    # ODDS_CLOSING_ routes them to the scoring sidecar, where they can measure
+    # closing-line value without ever being reachable from X.
+    closing_source_prefixes = (
+        "ODDS_TOTAL_LINE_",
+        "ODDS_SPREAD_LINE_HOME_",
+        "ODDS_SPREAD_CONSENSUS_",
+        "ODDS_SPREAD_BET365_MINUS_CONSENSUS",
+        "ODDS_SPREAD_CROSS_BOOK_",
+        "ODDS_SPREAD_BOOK_COUNT",
+        "ODDS_SPREAD_PRICE_",
+        "ODDS_ML_PRICE_",
+        "ODDS_ML_PROB_",
+    )
     closing_source_columns = [
         column
         for column in base.columns
-        if column.startswith("ODDS_TOTAL_LINE_")
+        if column.startswith(closing_source_prefixes)
         and "_BEFORE" not in column
         and column != OPENER_LINE_COLUMN
     ]
@@ -584,27 +660,85 @@ def create_intermediate_line_df(
         merged["TOTAL_POINTS"], errors="coerce"
     ) - pd.to_numeric(merged[main_line_column], errors="coerce")
 
+    # ---- spread target, per snapshot -----------------------------------
+    # The canonical anchor spread column holds the SNAPSHOT line, so -- exactly as
+    # for totals above -- the derived target and the line a bet settles into are
+    # the same number.
+    #
+    # `target_spread_line` is already in implied-home-margin orientation (see
+    # _resolve_target_spread_line), so it is passed through
+    # spread_line_home_from_implied_margin rather than negated. The closing
+    # dataset's column needs the opposite conversion; routing both through named
+    # helpers is what stops that difference from becoming a silent sign error.
+    main_spread_column = spread_line_home_col(anchor)
+    merged[main_spread_column] = spread_line_home_from_implied_margin(
+        merged["target_spread_line"]
+    )
+    missing_scores = [
+        column
+        for column in (PTS_HOME_COL, PTS_AWAY_COL)
+        if column not in merged.columns
+    ]
+    if missing_scores:
+        raise KeyError(
+            f"{missing_scores} are absent, so HOME_MARGIN cannot be derived. They "
+            "are carried through select_training_columns for exactly this reason; "
+            "if they were dropped upstream the spread target would otherwise be "
+            "built from whatever HOME_MARGIN happened to be lying around."
+        )
+
+    # Re-derived from the per-team finals rather than trusting the column carried
+    # down from merge_home_away. The two must agree; deriving it here from the
+    # scores that are right there makes the target reproducible from the CSV
+    # alone, which is what the verification in training_pipeline re-checks.
+    merged[HOME_MARGIN_COL] = home_margin(merged)
+    merged[SPREAD_ERROR_COL] = spread_error(
+        merged[HOME_MARGIN_COL], merged[main_spread_column]
+    )
+
     before = len(merged)
     merged = merged[merged[main_line_column].notna()].copy()
     if verbose and before != len(merged):
         print(f"Dropped {before - len(merged)} rows with no anchor line at snapshot")
 
-    merged = merged.drop(columns=["target_line"])
+    # Rows without a Bet365 spread at this snapshot keep NaN in SPREAD_ERROR and
+    # are dropped later by the training pipeline's dropna on its own target. They
+    # are NOT dropped here: a missing spread must not cost the totals model a row
+    # it could have trained on. Measured coverage is ~100% at every horizon
+    # (worst case 99.95% at 720 minutes), so this costs almost nothing either way.
+    merged = merged.drop(columns=["target_line", "target_spread_line"])
 
     # ---- leakage gate --------------------------------------------------
     gated = select_intermediate_training_columns(merged)
-    gated = gated.assign(**{main_line_column: merged[main_line_column]})
-    assert_no_bare_closing_odds(gated, allowed=(main_line_column,))
-
-    closing_reference = merged.get(
-        f"ODDS_CLOSING_{main_line_column.removeprefix('ODDS_')}"
+    gated = gated.assign(
+        **{
+            main_line_column: merged[main_line_column],
+            main_spread_column: merged[main_spread_column],
+        }
     )
-    if closing_reference is not None:
+    assert_no_bare_closing_odds(
+        gated, allowed=(main_line_column, main_spread_column)
+    )
+
+    # Audit BOTH markets. The spread audit is not optional politeness: the
+    # snapshot spread family (ODDS_SNAP_SPR_*) contains a raw line, a normalised
+    # line, an opener and a move-from-open, and an opener plus its total movement
+    # reconstructs the current line exactly -- the same additive-pair shape the
+    # totals audit was built to catch.
+    for market_name, anchor_column in (
+        ("total", main_line_column),
+        ("spread", main_spread_column),
+    ):
+        closing_reference = merged.get(
+            f"ODDS_CLOSING_{anchor_column.removeprefix('ODDS_')}"
+        )
+        if closing_reference is None:
+            continue
         findings = audit_closing_line_reconstruction(gated, closing_reference)
         if not findings.empty:
             raise ValueError(
-                "Closing line is reconstructable from kept features:\n"
-                f"{findings.to_string(index=False)}"
+                f"Closing {market_name} line is reconstructable from kept "
+                f"features:\n{findings.to_string(index=False)}"
             )
 
     gated = gated.sort_values(["GAME_DATE", "GAME_ID", "TIME_TO_MATCH_MIN"])

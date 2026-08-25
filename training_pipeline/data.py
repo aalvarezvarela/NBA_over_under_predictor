@@ -14,7 +14,19 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from nba_ou.config.constants import SEASON_TYPE_MAP
-from nba_ou.config.odds_columns import resolve_main_total_line_col, total_line_col
+from nba_ou.config.market_columns import (
+    HOME_MARGIN_COL,
+    PTS_AWAY_COL,
+    PTS_HOME_COL,
+    SPREAD_ERROR_COL,
+    spread_error,
+)
+from nba_ou.config.odds_columns import (
+    resolve_main_spread_line_col,
+    resolve_main_total_line_col,
+    spread_line_home_col,
+    total_line_col,
+)
 from nba_ou.data_processing.missing_data.clean_df_for_training import (
     clean_dataframe_for_training,
 )
@@ -34,12 +46,14 @@ from nba_ou.modeling.modeling import tail_n_games
 
 from training_pipeline.config import (
     LEAKING_TARGET_COLUMNS,
+    OUTCOME_ONLY_COLUMNS,
     OVER_LABEL_COL,
     SNAPSHOT_COLUMN,
     BaselineConfig,
     CleaningConfig,
     DatasetType,
     ExperimentConfig,
+    Market,
     PredictionStrategy,
 )
 from training_pipeline.diagnostics import (
@@ -271,7 +285,9 @@ def load_scoring_sidecar(
     return merged, attached
 
 
-def resolve_baseline_line_col(df: pd.DataFrame, baseline: BaselineConfig) -> str:
+def resolve_baseline_line_col(
+    df: pd.DataFrame, baseline: BaselineConfig, *, market: Market = Market.TOTALS
+) -> str:
     """Resolve which column stands in for "trust the bookmaker's line".
 
     Priority: explicit override (this is how a caller opts into
@@ -287,6 +303,22 @@ def resolve_baseline_line_col(df: pd.DataFrame, baseline: BaselineConfig) -> str
                 f"baseline.line_col={baseline.line_col!r} not found in the loaded data."
             )
         return baseline.line_col
+
+    if market is Market.SPREAD:
+        # "Trust the bookmaker" means trusting the SPREAD for a spread run.
+        # Falling through to the totals line here would have scored the naive
+        # baseline against a number in the wrong units entirely -- and, because
+        # both are numeric and present, it would have produced a plausible MAE
+        # rather than an error.
+        resolved_spread = resolve_main_spread_line_col(df, book=baseline.book)
+        if resolved_spread is None:
+            raise KeyError(
+                "Could not resolve a spread baseline column: no "
+                f"{spread_line_home_col(baseline.book)!r} in the loaded data. A "
+                "2_0-schema CSV has no canonical spread column -- regenerate at "
+                "schema 2_1."
+            )
+        return resolved_spread
 
     resolved = resolve_main_total_line_col(df, book=baseline.book)
     if resolved is None:
@@ -312,6 +344,25 @@ def _required_keep_columns(
         keep.add(config.line_col)
     if config.strategy == PredictionStrategy.LINE_ERROR_REGRESSOR:
         keep.add("LINE_ERROR")
+    if config.strategy == PredictionStrategy.SPREAD_ERROR_REGRESSOR:
+        # The target, the outcome it is settled against, and the anchor line it
+        # was built from. All three must survive cleaning: the target because it
+        # is y, the outcome because bets settle against it, and the line because
+        # verify_spread_error_column re-derives the identity between them.
+        keep.update({SPREAD_ERROR_COL, HOME_MARGIN_COL, spread_line_home_col()})
+        # The per-team finals too. Nothing computes with them here -- HOME_MARGIN
+        # is what settles bets -- but keeping them makes the whole target chain
+        # auditable on the frame the model actually saw: PTS_TEAM_HOME minus
+        # PTS_TEAM_AWAY must equal HOME_MARGIN, and a diagnostic that cannot be
+        # run on the real frame tends not to get run at all. They are blocked
+        # from X by OUTCOME_ONLY_COLUMNS regardless.
+        keep.update({PTS_HOME_COL, PTS_AWAY_COL})
+        for price_col in (
+            config.betting.home_price_col,
+            config.betting.away_price_col,
+        ):
+            if price_col:
+                keep.add(price_col)
     for price_col in (config.betting.over_price_col, config.betting.under_price_col):
         if price_col:
             keep.add(price_col)
@@ -520,6 +571,95 @@ def training_eligible_mask(df: pd.DataFrame, config: ExperimentConfig) -> np.nda
     return (flag != 1).to_numpy(dtype=bool)
 
 
+def ensure_spread_error_column(
+    df: pd.DataFrame, *, spread_line_col: str, outcome_col: str
+) -> pd.DataFrame:
+    """Derive ``SPREAD_ERROR`` when the frame does not already carry one.
+
+    Mirrors how the totals market already works: the closing dataset's residual
+    target is derived here at training time (``ensure_line_error_column``), while
+    the intermediate dataset derives its own upstream because only the builder
+    knows which snapshot each row was quoted at.
+
+    **Derives only if absent, never overwrites.** That is the whole safety
+    property. The intermediate frame arrives with a per-snapshot SPREAD_ERROR
+    already built against the line quoted at that horizon; recomputing it here
+    would silently replace ten different, correct targets with whatever single
+    anchor column happened to survive into the frame -- which is precisely the
+    per-game-join failure this target exists to avoid. The caller verifies the
+    identity afterwards either way.
+    """
+    if SPREAD_ERROR_COL in df.columns:
+        return df
+
+    for column in (spread_line_col, outcome_col):
+        if column not in df.columns:
+            raise KeyError(
+                f"{column!r} is required to derive {SPREAD_ERROR_COL} but is not "
+                "in the loaded data. A 2_0-schema CSV cannot train a spread "
+                "model -- regenerate at schema 2_1 (see "
+                "nba_ou.config.dataset_versions)."
+            )
+
+    out = df.copy()
+    out[SPREAD_ERROR_COL] = spread_error(out[outcome_col], out[spread_line_col])
+    return out
+
+
+def verify_spread_error_column(
+    df: pd.DataFrame,
+    *,
+    spread_line_col: str,
+    outcome_col: str,
+    tolerance: float = 1e-6,
+) -> pd.DataFrame:
+    """Check that SPREAD_ERROR really is ``HOME_MARGIN - <this line>``.
+
+    The spread target is built upstream, per row, against the line quoted at that
+    row's prediction point. Two ways that can go wrong produce no error at all:
+
+    * the intermediate builder joins the anchor spread on ``game_id`` alone, so
+      every snapshot of a game gets the SAME (closing) line -- the exact mistake
+      the intermediate target exists to avoid;
+    * a sign convention flips between datasets, and the target is wrong by twice
+      the spread on every row.
+
+    Both leave a frame that trains, scores, and reports ordinary-looking numbers.
+    Recomputing the identity here is cheap and turns either into a hard failure.
+
+    Rows where any input is missing are skipped rather than failed: coverage
+    gaps are legitimate and are handled by the dropna on the target.
+    """
+    for column in (SPREAD_ERROR_COL, spread_line_col, outcome_col):
+        if column not in df.columns:
+            raise KeyError(
+                f"{column!r} is required for the spread target but is not in the "
+                "loaded data. A 2_0-schema CSV cannot train a spread model -- "
+                "regenerate at schema 2_1 (see nba_ou.config.dataset_versions)."
+            )
+
+    expected = spread_error(df[outcome_col], df[spread_line_col])
+    actual = pd.to_numeric(df[SPREAD_ERROR_COL], errors="coerce")
+    comparable = expected.notna() & actual.notna()
+    if not comparable.any():
+        raise ValueError(
+            f"No row has both {SPREAD_ERROR_COL!r} and {spread_line_col!r}, so the "
+            "spread target could not be verified against its own line."
+        )
+
+    mismatch = comparable & ((expected - actual).abs() > tolerance)
+    if mismatch.any():
+        sample = df.loc[mismatch, [outcome_col, spread_line_col, SPREAD_ERROR_COL]]
+        raise ValueError(
+            f"{int(mismatch.sum())} of {int(comparable.sum())} rows have "
+            f"{SPREAD_ERROR_COL} != {outcome_col} - {spread_line_col}. The target "
+            "was built against a different line than bets would settle into "
+            "(a sign convention, or a per-game join where a per-snapshot one was "
+            f"needed). First rows:\n{sample.head().to_string()}"
+        )
+    return df
+
+
 def assert_no_leaking_features(X: pd.DataFrame) -> None:
     """Fail loudly if an outcome-derived column reached the feature matrix.
 
@@ -539,6 +679,20 @@ def assert_no_leaking_features(X: pd.DataFrame) -> None:
             "These are functions of the final score, so a model trained on them "
             "would look excellent and predict nothing. Add them to "
             "config.exclude_cols. (Engineered *_BEFORE_* rollups are unaffected.)"
+        )
+
+    # Checked separately because they are enforced separately: these are dropped
+    # centrally in prepare_dataset rather than through config.exclude_cols, so
+    # that adding them could not change any archived config's fingerprint. The
+    # message therefore must NOT tell the reader to edit exclude_cols.
+    outcome_leaked = sorted(set(X.columns) & set(OUTCOME_ONLY_COLUMNS))
+    if outcome_leaked:
+        raise ValueError(
+            f"Outcome column(s) {outcome_leaked} reached the feature matrix. The "
+            "2_1 datasets carry these so a spread target can be built and settled; "
+            "they are functions of the final score and are never features, for any "
+            "strategy. They are dropped in prepare_dataset -- if one got through, "
+            "a fit site is building X without that drop."
         )
 
 
@@ -741,6 +895,25 @@ def prepare_dataset(config: ExperimentConfig) -> PreparedDataset:
         # _ensure_line_error_column subtracts the configured main book's line,
         # so that is the line bets must be settled into for this target.
         target_line_col = total_line_col()
+    elif config.strategy == PredictionStrategy.SPREAD_ERROR_REGRESSOR:
+        # SPREAD_ERROR is derived UPSTREAM, per row, against the anchor spread
+        # that row was quoted at -- the closing spread for the closing dataset,
+        # the snapshot spread for each intermediate row. It is deliberately not
+        # recomputed here: doing so would need one rule for both datasets, and
+        # the only rule that fits both is "use the column already in the frame".
+        #
+        # What IS checked here is that the two agree, because a target computed
+        # against one line and settled against another is the exact failure this
+        # whole target is exposed to and it produces no error of its own.
+        target_line_col = spread_line_home_col()
+        # Derived here for the closing dataset, already present (per snapshot)
+        # for the intermediate one. Verified in both cases.
+        df = ensure_spread_error_column(
+            df, spread_line_col=target_line_col, outcome_col=config.outcome_col
+        )
+        df = verify_spread_error_column(
+            df, spread_line_col=target_line_col, outcome_col=config.outcome_col
+        )
     else:
         # Both the total-points regressor and the classifier settle into the
         # explicitly configured line. For the classifier that line is part of
@@ -749,7 +922,9 @@ def prepare_dataset(config: ExperimentConfig) -> PreparedDataset:
         target_line_col = config.line_col
     target_col = config.target_col
 
-    baseline_line_col = resolve_baseline_line_col(df, config.baseline)
+    baseline_line_col = resolve_baseline_line_col(
+        df, config.baseline, market=config.market
+    )
 
     # Planted BEFORE cleaning, and deliberately NOT added to force_keep: the
     # point of the diagnostic is that the synthetic feature travels the same
@@ -810,7 +985,12 @@ def prepare_dataset(config: ExperimentConfig) -> PreparedDataset:
     # not survive into X: it is a string that monotonically encodes date and
     # sequence, which a tree will happily split on. Excluded here rather than
     # via config.exclude_cols so no existing fingerprint changes.
-    carrier_columns = [config.data.game_id_col]
+    # OUTCOME_ONLY_COLUMNS ride along here rather than in config.exclude_cols so
+    # that no archived fingerprint changes (see the constant's docstring). The
+    # target itself is among them for a spread run -- that is fine and mirrors
+    # LINE_ERROR, which build_feature_matrix also drops from X while still
+    # reading y from it.
+    carrier_columns = [config.data.game_id_col, *OUTCOME_ONLY_COLUMNS]
     if (
         config.data.dataset_type is DatasetType.INTERMEDIATE_LINE
         and config.data.snapshot_minutes is not None

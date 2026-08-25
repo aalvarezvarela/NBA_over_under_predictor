@@ -23,6 +23,7 @@ import argparse
 from pathlib import Path
 
 import pandas as pd
+from nba_ou.config.dataset_versions import TRAINING_DATA_SCHEMA_VERSION
 from nba_ou.create_training_data.create_intermediate_line_df import (
     DEFAULT_BASE_LOOKBACK_SEASONS,
     create_intermediate_line_df,
@@ -148,7 +149,14 @@ def main() -> None:
     if output_path is None:
         DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         stamp = pd.to_datetime(df["GAME_DATE"]).max().strftime("%Y%m%d")
-        output_path = DEFAULT_OUTPUT_DIR / f"intermediate_line_data_{stamp}.csv"
+        # Schema version in the name for the same reason as the closing dataset:
+        # a 2_1 build carries the per-snapshot SPREAD_ERROR target and the
+        # canonical moneyline columns, and must not overwrite a 2_0 file that a
+        # pinned expected_checksum still points at.
+        output_path = (
+            DEFAULT_OUTPUT_DIR
+            / f"intermediate_line_data_{TRAINING_DATA_SCHEMA_VERSION}_{stamp}.csv"
+        )
 
     df.to_csv(output_path, index=False)
     print(f"\nSaved training data to {output_path}")

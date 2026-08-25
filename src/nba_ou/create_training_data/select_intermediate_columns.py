@@ -34,8 +34,16 @@ import itertools
 import numpy as np
 import pandas as pd
 
+from nba_ou.config.market_columns import (
+    HOME_MARGIN_COL,
+    PTS_AWAY_COL,
+    PTS_HOME_COL,
+    SPREAD_ERROR_COL,
+    TARGET_ANCHOR_BOOK,
+)
 from nba_ou.config.odds_columns import (
     assert_odds_columns_prefixed,
+    spread_line_home_col,
     strip_odds_prefix,
     total_line_col,
 )
@@ -88,7 +96,24 @@ SCHEDULE_COLUMN_PREFIXES: tuple[str, ...] = (
 #: ticks at or before the snapshot horizon.
 SNAPSHOT_COLUMN_PREFIXES: tuple[str, ...] = ("ODDS_SNAP_", "ODDS_LINE_HIST_")
 
-TARGET_COLUMNS: tuple[str, ...] = ("TOTAL_POINTS", "LINE_ERROR")
+#: Outcome columns and derived targets that survive the intermediate gate.
+#:
+#: HOME_MARGIN / PTS_TEAM_HOME / PTS_TEAM_AWAY are outcome facts carried so the
+#: spread target can be built and settled; SPREAD_ERROR is the spread residual
+#: target, derived per snapshot in create_intermediate_line_df against the
+#: Bet365 line as of THAT snapshot.
+#:
+#: Being here means "survives into the CSV", NOT "may be a feature". Every one of
+#: these is blocked from the feature matrix unconditionally by
+#: training_pipeline.data.assert_no_leaking_features.
+TARGET_COLUMNS: tuple[str, ...] = (
+    "TOTAL_POINTS",
+    "LINE_ERROR",
+    HOME_MARGIN_COL,
+    SPREAD_ERROR_COL,
+    PTS_HOME_COL,
+    PTS_AWAY_COL,
+)
 
 #: Never enter the training frame at all. They are split into a separate scoring
 #: file by ``create_intermediate_line_df``.
@@ -103,7 +128,15 @@ SCORING_ONLY_PREFIXES: tuple[str, ...] = ("ODDS_CLOSING_",)
 #: The consensus OPENING line. Known ~25h before tip, so safe at every snapshot
 #: on the grid, and the configured ``betting.comparison_line_cols`` baseline.
 #: Must survive under its own name despite matching the closing-odds shape.
-SAFE_ODDS_COLUMNS: tuple[str, ...] = (total_line_col("consensus_opener"),)
+SAFE_ODDS_COLUMNS: tuple[str, ...] = (
+    total_line_col("consensus_opener"),
+    # The canonical Bet365 spread AS OF THE SNAPSHOT. It is the spread target's
+    # reference line and the price the bet settles into, exactly as
+    # ODDS_TOTAL_LINE_bet365 is for totals, so it must survive the gate under its
+    # own name. It is a snapshot quote, never a closing one -- the closing spread
+    # is carried separately under ODDS_CLOSING_ and excluded from features.
+    spread_line_home_col(TARGET_ANCHOR_BOOK),
+)
 
 
 def _is_snapshot_column(column: str) -> bool:

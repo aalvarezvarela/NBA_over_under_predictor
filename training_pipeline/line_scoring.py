@@ -41,8 +41,11 @@ def predicted_total_points(
     lines requires first putting the prediction back into absolute points. For
     a TOTAL_POINTS model that is the prediction itself; a LINE_ERROR model
     predicts a quantity relative to its own line, so the line is added back.
+    SPREAD_ERROR is the same case one market over -- adding its line back gives
+    the implied HOME MARGIN rather than a total, which is the right level for
+    the spread comparison.
     """
-    if target_family == TargetFamily.LINE_ERROR:
+    if target_family in (TargetFamily.LINE_ERROR, TargetFamily.SPREAD_ERROR):
         return np.asarray(target_line, dtype=float) + np.asarray(y_pred, dtype=float)
     return np.asarray(y_pred, dtype=float)
 

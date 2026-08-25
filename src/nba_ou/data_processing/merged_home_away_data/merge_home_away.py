@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+from nba_ou.config.market_columns import HOME_MARGIN_COL
 from nba_ou.config.odds_columns import spread_col, total_line_col
 from nba_ou.data_processing.historic_games.historic_games_statistics import (
     compute_differences_in_points_conceeded_annotated,
@@ -169,6 +170,14 @@ def merge_home_away_data(df, todays_prediction=False):
     # Compute Totals
     df_merged["TOTAL_POINTS"] = df_merged.PTS_TEAM_HOME + df_merged.PTS_TEAM_AWAY
     df_merged["TOTAL_PF"] = df_merged.PF_TEAM_HOME + df_merged.PF_TEAM_AWAY
+
+    # The spread market's outcome, derived at the one point where both teams'
+    # final scores exist side by side. PTS_TEAM_HOME/PTS_TEAM_AWAY themselves are
+    # carried onward from here by select_training_columns so this stays
+    # reproducible downstream; both they and HOME_MARGIN are outcome facts and
+    # are blocked from every feature matrix (see training_pipeline.config
+    # LEAKING_TARGET_COLUMNS).
+    df_merged[HOME_MARGIN_COL] = df_merged.PTS_TEAM_HOME - df_merged.PTS_TEAM_AWAY
 
     # IS_PLAYOFF_GAME based on SEASON_TYPE
     df_merged["IS_PLAYOFF_GAME_BEFORE"] = (

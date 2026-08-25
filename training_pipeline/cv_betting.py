@@ -31,9 +31,11 @@ import pandas as pd
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 from training_pipeline.betting import (
+    OUTCOME_COLUMN,
     BettingMetrics,
     betting_threshold_sweep,
     evaluate_betting,
+    outcome_from_predictions,
 )
 from training_pipeline.calibration import (
     CalibrationSummary,
@@ -221,7 +223,7 @@ def evaluate_cv_betting(
         df_dev[target_line_col], errors="coerce"
     ).to_numpy(dtype=float)
     actual_total_all = pd.to_numeric(
-        df_dev["TOTAL_POINTS"], errors="coerce"
+        df_dev[config.outcome_col], errors="coerce"
     ).to_numpy(dtype=float)
 
     fold_rows: list[dict[str, Any]] = []
@@ -316,7 +318,12 @@ def evaluate_cv_betting(
                     "y_true": y_true,
                     "y_pred": y_pred,
                     "target_line": fold_line,
-                    "TOTAL_POINTS": fold_actual,
+                    OUTCOME_COLUMN: fold_actual,
+                    **(
+                        {"TOTAL_POINTS": fold_actual}
+                        if config.outcome_col == "TOTAL_POINTS"
+                        else {}
+                    ),
                     "predicted_edge": fold_edge,
                     "selection_score": fold_decisions.selection_score,
                     **(
@@ -344,7 +351,7 @@ def evaluate_cv_betting(
 
     pooled_edge = predictions["predicted_edge"].to_numpy(dtype=float)
     pooled_line = predictions["target_line"].to_numpy(dtype=float)
-    pooled_actual = predictions["TOTAL_POINTS"].to_numpy(dtype=float)
+    pooled_actual = outcome_from_predictions(predictions)
 
     pooled_over, pooled_under = collect_prices(
         df_dev, config, positions=predictions["row_in_dev"].to_numpy()

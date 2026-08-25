@@ -4,10 +4,12 @@ Create training dataset up to 2026-01-10 (no date-to-predict / scheduled games).
 
 This script calls `create_df_to_predict` without providing a prediction date
 or scheduled-game data. It saves the resulting DataFrame to
-`data/train_data/training_data_2_0_YYYYMMDD.csv`.
+`data/train_data/training_data_<schema_version>_YYYYMMDD.csv`
+(currently schema 2_1; see nba_ou.config.dataset_versions).
 """
 
 import pandas as pd
+from nba_ou.config.dataset_versions import TRAINING_DATA_SCHEMA_VERSION
 from nba_ou.create_training_data.create_df_to_predict import create_df_to_predict
 
 
@@ -31,7 +33,13 @@ def main(
     output_path = (
         "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/train_data"
     )
-    output_name = f"{output_path}/training_data_2_0_{pd.to_datetime(limit_date_to_train).strftime('%Y%m%d')}.csv"
+    # Schema version in the name, never overwritten in place: a 2_1 build adds
+    # the spread/moneyline columns, so it must land beside the 2_0 file that
+    # existing pinned checksums still refer to.
+    output_name = (
+        f"{output_path}/training_data_{TRAINING_DATA_SCHEMA_VERSION}_"
+        f"{pd.to_datetime(limit_date_to_train).strftime('%Y%m%d')}.csv"
+    )
 
     # Save to CSV
     df_train.to_csv(output_name, index=False)
