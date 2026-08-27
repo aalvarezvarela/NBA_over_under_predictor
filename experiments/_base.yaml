@@ -467,7 +467,33 @@ refit:
   #   rolling_window (default) -- last walk_forward.train_games games
   #   full_dataset            -- every available game
   strategy: rolling_window
-  use_lexicographic_selection: true
+  # FALSE since 2026-08-26: the selected trial is simply the one with the lowest
+  # CV primary metric (pooled MAE for a regressor, log loss for the classifier),
+  # because study.best_trial on a direction="minimize" study IS that trial.
+  #
+  # What this turns OFF is the lexicographic tie-break -- best primary metric
+  # within a tolerance band, then the best BETTING outcome among that band. The
+  # tie band still gets resolved and written to metadata (tie_*) and
+  # optuna_lexicographic_candidates.csv is still saved, so a run remains
+  # readable against the older ones; those numbers are now diagnostics that
+  # describe a decision nothing acts on.
+  #
+  # Why: the band decides which metric really chooses the model, and on this
+  # data it frequently handed the choice to pooled OU accuracy -- a statistic
+  # with ~1.7pp of binomial noise on ~850 validation games, measured on the very
+  # folds that would then be reported. See TieTolerancePolicy in
+  # training_pipeline/config.py for the full account.
+  #
+  # Measured effect on the retrain_cadence_2026_08 pair: the tie-break changed
+  # the pick in ONE of the two runs. Cell A's lexicographic pick was already the
+  # global MAE minimum; cell B's differed from it by 0.00005 pooled MAE and was
+  # a materially different model (depth 4 / 166 trees versus depth 3 / 98).
+  #
+  # Runs already in artifacts/experiments were selected under the old rule and
+  # carry use_lexicographic_selection: true in their own config.json, so nothing
+  # on disk changes -- but a new run is not selector-comparable with them.
+  # Set this back to true in a cell that must reproduce an archived one.
+  use_lexicographic_selection: false
   # Off by default: most experiments only want the evaluation.
   train_production_model: false
 

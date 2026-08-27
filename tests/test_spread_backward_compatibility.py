@@ -26,16 +26,37 @@ from training_pipeline.config import (
     TargetFamily,
 )
 
-#: Fingerprints measured on the commit BEFORE spread support was added, for a
-#: spread of campaigns covering both strategies and both dataset types. If one of
-#: these changes, an existing Optuna study has been forked.
+#: Fingerprints for a spread of campaigns covering both strategies and both
+#: dataset types. If one of these changes without the change being made here on
+#: purpose, an existing Optuna study has been forked.
+#:
+#: RE-BASELINED ONCE, on 2026-08-26. The values below the arrow were measured on
+#: the commit before spread support was added; the current ones differ only
+#: because _base.yaml flipped refit.use_lexicographic_selection to false, and
+#: that field is inside fingerprint(). The fork is deliberate and campaign-wide:
+#: a run selecting its trial on lowest CV MAE is not the run these definitions
+#: previously described, so it should not resume their studies. Nothing on disk
+#: was affected -- persistent_storage is false in both _base.yaml files, so no
+#: study exists to fork, and every archived run keeps its own selector in its
+#: config.json.
+#:
+#: Re-baselining again is NOT the routine response to this test failing. A
+#: fingerprint that moves for any other reason is the bug this file exists to
+#: catch: find what changed first, and only edit these values if the fork is
+#: intended and stated.
 PINNED_FINGERPRINTS = {
-    "experiments/rolling_origin_2026_08/line_error.yaml": "5e7b9b28fbd3",
-    "experiments/rolling_origin_2026_08/total_points.yaml": "cd4f2e2a3ce5",
-    "experiments/target_line_error_2026_08/a_closing_reference.yaml": "5e7b9b28fbd3",
-    "experiments/target_line_error_2026_08/b_intermediate_pooled.yaml": "c4e3dd202aef",
-    "experiments/target_total_points_2026_08/a_closing_reference.yaml": "cd4f2e2a3ce5",
-    "experiments/target_total_points_2026_08/b_intermediate_pooled.yaml": "7a26c63f6606",
+    # 5e7b9b28fbd3 ->
+    "experiments/rolling_origin_2026_08/line_error.yaml": "34d2619d268c",
+    # cd4f2e2a3ce5 ->
+    "experiments/rolling_origin_2026_08/total_points.yaml": "5e245b39946e",
+    # 5e7b9b28fbd3 ->
+    "experiments/target_line_error_2026_08/a_closing_reference.yaml": "34d2619d268c",
+    # c4e3dd202aef ->
+    "experiments/target_line_error_2026_08/b_intermediate_pooled.yaml": "f1522537a139",
+    # cd4f2e2a3ce5 ->
+    "experiments/target_total_points_2026_08/a_closing_reference.yaml": "5e245b39946e",
+    # 7a26c63f6606 ->
+    "experiments/target_total_points_2026_08/b_intermediate_pooled.yaml": "dbeb34c05535",
 }
 
 
