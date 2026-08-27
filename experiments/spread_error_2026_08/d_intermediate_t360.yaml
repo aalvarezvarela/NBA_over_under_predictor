@@ -8,6 +8,7 @@ device: cuda
 data:
   csv_path: data/train_data/intermediate_line_data_2_1_20260828.csv
   data_version: "20260828-intermediate-line-2.1-spread-t360"
+  expected_checksum: "sha256:a34ce56dc93a5df8"
   dataset_type: intermediate_line
   snapshot_minutes: 360
   scoring_csv_path: data/train_data/intermediate_line_data_2_1_20260828_scoring.csv
@@ -18,4 +19,4 @@ betting:
   away_price_col: ODDS_SNAP_SPR_BET365_PRICE_LEFT
   comparison_line_cols: ["ODDS_CLOSING_SPREAD_LINE_HOME_bet365"]
 optuna: {n_trials: 150, timeout: null}
-evaluation_seeds: []
+evaluation_seeds: [17, 42, 91]

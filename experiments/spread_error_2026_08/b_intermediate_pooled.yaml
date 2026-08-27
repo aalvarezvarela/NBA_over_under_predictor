@@ -12,6 +12,7 @@ device: cuda
 data:
   csv_path: data/train_data/intermediate_line_data_2_1_20260828.csv
   data_version: "20260828-intermediate-line-2.1-spread"
+  expected_checksum: "sha256:a34ce56dc93a5df8"
   dataset_type: intermediate_line
   snapshot_minutes: null
   scoring_csv_path: data/train_data/intermediate_line_data_2_1_20260828_scoring.csv
@@ -27,4 +28,4 @@ optuna:
   n_trials: 150
   timeout: null
 
-evaluation_seeds: []
+evaluation_seeds: [17, 42, 91]
