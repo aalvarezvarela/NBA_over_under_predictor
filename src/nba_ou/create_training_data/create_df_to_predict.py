@@ -296,6 +296,8 @@ def create_df_to_predict(
     strict_mode: int = 2,
     categorical_team_encoding: bool = False,
     normalize_total_lines: bool = True,
+    normalize_spread_lines: bool = True,
+    null_extreme_spread_prices: bool = True,
     exclude_caesars: bool = False,
     combine_fanatics_and_caesars: bool | None = None,
 ) -> pd.DataFrame:
@@ -323,6 +325,11 @@ def create_df_to_predict(
             If False (default), add 60 binary one-hot columns.
         normalize_total_lines (bool, optional): If True (default), convert
             asymmetrically priced bookmaker totals to estimated 50/50 lines.
+        normalize_spread_lines (bool, optional): If True (default), convert
+            asymmetrically priced bookmaker spreads to estimated 50/50 lines.
+        null_extreme_spread_prices (bool, optional): If True (default), set
+            implausibly extreme spread price cells to NaN before spread
+            normalization.
         exclude_caesars (bool, optional): If True, drop all Caesars-named odds
             columns -- the current odds-fetching method no longer scrapes
             Caesars. Default is False.
@@ -444,6 +451,8 @@ def create_df_to_predict(
         season_years=seasons,
         extra_game_ids=extra_game_ids,
         normalize_total_lines=normalize_total_lines,
+        normalize_spread_lines=normalize_spread_lines,
+        null_extreme_spread_prices=null_extreme_spread_prices,
         exclude_caesars=exclude_caesars,
         combine_fanatics_and_caesars=combine_fanatics_and_caesars,
     )
@@ -455,6 +464,8 @@ def create_df_to_predict(
             df_odds_sportsbook,
             strict_mode=strict_mode,
             normalize_total_lines=normalize_total_lines,
+            normalize_spread_lines=normalize_spread_lines,
+            null_extreme_spread_prices=null_extreme_spread_prices,
         )
         # Scheduled odds are re-merged fresh from today's live scrape, which may
         # reintroduce a standalone Caesars column even though the historical

@@ -25,9 +25,16 @@ History
 
     Totals columns and semantics are unchanged, so a 2_1 file trains the existing
     totals strategies identically to a 2_0 file built from the same games.
+
+``2_2``
+    Keeps the 2_1 columns but changes closing spread semantics to match totals:
+    asymmetrically priced spread quotes are centered to their estimated
+    -110/-110 equivalent, and implausibly extreme spread prices are nulled
+    before centering. Intermediate spread snapshots already used centered
+    ``norm_line`` values; 2_2 applies the same extreme-price guard there too.
 """
 
 from __future__ import annotations
 
 #: Current schema version for both generated training datasets.
-TRAINING_DATA_SCHEMA_VERSION = "2_1"
+TRAINING_DATA_SCHEMA_VERSION = "2_2"

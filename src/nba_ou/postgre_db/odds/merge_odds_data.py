@@ -16,6 +16,9 @@ from nba_ou.data_processing.odds.book_combination import (
 from nba_ou.data_processing.odds.normalize_total_lines import (
     normalize_total_lines_inplace,
 )
+from nba_ou.data_processing.odds.normalize_spread_lines import (
+    normalize_spread_lines_inplace,
+)
 from nba_ou.postgre_db.odds_sportsbook.fetch_data_from_db.fetch_data_from_odds_sportsbook_db import (
     load_odds_sportsbook_from_db,
 )
@@ -28,6 +31,8 @@ def merge_yahoo_sportsbook_odds(
     df_yahoo: pd.DataFrame,
     df_sportsbook: pd.DataFrame,
     normalize_total_lines: bool = True,
+    normalize_spread_lines: bool = True,
+    null_extreme_spread_prices: bool = True,
 ) -> pd.DataFrame:
     """
     Merge Yahoo and Sportsbook odds data.
@@ -47,6 +52,10 @@ def merge_yahoo_sportsbook_odds(
         df_sportsbook (pd.DataFrame): Sportsbook odds data
         normalize_total_lines (bool): If True, replace asymmetrically priced
             total markets with their estimated 50/50 line and -110/-110 prices.
+        normalize_spread_lines (bool): If True, replace asymmetrically priced
+            spread markets with their estimated 50/50 line and -110/-110 prices.
+        null_extreme_spread_prices (bool): If True, set implausibly extreme
+            spread price cells to NaN before spread centering.
 
     Returns:
         pd.DataFrame: Merged odds dataframe
@@ -56,16 +65,20 @@ def merge_yahoo_sportsbook_odds(
 
     if df_yahoo.empty:
         print("Yahoo odds data is empty, returning sportsbook data only")
-        return _convert_prices_and_normalize_totals(
+        return _convert_prices_and_normalize_markets(
             df_sportsbook.copy(),
             normalize_total_lines=normalize_total_lines,
+            normalize_spread_lines=normalize_spread_lines,
+            null_extreme_spread_prices=null_extreme_spread_prices,
         )
 
     if df_sportsbook.empty:
         print("Sportsbook odds data is empty, returning yahoo data only")
-        return _convert_prices_and_normalize_totals(
+        return _convert_prices_and_normalize_markets(
             df_yahoo.copy(),
             normalize_total_lines=normalize_total_lines,
+            normalize_spread_lines=normalize_spread_lines,
+            null_extreme_spread_prices=null_extreme_spread_prices,
         )
 
     # Select all relevant columns from yahoo for merging
@@ -194,9 +207,11 @@ def merge_yahoo_sportsbook_odds(
     if cols_to_drop_existing:
         df_merged = df_merged.drop(columns=cols_to_drop_existing)
 
-    return _convert_prices_and_normalize_totals(
+    return _convert_prices_and_normalize_markets(
         df_merged,
         normalize_total_lines=normalize_total_lines,
+        normalize_spread_lines=normalize_spread_lines,
+        null_extreme_spread_prices=null_extreme_spread_prices,
     )
 
 
@@ -219,12 +234,14 @@ def american_to_decimal_series(odds: pd.Series) -> pd.Series:
     return pd.Series(dec, index=odds.index)
 
 
-def _convert_prices_and_normalize_totals(
+def _convert_prices_and_normalize_markets(
     df_odds: pd.DataFrame,
     *,
     normalize_total_lines: bool,
+    normalize_spread_lines: bool,
+    null_extreme_spread_prices: bool,
 ) -> pd.DataFrame:
-    """Convert raw American prices, then optionally center total markets."""
+    """Convert raw American prices, then optionally center total/spread markets."""
     price_cols = [column for column in df_odds.columns if "_price" in column]
     for column in price_cols:
         df_odds[column] = american_to_decimal_series(df_odds[column])
@@ -234,6 +251,12 @@ def _convert_prices_and_normalize_totals(
         enabled=normalize_total_lines,
         odds_format="decimal",
     )
+    normalize_spread_lines_inplace(
+        df_odds,
+        enabled=normalize_spread_lines,
+        null_extreme_prices=null_extreme_spread_prices,
+        odds_format="decimal",
+    )
     return df_odds
 
 
@@ -241,6 +264,8 @@ def load_and_merge_odds_yahoo_sportsbookreview(
     season_years: list[str] | None = None,
     extra_game_ids=None,
     normalize_total_lines: bool = True,
+    normalize_spread_lines: bool = True,
+    null_extreme_spread_prices: bool = True,
     exclude_caesars: bool = False,
     combine_fanatics_and_caesars: bool | None = None,
 ) -> pd.DataFrame:
@@ -258,6 +283,10 @@ def load_and_merge_odds_yahoo_sportsbookreview(
         season_years (list[str], optional): List of seasons to load (e.g., ["2023-24", "2024-25"])
         normalize_total_lines (bool): Whether to center asymmetrically priced
             total markets. Defaults to True.
+        normalize_spread_lines (bool): Whether to center asymmetrically priced
+            spread markets. Defaults to True.
+        null_extreme_spread_prices (bool): Whether to set implausibly extreme
+            spread prices to NaN before centering. Defaults to True.
         exclude_caesars (bool): If True, drop all Caesars-named odds columns.
             Default False.
         combine_fanatics_and_caesars (bool | None): Coalesce fanatics_sportsbook
@@ -296,6 +325,8 @@ def load_and_merge_odds_yahoo_sportsbookreview(
         df_yahoo,
         df_sportsbook,
         normalize_total_lines=normalize_total_lines,
+        normalize_spread_lines=normalize_spread_lines,
+        null_extreme_spread_prices=null_extreme_spread_prices,
     )
 
     df_odds_merged = combine_caesars_and_fanatics(

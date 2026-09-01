@@ -194,6 +194,7 @@ def add_movement_features(
     *,
     grid: tuple[int, ...] = DEFAULT_SNAPSHOT_GRID,
     windows: tuple[int, ...] = DEFAULT_WINDOWS,
+    null_extreme_spread_prices: bool = True,
 ) -> pd.DataFrame:
     """Attach movement features to a snapshot ``panel``.
 
@@ -229,7 +230,13 @@ def add_movement_features(
         )
 
     out = _add_open_to_now_features(out)
-    out = _add_windowed_features(out, ticks, grid=grid, windows=windows)
+    out = _add_windowed_features(
+        out,
+        ticks,
+        grid=grid,
+        windows=windows,
+        null_extreme_spread_prices=null_extreme_spread_prices,
+    )
     out = _add_shape_features(out)
     return out
 
@@ -262,9 +269,14 @@ def _add_windowed_features(
     *,
     grid: tuple[int, ...],
     windows: tuple[int, ...],
+    null_extreme_spread_prices: bool = True,
 ) -> pd.DataFrame:
     """Moves over trailing windows, via a second as-of read."""
-    lookup = build_snapshot_panel(ticks, grid=extended_grid(grid, windows))
+    lookup = build_snapshot_panel(
+        ticks,
+        grid=extended_grid(grid, windows),
+        null_extreme_spread_prices=null_extreme_spread_prices,
+    )
     if lookup.empty:
         return out
 

@@ -127,6 +127,21 @@ def main() -> None:
         help="Drop Caesars instead of merging it into fanatics_sportsbook. "
         "Disables the merge.",
     )
+    parser.add_argument(
+        "--no-normalize-total-lines",
+        action="store_true",
+        help="Keep original asymmetrically priced total snapshot lines.",
+    )
+    parser.add_argument(
+        "--no-normalize-spread-lines",
+        action="store_true",
+        help="Keep original asymmetrically priced spread snapshot lines.",
+    )
+    parser.add_argument(
+        "--keep-extreme-spread-prices",
+        action="store_true",
+        help="Keep extreme spread price cells instead of setting them to NaN.",
+    )
     args = parser.parse_args()
 
     grid = _parse_int_tuple(args.snapshot_grid)
@@ -142,6 +157,9 @@ def main() -> None:
         anchor_book=args.anchor_book,
         exclude_fanatics=args.exclude_fanatics,
         exclude_caesars=args.exclude_caesars,
+        normalize_total_lines=not args.no_normalize_total_lines,
+        normalize_spread_lines=not args.no_normalize_spread_lines,
+        null_extreme_spread_prices=not args.keep_extreme_spread_prices,
         return_scoring=True,
     )
 
@@ -150,9 +168,8 @@ def main() -> None:
         DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         stamp = pd.to_datetime(df["GAME_DATE"]).max().strftime("%Y%m%d")
         # Schema version in the name for the same reason as the closing dataset:
-        # a 2_1 build carries the per-snapshot SPREAD_ERROR target and the
-        # canonical moneyline columns, and must not overwrite a 2_0 file that a
-        # pinned expected_checksum still points at.
+        # schema and market-normalization changes must land beside older files
+        # that pinned expected_checksum values still point at.
         output_path = (
             DEFAULT_OUTPUT_DIR
             / f"intermediate_line_data_{TRAINING_DATA_SCHEMA_VERSION}_{stamp}.csv"

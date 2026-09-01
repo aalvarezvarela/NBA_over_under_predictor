@@ -5,16 +5,25 @@ Create training dataset up to 2026-01-10 (no date-to-predict / scheduled games).
 This script calls `create_df_to_predict` without providing a prediction date
 or scheduled-game data. It saves the resulting DataFrame to
 `data/train_data/training_data_<schema_version>_YYYYMMDD.csv`
-(currently schema 2_1; see nba_ou.config.dataset_versions).
+(currently schema 2_2; see nba_ou.config.dataset_versions).
 """
+
+from pathlib import Path
 
 import pandas as pd
 from nba_ou.config.dataset_versions import TRAINING_DATA_SCHEMA_VERSION
 from nba_ou.create_training_data.create_df_to_predict import create_df_to_predict
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
 
 def main(
-    limit_date_to_train: str = "2026-01-10", n_seasons_to_include: int = None
+    limit_date_to_train: str = "2026-01-10",
+    n_seasons_to_include: int = None,
+    output: Path | None = None,
+    normalize_total_lines: bool = True,
+    normalize_spread_lines: bool = True,
+    null_extreme_spread_prices: bool = True,
 ) -> None:
     """Create training data up to `limit_date_to_train`.
 
@@ -28,22 +37,32 @@ def main(
         todays_prediction=False,
         recent_limit_to_include=limit_date_to_train,
         older_season_limit=n_seasons_to_include,
+        normalize_total_lines=normalize_total_lines,
+        normalize_spread_lines=normalize_spread_lines,
+        null_extreme_spread_prices=null_extreme_spread_prices,
     )
 
-    output_path = (
-        "/home/adrian_alvarez/Projects/NBA_over_under_predictor/data/train_data"
-    )
-    # Schema version in the name, never overwritten in place: a 2_1 build adds
-    # the spread/moneyline columns, so it must land beside the 2_0 file that
-    # existing pinned checksums still refer to.
-    output_name = (
-        f"{output_path}/training_data_{TRAINING_DATA_SCHEMA_VERSION}_"
-        f"{pd.to_datetime(limit_date_to_train).strftime('%Y%m%d')}.csv"
-    )
+    if output is None:
+        output_path = PROJECT_ROOT / "data" / "train_data"
+        output_path.mkdir(parents=True, exist_ok=True)
+        # Schema version in the name, never overwritten in place: spread and
+        # moneyline additions, then spread-normalization semantics, must land beside
+        # older files that pinned checksums still refer to.
+        output = (
+            output_path
+            / f"training_data_{TRAINING_DATA_SCHEMA_VERSION}_"
+            f"{pd.to_datetime(limit_date_to_train).strftime('%Y%m%d')}.csv"
+        )
+    else:
+        output.parent.mkdir(parents=True, exist_ok=True)
 
     # Save to CSV
-    df_train.to_csv(output_name, index=False)
-    print(f"Training data saved to {output_name}")
+    df_train.to_csv(output, index=False)
+    print(f"Training data saved to {output}")
+
+    from training_pipeline.data import compute_file_checksum
+
+    print(f'expected_checksum: "{compute_file_checksum(output)}"')
 
 
 if __name__ == "__main__":
@@ -67,6 +86,29 @@ if __name__ == "__main__":
         default=None,
         help="Number of seasons to include. Defaults to None (all from 2017-18)",
     )
+    parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument(
+        "--no-normalize-total-lines",
+        action="store_true",
+        help="Keep original asymmetrically priced total lines.",
+    )
+    parser.add_argument(
+        "--no-normalize-spread-lines",
+        action="store_true",
+        help="Keep original asymmetrically priced spread lines.",
+    )
+    parser.add_argument(
+        "--keep-extreme-spread-prices",
+        action="store_true",
+        help="Keep extreme spread price cells instead of setting them to NaN.",
+    )
 
     args = parser.parse_args()
-    main(args.limit, args.n_seasons)
+    main(
+        args.limit,
+        args.n_seasons,
+        output=args.output,
+        normalize_total_lines=not args.no_normalize_total_lines,
+        normalize_spread_lines=not args.no_normalize_spread_lines,
+        null_extreme_spread_prices=not args.keep_extreme_spread_prices,
+    )

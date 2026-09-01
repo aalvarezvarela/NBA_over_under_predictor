@@ -405,6 +405,8 @@ def create_intermediate_line_df(
     combine_fanatics_and_caesars: bool | None = None,
     categorical_team_encoding: bool = False,
     normalize_total_lines: bool = True,
+    normalize_spread_lines: bool = True,
+    null_extreme_spread_prices: bool = True,
     return_scoring: bool = False,
     verbose: bool = True,
 ) -> pd.DataFrame | tuple[pd.DataFrame, pd.DataFrame]:
@@ -492,9 +494,19 @@ def create_intermediate_line_df(
         print(f"✓ {len(ticks):,} pre-game ticks over {ticks.game_id.nunique()} games")
 
     panel = build_snapshot_panel(
-        ticks, grid=snapshot_grid, normalize=normalize_total_lines
+        ticks,
+        grid=snapshot_grid,
+        normalize_total_lines=normalize_total_lines,
+        normalize_spread_lines=normalize_spread_lines,
+        null_extreme_spread_prices=null_extreme_spread_prices,
     )
-    panel = add_movement_features(panel, ticks, grid=snapshot_grid, windows=windows)
+    panel = add_movement_features(
+        panel,
+        ticks,
+        grid=snapshot_grid,
+        windows=windows,
+        null_extreme_spread_prices=null_extreme_spread_prices,
+    )
     consensus = aggregate_across_books(panel)
     panel = add_book_deviation(panel, consensus)
     if verbose:
@@ -565,6 +577,8 @@ def create_intermediate_line_df(
         season_start_date=pd.Timestamp(year=base_start_year, month=10, day=1),
         categorical_team_encoding=categorical_team_encoding,
         normalize_total_lines=normalize_total_lines,
+        normalize_spread_lines=normalize_spread_lines,
+        null_extreme_spread_prices=null_extreme_spread_prices,
         exclude_caesars=exclude_caesars,
         combine_fanatics_and_caesars=combine_books,
         verbose=verbose,

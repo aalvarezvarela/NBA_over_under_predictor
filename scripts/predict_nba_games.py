@@ -80,6 +80,8 @@ def configure_tqdm_for_environment() -> None:
 def predict_nba_games(
     run_tabpfn_client: bool = False,
     normalize_total_lines: bool = True,
+    normalize_spread_lines: bool = True,
+    null_extreme_spread_prices: bool = True,
 ) -> None:
     """
     Main execution function for the NBA prediction pipeline.
@@ -152,6 +154,8 @@ def predict_nba_games(
             scheduled_data=scheduled_data,
             strict_mode=30,
             normalize_total_lines=normalize_total_lines,
+            normalize_spread_lines=normalize_spread_lines,
+            null_extreme_spread_prices=null_extreme_spread_prices,
         )
         df_to_predict = df_to_predict_total[
             df_to_predict_total["GAME_DATE"] == date_to_predict
@@ -310,9 +314,21 @@ if __name__ == "__main__":
         action="store_true",
         help="Keep the original asymmetrically priced total lines",
     )
+    parser.add_argument(
+        "--no-normalize-spread-lines",
+        action="store_true",
+        help="Keep the original asymmetrically priced spread lines",
+    )
+    parser.add_argument(
+        "--keep-extreme-spread-prices",
+        action="store_true",
+        help="Keep extreme spread price cells instead of setting them to NaN.",
+    )
     args = parser.parse_args()
 
     predict_nba_games(
         run_tabpfn_client=not args.no_tabpfn,
         normalize_total_lines=not args.no_normalize_total_lines,
+        normalize_spread_lines=not args.no_normalize_spread_lines,
+        null_extreme_spread_prices=not args.keep_extreme_spread_prices,
     )

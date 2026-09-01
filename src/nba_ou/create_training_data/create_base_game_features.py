@@ -255,6 +255,8 @@ def create_base_game_features(
     season_start_date: str | pd.Timestamp | None = None,
     categorical_team_encoding: bool = False,
     normalize_total_lines: bool = True,
+    normalize_spread_lines: bool = True,
+    null_extreme_spread_prices: bool = True,
     include_all_star: bool = True,
     include_roster_continuity: bool = True,
     roster_injury_reports: str = "lagged",
@@ -352,6 +354,8 @@ def create_base_game_features(
     df_odds = load_and_merge_odds_yahoo_sportsbookreview(
         season_years=seasons,
         normalize_total_lines=normalize_total_lines,
+        normalize_spread_lines=normalize_spread_lines,
+        null_extreme_spread_prices=null_extreme_spread_prices,
         exclude_caesars=exclude_caesars,
         combine_fanatics_and_caesars=combine_fanatics_and_caesars,
     )

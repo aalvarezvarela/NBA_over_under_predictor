@@ -25,6 +25,8 @@ def merge_and_validate_scheduled_odds(
     df_odds_sportsbook: pd.DataFrame,
     strict_mode: int = 0,
     normalize_total_lines: bool = True,
+    normalize_spread_lines: bool = True,
+    null_extreme_spread_prices: bool = True,
 ) -> pd.DataFrame:
     """Merge and validate scheduled odds with historical odds data.
 
@@ -46,6 +48,10 @@ def merge_and_validate_scheduled_odds(
             skipped with a warning so the pipeline can still produce predictions.  Default is 0.
         normalize_total_lines (bool): Whether to center asymmetrically priced
             scheduled total markets. Defaults to True.
+        normalize_spread_lines (bool): Whether to center asymmetrically priced
+            scheduled spread markets. Defaults to True.
+        null_extreme_spread_prices (bool): Whether to set implausibly extreme
+            scheduled spread prices to NaN before centering. Defaults to True.
 
     Returns:
         pd.DataFrame: Combined odds dataframe with historical and scheduled games
@@ -59,6 +65,8 @@ def merge_and_validate_scheduled_odds(
         df_odds_yahoo,
         df_odds_sportsbook,
         normalize_total_lines=normalize_total_lines,
+        normalize_spread_lines=normalize_spread_lines,
+        null_extreme_spread_prices=null_extreme_spread_prices,
     )
 
     # Validate columns

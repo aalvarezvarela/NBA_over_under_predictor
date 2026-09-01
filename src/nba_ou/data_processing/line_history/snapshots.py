@@ -31,6 +31,9 @@ from nba_ou.postgre_db.line_history_aiven.fetch import (
     MARKET_SPREAD,
     MARKET_TOTALS,
 )
+from nba_ou.data_processing.odds.normalize_spread_lines import (
+    spread_price_extreme_mask,
+)
 
 from .normalization import (
     MARGIN_SIGMA,
@@ -202,14 +205,23 @@ def build_snapshot_panel(
     ticks: pd.DataFrame,
     *,
     grid: tuple[int, ...] = DEFAULT_SNAPSHOT_GRID,
-    normalize: bool = True,
+    normalize: bool | None = None,
+    normalize_total_lines: bool = True,
+    normalize_spread_lines: bool = True,
+    null_extreme_spread_prices: bool = True,
 ) -> pd.DataFrame:
     """Long panel: one row per (game, market, book, snapshot).
 
-    ``normalize`` centers each quote onto its -110/-110 equivalent. The raw line
-    is kept regardless -- it is the one you could actually have bet, while the
-    centered one is the one that is comparable across books and snapshots.
+    ``normalize_total_lines`` and ``normalize_spread_lines`` center each quote
+    onto its -110/-110 equivalent. The raw line is kept regardless -- it is the
+    one you could actually have bet, while the centered one is the one that is
+    comparable across books and snapshots. ``normalize`` is the backward-
+    compatible alias that sets both market-specific flags at once.
     """
+    if normalize is not None:
+        normalize_total_lines = normalize
+        normalize_spread_lines = normalize
+
     if not grid:
         raise ValueError("grid must not be empty.")
     # 0 is allowed and means "as late as the store allows" -- the closing
@@ -260,15 +272,33 @@ def build_snapshot_panel(
         panel["tick_minutes_before_tip"] - panel["snapshot_minutes"]
     )
 
+    if null_extreme_spread_prices:
+        spread_rows = panel["market"].eq(MARKET_SPREAD)
+        extreme_left = spread_rows & spread_price_extreme_mask(
+            panel["price_left"], odds_format="american"
+        )
+        extreme_right = spread_rows & spread_price_extreme_mask(
+            panel["price_right"], odds_format="american"
+        )
+        panel.loc[extreme_left, "price_left"] = np.nan
+        panel.loc[extreme_right, "price_right"] = np.nan
+
     fair = devig_two_way(panel["price_left"], panel["price_right"])
     panel["fair_left"] = fair["fair_left"]
     panel["fair_right"] = fair["fair_right"]
     panel["overround"] = fair["overround"]
 
     panel["norm_line"] = np.nan
-    if normalize:
+    normalize_by_market = {
+        MARKET_TOTALS: normalize_total_lines,
+        MARKET_SPREAD: normalize_spread_lines,
+    }
+    if any(normalize_by_market.values()):
         for market, sigma in MARKET_SIGMAS.items():
             rows = panel["market"].eq(market)
+            if not normalize_by_market[market]:
+                panel.loc[rows, "norm_line"] = panel.loc[rows, "raw_line"]
+                continue
             if not rows.any():
                 continue
             panel.loc[rows, "norm_line"] = center_two_way_line(
