@@ -481,9 +481,25 @@ async def extract_sbr_spread_full_game_rows(
 
       const parseLineAndPrice = (txt) => {
         const t = String(txt || "");
-        const line = (t.match(/([+-]\d+(?:\.\d+)?)/) || [null, null])[1];
-        const price = (t.match(/([+-]\d{2,4})/) || [null, null])[1];
-        return { line: line || null, price: price || null };
+        const nums = Array.from(
+          t.matchAll(/(?:^|\s)([+-]\d+(?:\.\d+)?)(?=$|\s)/g)
+        ).map(m => m[1]);
+
+        let priceIdx = -1;
+        for (let i = nums.length - 1; i >= 0; i--) {
+          const n = Number(nums[i]);
+          if (/^[+-]\d{2,4}$/.test(nums[i]) && Math.abs(n) >= 90) {
+            priceIdx = i;
+            break;
+          }
+        }
+
+        const price = priceIdx >= 0 ? nums[priceIdx] : null;
+        const line = (
+          nums.find((v, i) => i !== priceIdx && Math.abs(Number(v)) <= 60)
+          || null
+        );
+        return { line, price };
       };
 
       const parseCellTwoRows = (cell) => {

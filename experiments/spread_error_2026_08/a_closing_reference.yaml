@@ -20,6 +20,7 @@ data:
 betting:
   home_price_col: ODDS_SPREAD_PRICE_HOME
   away_price_col: ODDS_SPREAD_PRICE_AWAY
+  comparison_line_cols: ["ODDS_SPREAD_LINE_HOME_consensus_opener"]
 
 optuna:
   n_trials: 150

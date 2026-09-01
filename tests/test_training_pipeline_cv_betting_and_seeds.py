@@ -23,6 +23,7 @@ from training_pipeline.config import (
     HoldoutConfig,
     HoldoutEvaluation,
     OptunaConfig,
+    PredictionStrategy,
     SearchSpaceConfig,
     TargetFamily,
     WalkForwardConfig,
@@ -339,6 +340,38 @@ def test_missing_comparison_columns_are_skipped_not_fatal(patched, tmp_path):
     assert run_experiment(config).walk_forward_result is not None
 
 
+def test_spread_line_comparison_skips_total_lines(tmp_path):
+    """A spread prediction cannot be meaningfully re-scored against totals."""
+    config = _config(
+        tmp_path,
+        prediction_strategy=PredictionStrategy.SPREAD_ERROR_REGRESSOR,
+        target_family=TargetFamily.SPREAD_ERROR,
+        line_col=None,
+        betting=BettingConfig(
+            comparison_line_cols=(
+                "ODDS_TOTAL_LINE_consensus_opener",
+                "ODDS_SPREAD_LINE_HOME_consensus_opener",
+            )
+        ),
+    )
+    df = pd.DataFrame(
+        {
+            "ODDS_SPREAD_LINE_HOME_bet365": [3.5, -2.0],
+            "ODDS_TOTAL_LINE_consensus_opener": [225.5, 231.0],
+            "ODDS_SPREAD_LINE_HOME_consensus_opener": [4.0, -1.5],
+        }
+    )
+
+    lines = collect_comparison_lines(
+        df, config, target_line_col="ODDS_SPREAD_LINE_HOME_bet365"
+    )
+
+    assert list(lines) == [
+        "ODDS_SPREAD_LINE_HOME_bet365",
+        "ODDS_SPREAD_LINE_HOME_consensus_opener",
+    ]
+
+
 def test_predicted_total_points_adds_the_line_back_for_line_error(tmp_path):
     """A LINE_ERROR prediction is relative to its own line, so comparing it
     against a different line requires putting it back into points space first.
@@ -363,9 +396,7 @@ def test_predicted_total_points_adds_the_line_back_for_line_error(tmp_path):
 # --- artifacts and leaderboard ---------------------------------------------
 
 
-def test_new_artifacts_are_written_and_read_back_by_the_leaderboard(
-    patched, tmp_path
-):
+def test_new_artifacts_are_written_and_read_back_by_the_leaderboard(patched, tmp_path):
     from training_pipeline.leaderboard import build_leaderboard
 
     root = tmp_path / "artifacts"
