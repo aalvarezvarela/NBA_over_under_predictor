@@ -1,0 +1,33 @@
+experiment_name: time_decay_t30_spread_error
+prediction_strategy: spread_error_regressor
+training_version: "2.2-time-decay"
+comparison_group: time_decay_intermediate_2026_09
+hypothesis: Test recency weighting for spread-error prediction 30 minutes before tip-off.
+tags: [time_decay, spread_error, spread, intermediate_line, t30]
+
+device: cuda
+
+data:
+  csv_path: data/train_data/intermediate_line_data_2_2_20260613.csv
+  data_version: "20260613-intermediate-line-2.2-normalized-t30"
+  expected_checksum: "sha256:451e4fa6dfaaad85"
+  dataset_type: intermediate_line
+  snapshot_minutes: 30
+  scoring_csv_path: data/train_data/intermediate_line_data_2_2_20260613_scoring.csv
+  season_year_floor: 2021
+  extend_history_dropping_season_gated_columns: false
+
+sample_weight:
+  enabled: true
+  lambda_: 0.002
+  tune_lambda: true
+  lambda_bounds: [0.0005, 0.005]
+  allow_unweighted: true
+
+betting:
+  home_price_col: ODDS_SNAP_SPR_BET365_PRICE_RIGHT
+  away_price_col: ODDS_SNAP_SPR_BET365_PRICE_LEFT
+  comparison_line_cols: ["ODDS_CLOSING_SPREAD_LINE_HOME_bet365"]
+
+optuna: {n_trials: 150, timeout: null}
+evaluation_seeds: [17, 42]

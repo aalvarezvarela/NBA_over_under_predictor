@@ -1,0 +1,34 @@
+experiment_name: time_decay_closing_spread_error
+prediction_strategy: spread_error_regressor
+training_version: "2.2-time-decay"
+comparison_group: time_decay_closing_2026_09
+hypothesis: >
+  Test whether recency weighting improves closing spread-error prediction on the
+  normalized 2.2 spread dataset. Optuna may also select no weighting, making
+  the unweighted model an explicit control inside the same search.
+tags: [time_decay, spread_error, spread, closing_line]
+
+device: cuda
+
+data:
+  csv_path: data/train_data/training_data_2_2_20260828.csv
+  data_version: "20260828-training-2.2-normalized"
+  expected_checksum: "sha256:f1a75711ac4efad5"
+  dataset_type: closing_line
+  season_year_floor: 2021
+  extend_history_dropping_season_gated_columns: false
+
+sample_weight:
+  enabled: true
+  lambda_: 0.002
+  tune_lambda: true
+  lambda_bounds: [0.0005, 0.005]
+  allow_unweighted: true
+
+betting:
+  home_price_col: ODDS_SPREAD_PRICE_HOME
+  away_price_col: ODDS_SPREAD_PRICE_AWAY
+  comparison_line_cols: ["ODDS_SPREAD_LINE_HOME_consensus_opener"]
+
+optuna: {n_trials: 150, timeout: null}
+evaluation_seeds: [17, 42, 16]

@@ -9,6 +9,10 @@ accessing configs, datasets, logs, or artifacts.
 - `run_rolling_origin_campaign.sh`: the current protocol -- rolling-origin CV
   (train to a date, predict the next 4 game-days), with the training window and
   the boosting rounds both tuned by Optuna. 2 runs, one per regression target.
+- `run_time_decay_2026_09_part1.sh` and `run_time_decay_2026_09_part2.sh`:
+  parallel halves of the normalized 2.2 time-decay campaign. Together they run
+  spread error, total points, and total-line error at closing, T-30, T-360, and
+  T-720. Each half contains six sequential CUDA runs.
 
 ## Archived campaigns
 
