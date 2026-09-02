@@ -36,6 +36,8 @@ from io import StringIO
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
 warnings.filterwarnings("ignore")
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -56,6 +58,66 @@ from training_pipeline.splits import (  # noqa: E402
 )
 
 OK, WARN, FAIL = "ok", "warn", "FAIL"
+
+
+def _check_dataset_key_integrity(
+    csv: Path, config: ExperimentConfig
+) -> tuple[str, list[str]]:
+    """Cheaply validate the row identity fields even under ``--skip-data``.
+
+    A checksum proves only that the bytes did not change; it can faithfully pin
+    a malformed file. Reading the date/game/snapshot columns catches truncated
+    rows and bad sentinels before a long campaign spends time on an earlier,
+    healthy experiment and reaches the broken dataset hours later.
+    """
+    data = config.data
+    columns = [data.game_id_col, data.date_col]
+    if data.dataset_type.value == "intermediate_line":
+        columns.append(data.snapshot_col)
+
+    try:
+        frame = pd.read_csv(
+            csv,
+            usecols=columns,
+            dtype={data.game_id_col: "string", data.date_col: "string"},
+        )
+    except Exception as exc:  # noqa: BLE001 - turn parser failures into preflight output
+        return "", [f"{csv.name}: cannot read key columns -- {type(exc).__name__}: {exc}"]
+
+    problems: list[str] = []
+    invalid_game_ids = int(frame[data.game_id_col].isna().sum())
+    parsed_dates = pd.to_datetime(frame[data.date_col], errors="coerce", format="mixed")
+    invalid_dates = int(parsed_dates.isna().sum())
+    if invalid_game_ids:
+        problems.append(f"{csv.name}: {invalid_game_ids} row(s) have no game id")
+    if invalid_dates:
+        examples = frame.loc[parsed_dates.isna(), data.date_col].astype(str).unique()[:3]
+        problems.append(
+            f"{csv.name}: {invalid_dates} row(s) have invalid {data.date_col}, "
+            f"e.g. {examples.tolist()}"
+        )
+
+    key_columns = [data.game_id_col]
+    snapshot_summary = ""
+    if data.dataset_type.value == "intermediate_line":
+        snapshots = pd.to_numeric(frame[data.snapshot_col], errors="coerce")
+        invalid_snapshots = int(snapshots.isna().sum())
+        if invalid_snapshots:
+            problems.append(
+                f"{csv.name}: {invalid_snapshots} row(s) have invalid "
+                f"{data.snapshot_col}"
+            )
+        key_columns.append(data.snapshot_col)
+        snapshot_summary = f", snapshots={snapshots.nunique(dropna=True)}"
+
+    duplicate_keys = int(frame.duplicated(key_columns).sum())
+    if duplicate_keys:
+        problems.append(
+            f"{csv.name}: {duplicate_keys} duplicate row key(s) on {key_columns}"
+        )
+
+    summary = f"rows={len(frame):,}, unique_keys={frame[key_columns].drop_duplicates().shape[0]:,}{snapshot_summary}"
+    return summary, problems
 
 
 def _data_fingerprint(config: ExperimentConfig) -> str:
@@ -127,6 +189,32 @@ def check_configs(
             print(f"  {FAIL}  {name}: checksum {pinned} != {actual}")
         else:
             print(f"  {OK}    {name}: {csv.name} matches {actual}")
+    print()
+
+    # A checksum can pin corrupt bytes just as faithfully as healthy ones. This
+    # deliberately runs even with --skip-data; it reads only identity columns,
+    # so it is cheap compared with cleaning thousands of features.
+    print("Dataset key integrity")
+    checked_integrity: set[tuple[Path, str, str, str]] = set()
+    for name, config in configs.items():
+        csv = Path(config.data.csv_path)
+        csv = csv if csv.is_absolute() else REPO_ROOT / csv
+        identity = (
+            csv,
+            config.data.game_id_col,
+            config.data.date_col,
+            config.data.snapshot_col,
+        )
+        if identity in checked_integrity or not csv.exists():
+            continue
+        checked_integrity.add(identity)
+        summary, integrity_problems = _check_dataset_key_integrity(csv, config)
+        if integrity_problems:
+            for problem in integrity_problems:
+                problems.append(f"{name}: {problem}")
+                print(f"  {FAIL}  {problem}")
+        else:
+            print(f"  {OK}    {csv.name}: {summary}")
     print()
 
     # --- 3. the design matrix -----------------------------------------------
@@ -405,9 +493,9 @@ def _verdict(problems: list[str], *, checked_windows: bool) -> int:
     else:
         # Saying "passed" here would imply the one check that actually needs
         # doing, and the one that silently misbehaves when wrong.
-        print("Configs and checksums check out. The training-window check was SKIPPED, "
-              "so a window too large for the data would still go unnoticed -- rerun "
-              "without --skip-data before committing the campaign.")
+        print("Configs, checksums and dataset keys check out. The training-window "
+              "check was SKIPPED, so a window too large for the data would still go "
+              "unnoticed -- rerun without --skip-data before committing the campaign.")
     return 0
 
 
@@ -423,8 +511,9 @@ def main() -> int:
         ),
     )
     parser.add_argument("--skip-data", action="store_true",
-                        help="Config and checksum checks only; skips cleaning, which is "
-                             "the slow part but also the only way to verify the window.")
+                        help="Config, checksum and row-key checks only; skips cleaning, "
+                             "which is the slow part but also the only way to verify "
+                             "the training window.")
     args = parser.parse_args()
 
     configs, errors = _resolve_config_paths(args.paths)

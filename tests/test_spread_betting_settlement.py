@@ -136,8 +136,8 @@ def test_asymmetric_home_away_prices_are_applied_to_the_right_side():
 def test_collect_prices_maps_home_to_the_first_slot():
     """HOME occupies the OVER slot because both are selected by a positive edge.
 
-    Verified on real data: on the intermediate snapshot panel RIGHT is HOME and
-    LEFT is AWAY, so a config pointing at PRICE_RIGHT/PRICE_LEFT lands here.
+    RIGHT is HOME and LEFT is AWAY; this test uses decimal prices because raw
+    snapshot PRICE_RIGHT/PRICE_LEFT values are American odds in the real data.
     """
     config = _spread_config(
         betting=BettingConfig(
@@ -155,6 +155,25 @@ def test_collect_prices_maps_home_to_the_first_slot():
     home_side, away_side = collect_prices(df, config)
     assert home_side.tolist() == [1.80]
     assert away_side.tolist() == [2.05]
+
+
+@pytest.mark.parametrize("american_price", [-110.0, 100.0])
+def test_collect_prices_rejects_american_odds(american_price):
+    config = _spread_config(
+        betting=BettingConfig(
+            home_price_col="HOME_PRICE",
+            away_price_col="AWAY_PRICE",
+        )
+    )
+    df = pd.DataFrame(
+        {
+            "HOME_PRICE": [american_price],
+            "AWAY_PRICE": [1.91],
+        }
+    )
+
+    with pytest.raises(ValueError, match="must contain decimal odds"):
+        collect_prices(df, config)
 
 
 def test_totals_price_columns_still_route_to_over_under():

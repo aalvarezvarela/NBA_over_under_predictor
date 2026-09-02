@@ -10,9 +10,9 @@ accessing configs, datasets, logs, or artifacts.
   (train to a date, predict the next 4 game-days), with the training window and
   the boosting rounds both tuned by Optuna. 2 runs, one per regression target.
 - `run_time_decay_2026_09_part1.sh` and `run_time_decay_2026_09_part2.sh`:
-  parallel halves of the normalized 2.2 time-decay campaign. Together they run
-  spread error, total points, and total-line error at closing, T-30, T-360, and
-  T-720. Each half contains six sequential CUDA runs.
+  parallel halves of the regenerated no-decay campaign. Together they run the
+  three closing targets on normalized 2.2 data, spread error at T-30, T-360,
+  and T-720, plus a closing spread-error comparison on schema 2.1.
 
 ## Archived campaigns
 

@@ -207,11 +207,24 @@ def price_column(df: pd.DataFrame, column: str | None) -> np.ndarray | None:
     """A decimal-odds column as an array, or None to fall back to a flat price.
 
     Missing entirely is fine (it may not have survived cleaning); per-row gaps
-    are repaired in :func:`_resolve_prices`.
+    are repaired in :func:`_resolve_prices`. American odds are rejected here
+    because negative values would otherwise silently fall back to the flat
+    price, while positive values such as +100 would be treated as decimal 100.
     """
     if not column or column not in df.columns:
         return None
-    return pd.to_numeric(df[column], errors="coerce").to_numpy(dtype=float)
+    values = pd.to_numeric(df[column], errors="coerce").to_numpy(dtype=float)
+    finite = values[np.isfinite(values)]
+    american_like = finite[(finite < 0.0) | (finite >= 20.0)]
+    if american_like.size:
+        sample = np.unique(american_like)[:5].tolist()
+        raise ValueError(
+            f"Configured betting price column {column!r} must contain decimal odds; "
+            f"found American-looking values such as {sample}. Convert the prices "
+            "before settlement or leave the price columns unconfigured to use "
+            "betting.flat_decimal_odds."
+        )
+    return values
 
 
 def collect_prices(

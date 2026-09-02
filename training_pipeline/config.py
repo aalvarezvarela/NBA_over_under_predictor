@@ -1206,7 +1206,8 @@ class BettingConfig(BaseModel):
     flat_decimal_odds: float = DECIMAL_ODDS_MINUS_110
     # Opt in to real per-book prices (decimal) instead of the flat price, e.g.
     # "total_bet365_price_over" / "total_bet365_price_under". Rows with missing
-    # or invalid prices fall back to flat_decimal_odds.
+    # or invalid decimal prices fall back to flat_decimal_odds; American-format
+    # columns are rejected before evaluation.
     over_price_col: str | None = None
     under_price_col: str | None = None
 
@@ -1220,8 +1221,10 @@ class BettingConfig(BaseModel):
     #: stores the two sides as LEFT/RIGHT, where RIGHT is HOME -- confirmed by
     #: the moneyline, whose cheaper RIGHT side won 68.8% of the time.
     #:
-    #: Closing dataset:      ODDS_spread_bet365_price_home / _price_away
-    #: Intermediate dataset: ODDS_SNAP_SPR_BET365_PRICE_RIGHT / _PRICE_LEFT
+    #: Closing dataset: ODDS_spread_bet365_price_home / _price_away.
+    #: The intermediate ODDS_SNAP_SPR_*_PRICE_LEFT/RIGHT fields are American
+    #: odds and must not be configured here without first converting them to
+    #: decimal prices that belong to the exact line being settled.
     home_price_col: str | None = None
     away_price_col: str | None = None
 

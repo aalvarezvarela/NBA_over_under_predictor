@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Six of the twelve time-decay experiments. Start part 1 and part 2 together.
+# Four of the seven no-decay experiments. Start part 1 and part 2 together.
 set -uo pipefail
 
 cd "$(dirname "$0")/../.." || exit 1
@@ -10,15 +10,11 @@ LOG_DIR="artifacts/logs/${CAMPAIGN}_part1_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/campaign.log"
 
-# Four intermediate runs and two closing runs keeps this half close in cost to
-# part 2, which has five intermediate runs and one closing run.
 CONFIGS=(
   "$CONFIG_DIR/a_closing_spread_error.yaml"
-  "$CONFIG_DIR/b_closing_total_points.yaml"
+  "$CONFIG_DIR/c_closing_line_error.yaml"
   "$CONFIG_DIR/d_t30_spread_error.yaml"
-  "$CONFIG_DIR/i_t360_line_error.yaml"
-  "$CONFIG_DIR/k_t720_total_points.yaml"
-  "$CONFIG_DIR/l_t720_line_error.yaml"
+  "$CONFIG_DIR/g_t360_spread_error.yaml"
 )
 
 PY=(poetry run python -u)
@@ -26,12 +22,12 @@ CLI=("${PY[@]}" -m training_pipeline.cli)
 log() { echo "$@" | tee -a "$LOG"; }
 
 DATASETS=(
-  "data/train_data/training_data_2_2_20260828.csv"
-  "data/train_data/intermediate_line_data_2_2_20260613.csv"
-  "data/train_data/intermediate_line_data_2_2_20260613_scoring.csv"
+  "data/train_data/training_data_2_2_20260901.csv"
+  "data/train_data/intermediate_line_data_2_2_20260901.csv"
+  "data/train_data/intermediate_line_data_2_2_20260901_scoring.csv"
 )
 
-log "Time-decay campaign part 1 started $(date)"
+log "No-decay campaign part 1 started $(date)"
 log "Runs: ${#CONFIGS[@]} sequential CUDA experiments, 150 trials each"
 log "Logs: $LOG_DIR"
 
