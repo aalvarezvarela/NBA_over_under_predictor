@@ -13,6 +13,16 @@ accessing configs, datasets, logs, or artifacts.
   parallel halves of the regenerated no-decay campaign. Together they run the
   three closing targets on normalized 2.2 data, spread error at T-30, T-360,
   and T-720, plus a closing spread-error comparison on schema 2.1.
+- `run_totals_schema_lexicographic_2026_09.sh`: six sequential CUDA runs that
+  compare `total_points` and `line_error` across closing schemas 2.0, 2.1 and
+  2.2. Selection is lexicographic: best pooled O/U win rate inside the best 15%
+  by pooled MAE, with an absolute MAE gap capped at 0.04.
+- `run_extended_history_cv_2026_09_part1.sh` and
+  `run_extended_history_cv_2026_09_part2.sh`: the extended-history protocol.
+  Part 1 runs all three closing targets on schema 2.2 plus a schema 2.0
+  line-error control; part 2 runs the three targets at T-360. Both use a
+  90-day holdout, five-game-day rolling-origin folds, seed 16 and the
+  lexicographic top-15% / +0.04-MAE selector.
 
 ## Archived campaigns
 

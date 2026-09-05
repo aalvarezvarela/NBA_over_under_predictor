@@ -129,6 +129,43 @@ def tuned_window_table(runs: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def tuned_hyperparameters_table(runs: pd.DataFrame) -> pd.DataFrame:
+    """Per run: the hyperparameters the selected trial actually used.
+
+    Prefers ``optuna_selected_trial.json`` (a lexicographic pick can override
+    Optuna's own best) and falls back to ``optuna_best_trial.json``. Runs
+    without any trial artifact are dropped rather than kept as empty rows.
+
+    ``train_games`` is included when Optuna sampled it, so this table doubles
+    as a cross-check against :func:`tuned_window_table` -- if the two disagree
+    the run's metadata was written before the trial payload was refreshed.
+    """
+    rows: list[dict[str, Any]] = []
+    for _, run in runs.iterrows():
+        run_dir = run_dir_of(run)
+        payload: dict[str, Any] | None = None
+        for filename, key in (
+            ("optuna_selected_trial.json", "selected_trial"),
+            ("optuna_best_trial.json", "best_trial"),
+        ):
+            path = run_dir / filename
+            if path.exists():
+                payload = read_json(path).get(key)
+                if payload:
+                    break
+        if not payload:
+            continue
+        params = payload.get("params") or {}
+        rows.append({
+            "label": run.get("label", run.get("run_name")),
+            "trial": payload.get("number"),
+            **params,
+        })
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).set_index("label")
+
+
 def load_config_flat(row: Any) -> dict[str, Any]:
     """The run's resolved config, flattened to dotted keys for diffing."""
     path = run_dir_of(row) / "config.json"
