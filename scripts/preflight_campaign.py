@@ -147,7 +147,11 @@ def _prepare_quietly(config: ExperimentConfig) -> tuple[Any, Any, Any]:
 
 
 def check_configs(
-    configs_paths: list[Path], *, label: str, skip_data: bool
+    configs_paths: list[Path],
+    *,
+    label: str,
+    skip_data: bool,
+    allow_short_training_windows: bool = False,
 ) -> int:
     """Check an explicit, already-resolved set of experiment definitions."""
     if not configs_paths:
@@ -335,16 +339,20 @@ def check_configs(
 
             if requested and short:
                 largest_ok = min(short)
-                problems.append(
+                message = (
                     f"{name}: {len(short)} of {n_folds} folds cannot reach "
                     f"train_games={requested} (smallest pool {largest_ok}). The window "
                     "does not fit, and this does NOT raise at runtime -- those folds "
                     f"would quietly train on less. Largest window all folds support: "
                     f"~{largest_ok}."
                 )
-                print(f"     {FAIL}  {name}: {len(short)}/{n_folds} folds short "
+                if not allow_short_training_windows:
+                    problems.append(message)
+                print(f"     {WARN if allow_short_training_windows else FAIL}  "
+                      f"{name}: {len(short)}/{n_folds} folds short "
                       f"(min {largest_ok} vs requested {requested}) "
-                      f"-> max feasible ~{largest_ok}")
+                      f"-> max feasible ~{largest_ok}"
+                      f"{' (explicitly allowed)' if allow_short_training_windows else ''}")
             elif n_folds < expected_folds:
                 problems.append(
                     f"{name}: only {n_folds} folds built, {expected_folds} configured -- "
@@ -420,7 +428,12 @@ def _check_rolling_origin(
     return problems
 
 
-def check_campaign(campaign_dir: Path, *, skip_data: bool) -> int:
+def check_campaign(
+    campaign_dir: Path,
+    *,
+    skip_data: bool,
+    allow_short_training_windows: bool = False,
+) -> int:
     """Backward-compatible directory entry point used by existing callers."""
     configs_paths = sorted(
         path
@@ -431,6 +444,7 @@ def check_campaign(campaign_dir: Path, *, skip_data: bool) -> int:
         configs_paths,
         label=str(campaign_dir),
         skip_data=skip_data,
+        allow_short_training_windows=allow_short_training_windows,
     )
 
 
@@ -514,6 +528,15 @@ def main() -> int:
                         help="Config, checksum and row-key checks only; skips cleaning, "
                              "which is the slow part but also the only way to verify "
                              "the training window.")
+    parser.add_argument(
+        "--allow-short-training-windows",
+        action="store_true",
+        help=(
+            "Report but do not fail when early folds contain fewer rows than "
+            "train_games. Intended only for faithful replay of historical runs "
+            "that already had this behavior."
+        ),
+    )
     args = parser.parse_args()
 
     configs, errors = _resolve_config_paths(args.paths)
@@ -522,7 +545,12 @@ def main() -> int:
             print(error)
         return 1
     label = ", ".join(str(path) for path in args.paths)
-    return check_configs(configs, label=label, skip_data=args.skip_data)
+    return check_configs(
+        configs,
+        label=label,
+        skip_data=args.skip_data,
+        allow_short_training_windows=args.allow_short_training_windows,
+    )
 
 
 if __name__ == "__main__":

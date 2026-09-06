@@ -52,9 +52,11 @@ from typing import Any, NamedTuple
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from nba_ou.config.market_columns import Market
+from nba_ou.config.odds_columns import spread_line_home_col, total_line_col
 
-from training_pipeline.betting import evaluate_betting
-from training_pipeline.config import SNAPSHOT_COLUMN
+from training_pipeline.betting import evaluate_betting, outcome_from_predictions
+from training_pipeline.config import SNAPSHOT_COLUMN, PredictionStrategy
 from training_pipeline.reporting import coverage
 from training_pipeline.reporting.loaders import settle_bets
 from training_pipeline.reporting.theme import (
@@ -66,11 +68,12 @@ from training_pipeline.reporting.theme import (
     MUTED,
 )
 
-#: The three prediction columns that together identify a game in the source
-#: CSV. Date alone matches ten games; date plus final total still collides
-#: (two games a night can end 231-all); adding the settlement line makes an
-#: undetected swap require two games agreeing on all three at once.
-JOIN_COLUMNS: tuple[str, str, str] = ("GAME_DATE", "TOTAL_POINTS", "target_line")
+#: Which raw column of the source CSV carries the realised outcome for each
+#: market -- the join key below always uses this alongside date and line.
+OUTCOME_COL_BY_MARKET: dict[Market, str] = {
+    Market.TOTALS: "TOTAL_POINTS",
+    Market.SPREAD: "HOME_MARGIN",
+}
 
 #: Colours for the two settlement lines. Not the strategy palette: the series
 #: here are two prices for one model, not two models.
@@ -82,20 +85,22 @@ class AlternativeLineError(RuntimeError):
     """The predictions could not be re-settled against a trustworthy line."""
 
 
-def target_line_column(config: dict[str, Any]) -> str:
+def target_line_column(
+    config: dict[str, Any], *, market: Market = Market.TOTALS
+) -> str:
     """The column a run's bets settled into, from its flattened config.
 
     ``line_col`` is set for the total-points regressor and the classifier. It
-    is deliberately absent for ``line_error_regressor``, whose target is built
-    by subtracting the main book's line, so that book's column is the answer
-    there -- see ``data.prepare_dataset``.
+    is deliberately absent for the two closing-line residual regressors
+    (``line_error_regressor`` and ``spread_error_regressor``), whose target is
+    built by subtracting the main book's line for their own market, so that
+    book's column for ``market`` is the answer there -- see
+    ``data.prepare_dataset``.
     """
     line_col = config.get("line_col")
     if line_col:
         return str(line_col)
-    from nba_ou.config.odds_columns import total_line_col
-
-    return total_line_col()
+    return spread_line_home_col() if market is Market.SPREAD else total_line_col()
 
 
 def attach_game_ids(
@@ -103,6 +108,7 @@ def attach_game_ids(
     source_csv: str | Path,
     *,
     line_col: str,
+    outcome_col: str = "TOTAL_POINTS",
     game_id_col: str = "GAME_ID",
     date_col: str = "GAME_DATE",
 ) -> tuple[pd.DataFrame, dict[str, int]]:
@@ -111,23 +117,15 @@ def attach_game_ids(
     Reads four columns from ``source_csv``, not the whole file: the closing
     dataset is ~1,900 columns wide and none of the others are needed.
 
+    ``outcome_col`` is which realised-outcome column of ``source_csv`` to join
+    on -- ``TOTAL_POINTS`` for the totals market, ``HOME_MARGIN`` for the
+    spread. The predictions side is read through ``outcome_from_predictions``,
+    which finds the outcome whichever name the run wrote it under, so this
+    works for both markets without the caller inspecting ``predictions``.
+
     Returns the matched rows and a report of what happened to the rest, so the
     caller can print the match rate rather than assume it.
     """
-    # Totals-only by construction: the join key below includes TOTAL_POINTS, and
-    # the whole diagnostic re-scores against alternative TOTAL line columns. A
-    # spread run's predictions carry HOME_MARGIN under `actual_outcome` and no
-    # TOTAL_POINTS at all, so this must refuse rather than reach the merge --
-    # where the failure would be a bare KeyError naming a column the reader never
-    # asked for. Spread alternative-line comparison is not implemented.
-    if "TOTAL_POINTS" not in predictions.columns:
-        raise AlternativeLineError(
-            "Alternative-line comparison is implemented for the TOTALS market "
-            "only: it joins on TOTAL_POINTS and re-scores against other "
-            "ODDS_TOTAL_LINE_* columns. This prediction frame has no "
-            "TOTAL_POINTS, which is what a spread run looks like."
-        )
-
     source_csv = Path(source_csv)
     if not source_csv.exists():
         raise AlternativeLineError(
@@ -136,28 +134,40 @@ def attach_game_ids(
         )
     source = pd.read_csv(
         source_csv,
-        usecols=[game_id_col, date_col, "TOTAL_POINTS", line_col],
+        usecols=[game_id_col, date_col, outcome_col, line_col],
         dtype={game_id_col: str},
     )
     source[date_col] = pd.to_datetime(source[date_col])
-    source = source.rename(columns={line_col: "target_line"})
+    source = source.rename(
+        columns={line_col: "target_line", outcome_col: "_join_outcome"}
+    )
 
-    # A key shared by two games cannot identify either of them. Dropping both
-    # sides loses a little volume; keeping one would silently mis-attribute.
-    ambiguous = source.duplicated(list(JOIN_COLUMNS), keep=False)
-    usable = source.loc[~ambiguous, [game_id_col, *JOIN_COLUMNS]]
+    # The three columns that together identify a game. Date alone matches ten
+    # games; date plus the outcome still collides (two games a night can end
+    # 231-all); adding the settlement line makes an undetected swap require
+    # two games agreeing on all three at once. A key shared by two games
+    # cannot identify either of them: dropping both sides loses a little
+    # volume, but keeping one would silently mis-attribute.
+    join_columns = (date_col, "_join_outcome", "target_line")
+    ambiguous = source.duplicated(list(join_columns), keep=False)
+    usable = source.loc[~ambiguous, [game_id_col, *join_columns]]
 
     frame = predictions.copy()
     date_source = "date" if "date" in frame.columns else date_col
     frame[date_col] = pd.to_datetime(frame[date_source])
+    frame["_join_outcome"] = outcome_from_predictions(frame)
 
     merged = frame.merge(
         usable.rename(columns={game_id_col: "game_id"}),
-        on=list(JOIN_COLUMNS),
+        on=list(join_columns),
         how="left",
         validate="many_to_one",
     )
-    matched = merged[merged["game_id"].notna()].reset_index(drop=True)
+    matched = (
+        merged[merged["game_id"].notna()]
+        .drop(columns=["_join_outcome"])
+        .reset_index(drop=True)
+    )
     return matched, {
         "n_predictions": int(len(predictions)),
         "n_matched": int(len(matched)),
@@ -212,13 +222,14 @@ def snapshot_line_lookup(
 def swap_settlement_line(frame: pd.DataFrame, alt_line: pd.Series) -> pd.DataFrame:
     """Re-settle each prediction against ``alt_line``, keyed by ``game_id``.
 
-    The prediction is first put back into TOTAL_POINTS space. ``predicted_edge
-    + target_line`` recovers the implied total for BOTH regressors: a
-    total-points model's edge is ``prediction - line``, and a line-error
-    model's edge is the prediction itself, measured from its own line. That is
-    the same translation ``line_scoring.predicted_total_points`` performs, kept
-    in one expression here because the artifacts carry the edge rather than the
-    raw target.
+    The prediction is first put back into outcome space -- TOTAL_POINTS for the
+    totals market, HOME_MARGIN for the spread. ``predicted_edge + target_line``
+    recovers the implied outcome for BOTH regressors of either market: a
+    total-points model's edge is ``prediction - line``, and a line-error (or
+    spread-error) model's edge is the prediction itself, measured from its own
+    line. That is the same translation ``line_scoring.predicted_total_points``
+    performs, kept in one expression here because the artifacts carry the edge
+    rather than the raw target.
 
     The side of the bet is then re-taken against the new line, because that is
     the whole mechanism: a game the model liked by half a point against the
@@ -294,7 +305,7 @@ def compare_settlement_lines(
             cutoff, _ = selected_at(frame, target)
             metrics = evaluate_betting(
                 predicted_edge=frame["predicted_edge"],
-                actual_total=frame["TOTAL_POINTS"],
+                actual_total=outcome_from_predictions(frame),
                 line=frame["target_line"],
                 selection_score=frame["selection_score"],
                 min_edge=cutoff,
@@ -503,6 +514,11 @@ def closing_line_runs(runs: pd.DataFrame) -> list[tuple[Any, dict[str, Any]]]:
     return selected
 
 
+def _run_market(run: Any) -> Market:
+    """The betting market a run belongs to, from its ``prediction_strategy``."""
+    return PredictionStrategy(str(run["prediction_strategy"])).market
+
+
 def settlement_report(
     runs: pd.DataFrame,
     prediction_cache: dict[str, dict[str, pd.DataFrame]],
@@ -510,32 +526,47 @@ def settlement_report(
     project_root: Path,
     snapshot_csv: str | Path,
     snapshot_minutes: int,
-    snapshot_line_col: str,
+    snapshot_book: str = "bet365",
     coverage_grid: tuple[float, ...] = coverage.COVERAGE_GRID,
 ) -> SettlementReport:
     """Re-settle every closing-line run's holdout at one earlier horizon.
 
-    Reads the snapshot lines once, not once per run: the intermediate dataset
-    is 2,500 columns wide and the lookup is identical for every run.
+    Handles both markets from the one snapshot dataset: a totals run is
+    re-settled against ``ODDS_TOTAL_LINE_<snapshot_book>`` and a spread run
+    against ``ODDS_SPREAD_LINE_HOME_<snapshot_book>``. Each market's snapshot
+    lookup is read once, lazily, and only for the markets actually present
+    among ``runs`` -- not once per run: the intermediate dataset is 2,500
+    columns wide.
     """
-    alt_lines = snapshot_line_lookup(
-        Path(project_root) / snapshot_csv,
-        snapshot_minutes=snapshot_minutes,
-        line_col=snapshot_line_col,
-    )
     alt_name = f"T-{snapshot_minutes}"
+    alt_lines_by_market: dict[Market, pd.Series] = {}
+
+    def alt_lines_for(market: Market) -> pd.Series:
+        if market not in alt_lines_by_market:
+            line_col = (
+                spread_line_home_col(snapshot_book) if market is Market.SPREAD
+                else total_line_col(snapshot_book)
+            )
+            alt_lines_by_market[market] = snapshot_line_lookup(
+                Path(project_root) / snapshot_csv,
+                snapshot_minutes=snapshot_minutes,
+                line_col=line_col,
+            )
+        return alt_lines_by_market[market]
 
     comparisons, joins = [], []
     for run, config in closing_line_runs(runs):
         holdout = prediction_cache.get(str(run["label"]), {}).get("holdout")
         if holdout is None or holdout.empty:
             continue
+        market = _run_market(run)
         matched, report = attach_game_ids(
             holdout,
             Path(project_root) / str(config["data.csv_path"]),
-            line_col=target_line_column(config),
+            line_col=target_line_column(config, market=market),
+            outcome_col=OUTCOME_COL_BY_MARKET[market],
         )
-        swapped = swap_settlement_line(matched, alt_lines)
+        swapped = swap_settlement_line(matched, alt_lines_for(market))
         joins.append({
             "label": run["label"], **report,
             f"n_with_{alt_name}_line": len(swapped),
